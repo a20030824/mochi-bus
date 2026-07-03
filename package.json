@@ -1,0 +1,26 @@
+{
+  "name": "mochi-tools",
+  "type": "module",
+  "scripts": {
+    "build:map": "vite build",
+    "dev": "npm run build:map && wrangler dev",
+    "deploy": "npm run build:map && wrangler deploy --minify",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run test && npm run typecheck && npm run build:map && wrangler deploy --dry-run",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "snapshot:chiayi": "node scripts/sync-chiayi-snapshot.mjs Chiayi",
+    "snapshot:city": "node scripts/sync-chiayi-snapshot.mjs"
+  },
+  "dependencies": {
+    "hono": "^4.12.27",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.21",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.3",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.4.0"
+  }
+}
