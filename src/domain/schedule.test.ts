@@ -96,6 +96,40 @@ describe('nextScheduledMinutes', () => {
     expect(estimate).toEqual({ minutes: 25, departureBased: true })
   })
 
+  it('uses the max headway during an active frequency window (Taipei-style data)', () => {
+    const schedules: ScheduleItem[] = [{
+      SubRouteUID: 'TPE1234501',
+      Direction: 0,
+      Frequencys: [
+        { StartTime: '05:10', EndTime: '22:20', MinHeadwayMins: 15, MaxHeadwayMins: 20, ServiceDay: { Saturday: 1 } },
+        { StartTime: '05:10', EndTime: '22:20', MinHeadwayMins: 8, MaxHeadwayMins: 12, ServiceDay: { Monday: 1 } },
+      ],
+    }]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'TPE99', direction: 0 }, saturdayAt15))
+      .toEqual({ minutes: 20, departureBased: true, headwayMinutes: [15, 20] })
+  })
+
+  it('waits for the next frequency window before service starts', () => {
+    const schedules: ScheduleItem[] = [{
+      Direction: 0,
+      Frequencys: [
+        { StartTime: '16:00', EndTime: '19:00', MinHeadwayMins: 10, MaxHeadwayMins: 15, ServiceDay: { Saturday: 1 } },
+      ],
+    }]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'TPE99', direction: 0 }, saturdayAt15))
+      .toEqual({ minutes: 60, departureBased: true })
+  })
+
+  it('ignores frequency windows on other service days', () => {
+    const schedules: ScheduleItem[] = [{
+      Direction: 0,
+      Frequencys: [
+        { StartTime: '05:00', EndTime: '23:00', MinHeadwayMins: 10, MaxHeadwayMins: 15, ServiceDay: { Sunday: 1 } },
+      ],
+    }]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'TPE99', direction: 0 }, saturdayAt15)).toBeNull()
+  })
+
   it('prefers the stop\'s own time over the departure fallback', () => {
     const schedules: ScheduleItem[] = [{
       Direction: 0,

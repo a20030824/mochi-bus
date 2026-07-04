@@ -257,10 +257,12 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
       minutes: estimate.minutes,
       estimateSeconds: estimate.minutes * 60,
       // 發車時間估計是下限(車還要從起點開過來),標示成「發車」避免誤導成到站時間
-      label: estimate.departureBased
-        ? `${Math.max(1, estimate.minutes)} 分後發車`
-        : formatETALabel(estimate.minutes, result.stopStatus),
-      statusLabel: estimate.departureBased ? '時刻表發車預估' : '時刻表預估',
+      label: estimate.headwayMinutes
+        ? `${estimate.headwayMinutes[0]}–${estimate.headwayMinutes[1]} 分一班`
+        : estimate.departureBased
+          ? `${Math.max(1, estimate.minutes)} 分後發車`
+          : formatETALabel(estimate.minutes, result.stopStatus),
+      statusLabel: estimate.headwayMinutes ? '班距預估' : estimate.departureBased ? '時刻表發車預估' : '時刻表預估',
       source: 'schedule',
     }
   } catch (error) {

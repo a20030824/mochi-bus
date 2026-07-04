@@ -213,7 +213,15 @@ for (const item of patternStops) {
         .slice(0, 1)
       return { ServiceDay: timetable.ServiceDay, StopTimes: stopTimes }
     }).filter((timetable) => timetable.StopTimes.length),
-  })).filter((schedule) => schedule.Timetables.length)
+    // 班距制(雙北)不分站別,原樣保留給網頁端估「N–M 分一班」
+    Frequencys: (schedule.Frequencys ?? []).map((frequency) => ({
+      StartTime: frequency.StartTime,
+      EndTime: frequency.EndTime,
+      MinHeadwayMins: frequency.MinHeadwayMins,
+      MaxHeadwayMins: frequency.MaxHeadwayMins,
+      ServiceDay: frequency.ServiceDay,
+    })),
+  })).filter((schedule) => schedule.Timetables.length || schedule.Frequencys.length)
   bundle.routes.push({
     routeUid: pattern.routeUid,
     routeName: routeByUid.get(pattern.routeUid).name,
@@ -373,7 +381,7 @@ async function createR2Client() {
 function hashContent(payloads) {
   // 快照產出格式的版本:bundle/network 的結構有改就 +1,
   // 讓所有城市自動重匯,不會被「內容未變更」跳過而留著舊格式。
-  const SNAPSHOT_FORMAT = 2
+  const SNAPSHOT_FORMAT = 3
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])

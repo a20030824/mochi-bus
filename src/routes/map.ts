@@ -298,9 +298,11 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         etaLabel: source === 'realtime' || source === 'stale-realtime'
           ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0).replace('分鐘', '分')
           : source === 'schedule'
-            ? route.scheduleDepartureBased
-              ? `${Math.max(1, route.scheduleMinutes ?? 1)} 分後發車`
-              : `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
+            ? route.scheduleHeadway
+              ? `${route.scheduleHeadway[0]}–${route.scheduleHeadway[1]} 分一班`
+              : route.scheduleDepartureBased
+                ? `${Math.max(1, route.scheduleMinutes ?? 1)} 分後發車`
+                : `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
             : '暫無班次',
         stopStatus: realtime?.StopStatus ?? 0,
         source,
@@ -541,12 +543,13 @@ function getScheduledEstimates(
   return result
 }
 
-// 把 domain 的估計攤成回應欄位;departureBased 只有伺服器端組 label 會用。
+// 把 domain 的估計攤成回應欄位;departureBased/headway 只有伺服器端組 label 會用。
 function scheduleFields(schedules: ScheduleItem[], query: ScheduleQuery, now: Date) {
   const estimate = nextScheduledMinutes(schedules, query, now)
   return {
     scheduleMinutes: estimate?.minutes ?? null,
     scheduleDepartureBased: estimate?.departureBased ?? false,
+    scheduleHeadway: estimate?.headwayMinutes ?? null,
   }
 }
 

@@ -10,10 +10,20 @@ export type ScheduleTimetable = {
   StopTimes?: ScheduleStopTime[]
 }
 
+// 班距制(雙北常見):某時段內每 N–M 分一班,沒有逐班時刻。
+export type ScheduleFrequency = {
+  StartTime?: string
+  EndTime?: string
+  MinHeadwayMins?: number
+  MaxHeadwayMins?: number
+  ServiceDay?: Record<string, number>
+}
+
 export type ScheduleItem = {
   SubRouteUID?: string
   Direction?: number
   Timetables?: ScheduleTimetable[]
+  Frequencys?: ScheduleFrequency[]
 }
 
 export type ScheduleQuery = {
@@ -27,6 +37,8 @@ export type ScheduleEstimate = {
   // 有些縣市(如台南)的 TDX 時刻表每班次只提供起點發車時間;
   // true 代表 minutes 是「下一班還有幾分鐘發車」,不是到本站的時間。
   departureBased: boolean
+  // 班距制時段進行中:顯示端應呈現「N–M 分一班」;minutes 是保守估計(最大班距)。
+  headwayMinutes?: [number, number]
 }
 
 // 即時 GPS 沒有預估時間時(尚未發車／資料中斷)的備援:算出時刻表上下一班還要幾分鐘。
@@ -67,7 +79,33 @@ export function nextScheduledMinutes(schedules: ScheduleItem[], query: ScheduleQ
       .filter((stop): stop is ScheduleStopTime => stop !== undefined),
     nowMinutes,
   )
-  return departures === null ? null : { minutes: departures, departureBased: true }
+  if (departures !== null) return { minutes: departures, departureBased: true }
+
+  // 班距制(雙北):時段進行中用最大班距當保守估計;時段還沒開始就等到開始。
+  const todaysFrequencies = matched
+    .flatMap((schedule) => schedule.Frequencys ?? [])
+    .filter((frequency) => frequency.ServiceDay?.[weekday] === 1)
+  const active = todaysFrequencies
+    .filter((frequency) => {
+      const start = timeToMinutes(frequency.StartTime)
+      const end = timeToMinutes(frequency.EndTime)
+      return start !== null && end !== null && start <= nowMinutes && nowMinutes <= end
+    })
+    .sort((a, b) => (a.MaxHeadwayMins ?? Infinity) - (b.MaxHeadwayMins ?? Infinity))[0]
+  if (active && typeof active.MaxHeadwayMins === 'number') {
+    return {
+      minutes: active.MaxHeadwayMins,
+      departureBased: true,
+      headwayMinutes: [active.MinHeadwayMins ?? active.MaxHeadwayMins, active.MaxHeadwayMins],
+    }
+  }
+  const nextWindowStarts = todaysFrequencies
+    .map((frequency) => timeToMinutes(frequency.StartTime))
+    .filter((start): start is number => start !== null && start >= nowMinutes)
+  if (nextWindowStarts.length) {
+    return { minutes: Math.min(...nextWindowStarts) - nowMinutes, departureBased: true }
+  }
+  return null
 }
 
 function upcomingMinutes(stopTimes: ScheduleStopTime[], nowMinutes: number): number | null {
