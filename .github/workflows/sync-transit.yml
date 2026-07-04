@@ -41,7 +41,7 @@ jobs:
           if [ -n "${{ inputs.city }}" ]; then
             cities="${{ inputs.city }}"
           else
-            cities="Chiayi ChiayiCounty"
+            cities="Chiayi ChiayiCounty YunlinCounty"
           fi
           for city in $cities; do
             npm run snapshot:city -- "$city"
