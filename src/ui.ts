@@ -88,9 +88,7 @@ export function renderETAPage(view: ETAView): string {
 
     function routeLink(bus) {
       if (bus.stopName && bus.stopUid) return '/route?' + paramsFor(bus);
-      const params = new URLSearchParams({ city: bus.city || currentBoard.city });
-      if (currentBoard.placeId) params.set('place', currentBoard.placeId);
-      return '/map?' + params;
+      return '#';
     }
 
     function makeRow(bus, data, failed = false) {
@@ -131,22 +129,42 @@ export function renderETAPage(view: ETAView): string {
     async function repairBusFromPlace(bus) {
       if (bus.stopName && bus.stopUid) return true;
       const city = bus.city || currentBoard.city;
-      if (!city || !currentBoard.placeId) return false;
+      if (!city) return false;
       try {
-        placeRoutesPromise ||= fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/routes?city=' + encodeURIComponent(city))
-          .then(response => response.ok ? response.json() : Promise.reject());
-        const body = await placeRoutesPromise;
-        const candidates = (body.routes || []).filter(route =>
-          route.routeName === bus.routeName
-          && route.direction === bus.direction
-          && (!bus.routeUid || route.routeUid === bus.routeUid));
-        const match = candidates.find(route => !bus.directionLabel || route.label === bus.directionLabel) || candidates[0];
-        if (!match) return false;
+        if (currentBoard.placeId) {
+          placeRoutesPromise ||= fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/routes?city=' + encodeURIComponent(city))
+            .then(response => response.ok ? response.json() : Promise.reject());
+          const body = await placeRoutesPromise;
+          const candidates = (body.routes || []).filter(route =>
+            route.routeName === bus.routeName
+            && route.direction === bus.direction
+            && (!bus.routeUid || route.routeUid === bus.routeUid));
+          const match = candidates.find(route => !bus.directionLabel || route.label === bus.directionLabel) || candidates[0];
+          if (match) {
+            bus.city = city;
+            bus.routeUid = match.routeUid;
+            bus.stopName = match.stopName;
+            bus.stopUid = match.stopUid;
+            bus.directionLabel = match.label;
+            return true;
+          }
+        }
+        const params = new URLSearchParams({ city, route: bus.routeName });
+        const response = await fetch('/api/v1/stops?' + params);
+        const body = await response.json();
+        if (!response.ok) return false;
+        const groups = (body.groups || []).filter(group =>
+          group.direction === bus.direction
+          && (!bus.directionLabel || group.label === bus.directionLabel));
+        const matches = groups.flatMap(group => group.stops
+          .filter(stop => stop.stopName === currentBoard.title)
+          .map(stop => ({ group, stop })));
+        if (matches.length !== 1) return false;
         bus.city = city;
-        bus.routeUid = match.routeUid;
-        bus.stopName = match.stopName;
-        bus.stopUid = match.stopUid;
-        bus.directionLabel = match.label;
+        bus.routeUid = matches[0].stop.routeUid || bus.routeUid;
+        bus.stopName = matches[0].stop.stopName;
+        bus.stopUid = matches[0].stop.stopUid;
+        bus.directionLabel = matches[0].group.label;
         return true;
       } catch { return false; }
     }
