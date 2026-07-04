@@ -3,7 +3,7 @@ import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
 import { matchingEtaItems, selectBestEta } from '../domain/map/eta'
-import { selectRealtimeCandidates } from '../domain/map/arrival-ranking'
+import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
 import { nextScheduledMinutes, type ScheduleItem } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
 import {
@@ -24,6 +24,41 @@ import { renderMapPage } from '../map-page'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
 const map = new Hono<Env>()
+
+const REALTIME_COOLDOWN_SECONDS = 90
+const LAST_REALTIME_SECONDS = 120
+
+function arrivalCacheKey(kind: 'cooldown' | 'last', city: string, routeName = ''): Request {
+  return new Request(`https://mochi-cache.invalid/arrivals/${kind}/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`)
+}
+
+function edgeCache(): Cache {
+  return (caches as CacheStorage & { default: Cache }).default
+}
+
+async function hasRealtimeCooldown(city: string): Promise<boolean> {
+  return Boolean(await edgeCache().match(arrivalCacheKey('cooldown', city)))
+}
+
+async function setRealtimeCooldown(city: string): Promise<void> {
+  await edgeCache().put(arrivalCacheKey('cooldown', city), new Response('1', {
+    headers: { 'Cache-Control': `public, max-age=${REALTIME_COOLDOWN_SECONDS}` },
+  }))
+}
+
+async function readLastRealtime(city: string, routeName: string): Promise<BusETAItem[]> {
+  const response = await edgeCache().match(arrivalCacheKey('last', city, routeName))
+  return response ? await response.json<BusETAItem[]>() : []
+}
+
+async function writeLastRealtime(city: string, routeName: string, items: BusETAItem[]): Promise<void> {
+  await edgeCache().put(arrivalCacheKey('last', city, routeName), new Response(JSON.stringify(items), {
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': `public, max-age=${LAST_REALTIME_SECONDS}`,
+    },
+  }))
+}
 
 map.get('/map', (c) => c.html(renderMapPage(), 200, {
   'Cache-Control': 'no-cache',
@@ -191,18 +226,37 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       }, now)
       return { ...route, scheduleMinutes: minutes }
     })
-    const candidates = selectRealtimeCandidates(scheduledRoutes)
+    const focusStopUid = c.req.query('focusStopUid')?.trim()
+    const focusSubRouteUid = c.req.query('focusSubRouteUid')?.trim()
+    const focusDirection = Number(c.req.query('focusDirection'))
+    const focused = focusStopUid ? scheduledRoutes.find((route) =>
+      route.stopUid === focusStopUid
+      && (!Number.isInteger(focusDirection) || route.direction === focusDirection)
+      && (!focusSubRouteUid || route.subRouteUid === focusSubRouteUid),
+    ) : undefined
+    const candidates = includeFocusedCandidate(selectRealtimeCandidates(scheduledRoutes), focused)
     const candidateRouteNames = [...new Set(candidates.map((route) => route.routeName))]
     const etaItems: BusETAItem[] = []
-    let rateLimited = false
+    const staleRouteNames = new Set<string>()
+    let rateLimited = await hasRealtimeCooldown(city)
     let realtimeQueries = 0
     for (const routeName of candidateRouteNames) {
+      if (rateLimited) {
+        const staleItems = await readLastRealtime(city, routeName)
+        if (staleItems.length) {
+          etaItems.push(...staleItems)
+          staleRouteNames.add(routeName)
+        }
+        continue
+      }
       const etaUrl = new URL(
         `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
       )
       etaUrl.searchParams.set('$format', 'JSON')
       try {
-        etaItems.push(...await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 15))
+        const items = await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 15)
+        etaItems.push(...items)
+        await writeLastRealtime(city, routeName, items)
         realtimeQueries += 1
       } catch (error) {
         rateLimited = error instanceof Error && error.message.includes('(429)')
@@ -210,21 +264,27 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
           message: 'place_arrival_realtime_failed', city, routeName,
           error: error instanceof Error ? error.message : String(error),
         }))
-        if (rateLimited) break
+        if (rateLimited) await setRealtimeCooldown(city)
+        const staleItems = await readLastRealtime(city, routeName)
+        if (staleItems.length) {
+          etaItems.push(...staleItems)
+          staleRouteNames.add(routeName)
+        }
       }
     }
     const arrivals = scheduledRoutes.map((route) => {
       const realtime = selectBestEta(etaItems, route)
       const realtimeSeconds = typeof realtime?.EstimateTime === 'number' ? Math.max(0, realtime.EstimateTime) : null
       const estimateSeconds = realtimeSeconds ?? (route.scheduleMinutes === null ? null : route.scheduleMinutes * 60)
-      const source = realtimeSeconds !== null ? 'realtime' as const
+      const source = realtimeSeconds !== null
+        ? staleRouteNames.has(route.routeName) ? 'stale-realtime' as const : 'realtime' as const
         : route.scheduleMinutes !== null ? 'schedule' as const
           : 'none' as const
       return {
         ...route,
         estimateSeconds,
-        etaLabel: source === 'realtime'
-          ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0)
+        etaLabel: source === 'realtime' || source === 'stale-realtime'
+          ? `${formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0)}${source === 'stale-realtime' ? ' · 稍早' : ''}`
           : source === 'schedule'
             ? `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
             : '暫無班次',

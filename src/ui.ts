@@ -150,7 +150,12 @@ export function renderETAPage(view: ETAView): string {
       const city = currentBoard.city || currentBoard.buses[0]?.city;
       if (!city || !currentBoard.placeId) return null;
       try {
-        const response = await fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/arrivals?city=' + encodeURIComponent(city), { cache: 'no-store' });
+        const params = new URLSearchParams({ city });
+        const focus = currentBoard.buses[0];
+        if (focus?.stopUid) params.set('focusStopUid', focus.stopUid);
+        if (focus?.subRouteUid) params.set('focusSubRouteUid', focus.subRouteUid);
+        if (focus && (focus.direction === 0 || focus.direction === 1)) params.set('focusDirection', String(focus.direction));
+        const response = await fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/arrivals?' + params, { cache: 'no-store' });
         const body = await response.json();
         return response.ok && Array.isArray(body.routes) ? body.routes : null;
       } catch { return null; }

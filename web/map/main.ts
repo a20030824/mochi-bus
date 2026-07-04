@@ -61,7 +61,7 @@ type PlaceRoute = {
   estimateSeconds: number | null
   etaLabel: string
   stopStatus: number
-  source?: 'realtime' | 'schedule' | 'none'
+  source?: 'realtime' | 'stale-realtime' | 'schedule' | 'none'
 }
 
 type DirectRoute = PlaceRoute & {
