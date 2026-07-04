@@ -4,7 +4,7 @@ import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
 import { matchingEtaItems, selectBestEta } from '../domain/map/eta'
 import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
-import { nextScheduledMinutes, type ScheduleItem } from '../domain/schedule'
+import { nextScheduledMinutes, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
 import {
   findNearbyStopPlaces,
@@ -217,7 +217,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
     const now = new Date()
     const scheduledRoutes = bundle ? bundle.routes.map(({ schedules, ...route }) => ({
       ...route,
-      scheduleMinutes: nextScheduledMinutes(schedules, {
+      ...scheduleFields(schedules, {
         stopUid: route.stopUid,
         direction: route.direction,
         subRouteUid: route.subRouteUid,
@@ -231,7 +231,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       ] as const))))
       return routes.map((route) => ({
         ...route,
-        scheduleMinutes: nextScheduledMinutes(schedulesByRoute.get(route.routeName) ?? [], {
+        ...scheduleFields(schedulesByRoute.get(route.routeName) ?? [], {
           stopUid: route.stopUid,
           direction: route.direction,
           subRouteUid: route.subRouteUid,
@@ -298,7 +298,9 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         etaLabel: source === 'realtime' || source === 'stale-realtime'
           ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0).replace('分鐘', '分')
           : source === 'schedule'
-            ? `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
+            ? route.scheduleDepartureBased
+              ? `${Math.max(1, route.scheduleMinutes ?? 1)} 分後發車`
+              : `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
             : '暫無班次',
         stopStatus: realtime?.StopStatus ?? 0,
         source,
@@ -523,20 +525,29 @@ function getScheduledEstimates(
   const result = new Map<string, JourneyEstimate>()
 
   refs.forEach((ref) => {
-    const minutes = nextScheduledMinutes(schedules, {
+    const estimate = nextScheduledMinutes(schedules, {
       stopUid: ref.stopUid, direction: ref.direction, subRouteUid: ref.patternId.split(':')[0],
     }, now)
     result.set(ref.key, {
       key: ref.key,
       routeName: ref.routeName,
       stopUid: ref.stopUid,
-      estimateSeconds: minutes === null ? null : minutes * 60,
-      minutes,
+      estimateSeconds: estimate === null ? null : estimate.minutes * 60,
+      minutes: estimate?.minutes ?? null,
       stopStatus: null,
       source: 'schedule',
     })
   })
   return result
+}
+
+// 把 domain 的估計攤成回應欄位;departureBased 只有伺服器端組 label 會用。
+function scheduleFields(schedules: ScheduleItem[], query: ScheduleQuery, now: Date) {
+  const estimate = nextScheduledMinutes(schedules, query, now)
+  return {
+    scheduleMinutes: estimate?.minutes ?? null,
+    scheduleDepartureBased: estimate?.departureBased ?? false,
+  }
 }
 
 export default map

@@ -248,16 +248,19 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
       ? await getSnapshotSchedule(env as TDXEnv & TransitBindings, query.city, query.routeName)
         ?? await getBusSchedule(env, query.city, query.routeName)
       : await getBusSchedule(env, query.city, query.routeName)
-    const minutes = nextScheduledMinutes(schedules, {
+    const estimate = nextScheduledMinutes(schedules, {
       stopUid: query.stopUid, direction: query.direction, subRouteUid: query.subRouteUid,
     }, new Date())
-    if (minutes === null) return result
+    if (estimate === null) return result
     return {
       ...result,
-      minutes,
-      estimateSeconds: minutes * 60,
-      label: formatETALabel(minutes, result.stopStatus),
-      statusLabel: '時刻表預估',
+      minutes: estimate.minutes,
+      estimateSeconds: estimate.minutes * 60,
+      // 發車時間估計是下限(車還要從起點開過來),標示成「發車」避免誤導成到站時間
+      label: estimate.departureBased
+        ? `${Math.max(1, estimate.minutes)} 分後發車`
+        : formatETALabel(estimate.minutes, result.stopStatus),
+      statusLabel: estimate.departureBased ? '時刻表發車預估' : '時刻表預估',
       source: 'schedule',
     }
   } catch (error) {

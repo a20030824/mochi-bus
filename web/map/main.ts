@@ -253,15 +253,17 @@ function bindSelectableLine(
 }
 
 // 預覽淡線也標出小站點(跟全路網的小圓點同款),看得出停靠密度與站距。
+// 放在 routePreviewPane(而非 stopPane):小點屬於預覽層,必須墊在
+// 附近站牌等互動大圓點(stopPane)之下,不能蓋住它們。
 function addPreviewStopDots(
   stops: RouteMapVariant['stops'],
   color: string,
   layerGroup: L.LayerGroup,
 ): void {
   L.geoJSON(stops, {
-    pane: 'stopPane',
+    pane: 'routePreviewPane',
     pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
-      pane: 'stopPane', radius: 2.4, weight: 1, color: '#fffaf0', fillColor: color, fillOpacity: .6,
+      pane: 'routePreviewPane', radius: 2.4, weight: 1, color: '#fffaf0', fillColor: color, fillOpacity: .6,
       interactive: false,
     }),
   }).addTo(layerGroup)

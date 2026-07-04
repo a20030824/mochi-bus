@@ -18,10 +18,10 @@ describe('nextScheduledMinutes', () => {
         ],
       }],
     }]
-    const minutes = nextScheduledMinutes(schedules, {
+    const estimate = nextScheduledMinutes(schedules, {
       stopUid: 'CYI304410', direction: 0, subRouteUid: 'CYI071401',
     }, saturdayAt15)
-    expect(minutes).toBe(20)
+    expect(estimate).toEqual({ minutes: 20, departureBased: false })
   })
 
   it('disambiguates two subroutes sharing the same stopUid+direction', () => {
@@ -37,8 +37,8 @@ describe('nextScheduledMinutes', () => {
         Timetables: [{ ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '15:50' }] }],
       },
     ]
-    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'CYI071401' }, saturdayAt15)).toBe(20)
-    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'CYI0714A1' }, saturdayAt15)).toBe(50)
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'CYI071401' }, saturdayAt15)?.minutes).toBe(20)
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'CYI0714A1' }, saturdayAt15)?.minutes).toBe(50)
   })
 
   it('takes the earliest time across all matching schedules when subroute is unknown', () => {
@@ -54,7 +54,7 @@ describe('nextScheduledMinutes', () => {
         Timetables: [{ ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '15:20' }] }],
       },
     ]
-    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15)).toBe(20)
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15)?.minutes).toBe(20)
   })
 
   it('ignores service days that do not run today', () => {
@@ -79,6 +79,35 @@ describe('nextScheduledMinutes', () => {
       Direction: 0,
       Timetables: [{ ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '15:30' }] }],
     }]
-    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'MISSING' }, saturdayAt15)).toBe(30)
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'MISSING' }, saturdayAt15)?.minutes).toBe(30)
+  })
+
+  it('falls back to origin departure times when the stop has no own times (Tainan-style data)', () => {
+    // 台南的 TDX 時刻表每班次只有起點(StopSequence 1)一筆
+    const schedules: ScheduleItem[] = [{
+      SubRouteUID: 'TNN1016501',
+      Direction: 0,
+      Timetables: [
+        { ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'TNN16984', StopSequence: 1, DepartureTime: '15:25' }] },
+        { ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'TNN16984', StopSequence: 1, DepartureTime: '16:05' }] },
+      ],
+    }]
+    const estimate = nextScheduledMinutes(schedules, { stopUid: 'TNN99999', direction: 0 }, saturdayAt15)
+    expect(estimate).toEqual({ minutes: 25, departureBased: true })
+  })
+
+  it('prefers the stop\'s own time over the departure fallback', () => {
+    const schedules: ScheduleItem[] = [{
+      Direction: 0,
+      Timetables: [{
+        ServiceDay: { Saturday: 1 },
+        StopTimes: [
+          { StopUID: 'ORIGIN', StopSequence: 1, DepartureTime: '15:05' },
+          { StopUID: 'CYI304410', StopSequence: 7, ArrivalTime: '15:20' },
+        ],
+      }],
+    }]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15))
+      .toEqual({ minutes: 20, departureBased: false })
   })
 })

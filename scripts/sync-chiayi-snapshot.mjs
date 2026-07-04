@@ -203,10 +203,16 @@ for (const item of patternStops) {
   const schedules = matchingSchedules.map((schedule) => ({
     SubRouteUID: schedule.SubRouteUID,
     Direction: schedule.Direction,
-    Timetables: (schedule.Timetables ?? []).map((timetable) => ({
-      ServiceDay: timetable.ServiceDay,
-      StopTimes: (timetable.StopTimes ?? []).filter((time) => time.StopUID === item.stopUid),
-    })).filter((timetable) => timetable.StopTimes.length),
+    Timetables: (schedule.Timetables ?? []).map((timetable) => {
+      const atThisStop = (timetable.StopTimes ?? []).filter((time) => time.StopUID === item.stopUid)
+      // 有些縣市(如台南)每班次只提供起點發車時間,本站過濾後會全空;
+      // 保留起點那筆,讓網頁端退回用「發車時間」估計,不然整站會變「暫無班次」。
+      const stopTimes = atThisStop.length ? atThisStop : (timetable.StopTimes ?? [])
+        .slice()
+        .sort((a, b) => (a.StopSequence ?? 0) - (b.StopSequence ?? 0))
+        .slice(0, 1)
+      return { ServiceDay: timetable.ServiceDay, StopTimes: stopTimes }
+    }).filter((timetable) => timetable.StopTimes.length),
   })).filter((schedule) => schedule.Timetables.length)
   bundle.routes.push({
     routeUid: pattern.routeUid,
@@ -363,11 +369,14 @@ async function createR2Client() {
   }
 }
 function hashContent(payloads) {
+  // 快照產出格式的版本:bundle/network 的結構有改就 +1,
+  // 讓所有城市自動重匯,不會被「內容未變更」跳過而留著舊格式。
+  const SNAPSHOT_FORMAT = 2
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])
   const stable = JSON.stringify(payloads, (key, value) => volatileKeys.has(key) ? undefined : value)
-  return createHash('sha256').update(stable).digest('hex')
+  return createHash('sha256').update(`format:${SNAPSHOT_FORMAT}\n`).update(stable).digest('hex')
 }
 async function s3GetJson(key) {
   const response = await r2.client.fetch(objectUrl(key))
