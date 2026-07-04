@@ -2,7 +2,9 @@ name: Sync transit snapshots
 
 on:
   schedule:
-    - cron: '17 19 * * 0'
+    # 每天跑,城市按星期分片(見下方 case):
+    # 單日 D1 寫入量才不會超過免費方案 10 萬列/天的額度。
+    - cron: '17 19 * * *'
   workflow_dispatch:
     inputs:
       city:
@@ -47,8 +49,21 @@ jobs:
         run: |
           if [ -n "$INPUT_CITY" ]; then
             cities="$INPUT_CITY"
+            # 手動觸發視為要求重匯,略過「內容未變更就跳過」檢查
+            export SNAPSHOT_FORCE=1
           else
-            cities="Chiayi ChiayiCounty YunlinCounty"
+            # 城市分片:之後加新城市時掛到還有空位的星期,
+            # 大城市(台北/新北)一定要獨占一天。1=週一 … 7=週日
+            case "$(date -u +%u)" in
+              1) cities="Chiayi" ;;
+              3) cities="ChiayiCounty" ;;
+              5) cities="YunlinCounty" ;;
+              *) cities="" ;;
+            esac
+          fi
+          if [ -z "$cities" ]; then
+            echo "今天沒有排程的城市"
+            exit 0
           fi
           for city in $cities; do
             npm run snapshot:city -- "$city"

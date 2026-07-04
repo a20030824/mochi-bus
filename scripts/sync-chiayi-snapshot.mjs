@@ -1,12 +1,12 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
 const BUCKET = 'mochi-transit-shapes'
 const outputRoot = join('.transit-snapshot', CITY)
-const existingRows = queryExistingSnapshots()
 const vars = await readVars('.dev.vars')
 if (!vars.TDX_CLIENT_ID || !vars.TDX_CLIENT_SECRET) {
   throw new Error('Missing TDX_CLIENT_ID or TDX_CLIENT_SECRET in .dev.vars')
@@ -51,6 +51,21 @@ const routeItems = await get('Route')
 const stopOfRouteItems = await get('StopOfRoute')
 const shapeItems = await get('Shape')
 const scheduleItems = await get('Schedule')
+
+// 內容沒變就跳過整次匯入:D1 免費方案每天只有 10 萬列寫入額度,
+// 多數縣市的路線資料幾週才變一次,沒必要每次全量重匯。
+const stateKey = `snapshots/state/${CITY}.json`
+const contentHash = hashContent([routeItems, stopOfRouteItems, shapeItems, scheduleItems])
+if (r2 && process.env.SNAPSHOT_FORCE !== '1') {
+  const previousState = await s3GetJson(stateKey)
+  if (previousState?.contentHash === contentHash) {
+    console.log(JSON.stringify({ city: CITY, skipped: true, reason: 'unchanged', version: previousState.version }))
+    process.exit(0)
+  }
+}
+
+// 放在 hash 檢查之後:跳過未變更城市時不用花這次遠端 D1 查詢
+const existingRows = queryExistingSnapshots()
 const version = new Date().toISOString().replace(/[-:.]/g, '')
 const shapeDir = join(outputRoot, 'shapes')
 const scheduleDir = join(outputRoot, 'schedules')
@@ -273,6 +288,11 @@ await deleteObjects([...new Set([
     .map((item) => `snapshots/${item.version}/cities/${CITY}/places/${item.place_id}.json`),
   ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/network.json`),
 ])])
+if (r2) {
+  await s3Request('PUT', stateKey, JSON.stringify({
+    contentHash, version, updatedAt: new Date().toISOString(),
+  }), 'application/json')
+}
 console.log(JSON.stringify({ city: CITY, version, routes: routeByUid.size, patterns: patterns.length, stops: stops.size, places: places.size, schedules: schedulesByRouteUid.size, placeBundles: placeBundles.size }))
 
 function values(...items) { return items.map(sqlValue).join(', ') }
@@ -321,6 +341,25 @@ async function createR2Client() {
     client: new AwsClient({ accessKeyId, secretAccessKey, service: 's3', region: 'auto' }),
     baseUrl: `https://${accountId}.r2.cloudflarestorage.com/${BUCKET}`,
   }
+}
+function hashContent(payloads) {
+  // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
+  // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
+  const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])
+  const stable = JSON.stringify(payloads, (key, value) => volatileKeys.has(key) ? undefined : value)
+  return createHash('sha256').update(stable).digest('hex')
+}
+async function s3GetJson(key) {
+  const response = await r2.client.fetch(objectUrl(key))
+  if (response.status === 404) {
+    await response.arrayBuffer()
+    return null
+  }
+  if (!response.ok) {
+    await response.arrayBuffer()
+    throw new Error(`R2 GET ${key} failed (${response.status})`)
+  }
+  return await response.json()
 }
 function objectUrl(key) {
   // key 內含 ':' 等字元,SigV4 的 canonical URI 要求 percent-encoding,
