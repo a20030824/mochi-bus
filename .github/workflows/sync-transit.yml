@@ -31,15 +31,20 @@ jobs:
       - run: npm ci
       - name: Write local TDX credentials
         shell: bash
+        env:
+          TDX_CLIENT_ID: ${{ secrets.TDX_CLIENT_ID }}
+          TDX_CLIENT_SECRET: ${{ secrets.TDX_CLIENT_SECRET }}
         run: |
           printf 'TDX_CLIENT_ID=%s\nTDX_CLIENT_SECRET=%s\n' \
-            '${{ secrets.TDX_CLIENT_ID }}' \
-            '${{ secrets.TDX_CLIENT_SECRET }}' > .dev.vars
+            "$TDX_CLIENT_ID" \
+            "$TDX_CLIENT_SECRET" > .dev.vars
       - name: Build and publish snapshot
         shell: bash
+        env:
+          INPUT_CITY: ${{ inputs.city }}
         run: |
-          if [ -n "${{ inputs.city }}" ]; then
-            cities="${{ inputs.city }}"
+          if [ -n "$INPUT_CITY" ]; then
+            cities="$INPUT_CITY"
           else
             cities="Chiayi ChiayiCounty YunlinCounty"
           fi

@@ -231,7 +231,7 @@ run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute',
 const previousVersion = [...new Set(existingRows.map((row) => row.version))].sort().at(-1)
 const versionsToDelete = new Set(existingRows.map((row) => row.version).filter((item) => item !== previousVersion))
 const shapesToDelete = new Set(existingRows
-  .filter((item) => versionsToDelete.has(item.version))
+  .filter((item) => versionsToDelete.has(item.version) && item.pattern_id)
   .map((item) => `snapshots/${item.version}/cities/${CITY}/shapes/${item.pattern_id}.json`))
 await runParallel([...shapesToDelete].map((key) => ({
   command: process.execPath,
@@ -308,7 +308,9 @@ async function runParallel(tasks, concurrency) {
   await Promise.all(workers)
 }
 function queryExistingSnapshots() {
-  const sql = `SELECT DISTINCT p.version, p.pattern_id, p.route_uid, ps.place_id FROM patterns p LEFT JOIN pattern_stops ps ON ps.version=p.version AND ps.pattern_id=p.pattern_id WHERE p.city_code='${CITY.replaceAll("'", "''")}'`
+  // 從 routes 出發:沒有任何 pattern 的路線(缺 shape / StopOfRoute)也上傳過 schedule 物件,
+  // 清理必須涵蓋它們,否則舊版 schedule 會永遠留在 R2。
+  const sql = `SELECT DISTINCT r.version, r.route_uid, p.pattern_id, ps.place_id FROM routes r LEFT JOIN patterns p ON p.version=r.version AND p.route_uid=r.route_uid LEFT JOIN pattern_stops ps ON ps.version=p.version AND ps.pattern_id=p.pattern_id WHERE r.city_code='${CITY.replaceAll("'", "''")}'`
   const result = spawnSync(process.execPath, [
     'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE,
     '--remote', '--json', '--command', sql,

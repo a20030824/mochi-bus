@@ -231,17 +231,14 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
     stopUid: query.stopUid,
     direction: query.direction,
     subRouteUid: query.subRouteUid,
-  }) ?? {
-    RouteName: { Zh_tw: query.routeName },
-    StopName: { Zh_tw: query.stopName },
+  })
+  // 完全沒有即時資料時給一個空 item,讓時刻表 fallback 有機會接手;
+  // 不放 DataTime,dataTime 保持 null 才不會看起來像有新鮮的即時資料。
+  const result = toETAResult(item ?? {
     StopUID: query.stopUid,
     Direction: query.direction,
     StopStatus: 0,
-    DataTime: new Date().toISOString(),
-  }
-
-  if (!item) throw new Error(`目前沒有 ${query.routeName}／${query.stopName} 的到站資料`)
-  const result = toETAResult(item, query)
+  }, query)
   if (result.minutes !== null) return result
 
   // 即時資料沒有預估時間(尚未發車／資料中斷)時，退回查時刻表，避免小型客運業者

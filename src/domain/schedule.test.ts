@@ -41,6 +41,22 @@ describe('nextScheduledMinutes', () => {
     expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'CYI0714A1' }, saturdayAt15)).toBe(50)
   })
 
+  it('takes the earliest time across all matching schedules when subroute is unknown', () => {
+    const schedules: ScheduleItem[] = [
+      {
+        SubRouteUID: 'CYI0714A1',
+        Direction: 0,
+        Timetables: [{ ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '15:50' }] }],
+      },
+      {
+        SubRouteUID: 'CYI071401',
+        Direction: 0,
+        Timetables: [{ ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '15:20' }] }],
+      },
+    ]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15)).toBe(20)
+  })
+
   it('ignores service days that do not run today', () => {
     const schedules: ScheduleItem[] = [{
       Direction: 0,

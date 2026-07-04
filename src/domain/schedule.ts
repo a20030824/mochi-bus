@@ -29,12 +29,17 @@ export function nextScheduledMinutes(schedules: ScheduleItem[], query: ScheduleQ
   const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
   const nowMinutes = hour * 60 + minute
 
-  const schedule = schedules.find((item) =>
+  // 同方向可能有多條支線停同一站,必須看過全部符合的項目取最近一班,
+  // 不能只取第一個符合的 schedule。
+  const exactMatches = schedules.filter((item) =>
     (!query.subRouteUid || item.SubRouteUID === query.subRouteUid) && item.Direction === query.direction,
-  ) ?? schedules.find((item) => item.Direction === query.direction
+  )
+  const matched = exactMatches.length ? exactMatches : schedules.filter((item) =>
+    item.Direction === query.direction
     && item.Timetables?.some((timetable) => timetable.StopTimes?.some((stop) => stop.StopUID === query.stopUid)))
 
-  const candidates = (schedule?.Timetables ?? [])
+  const candidates = matched
+    .flatMap((schedule) => schedule.Timetables ?? [])
     .filter((timetable) => timetable.ServiceDay?.[weekday] === 1)
     .flatMap((timetable) => timetable.StopTimes ?? [])
     .filter((stop) => stop.StopUID === query.stopUid)
