@@ -208,7 +208,14 @@ export async function getCommuteETA(env: TDXEnv, query: ResolvedBusQuery): Promi
   const items = await getBusETA(env, query)
   const item = items.find((candidate) =>
     candidate.StopUID === query.stopUid && candidate.Direction === query.direction,
-  )
+  ) ?? {
+    RouteName: { Zh_tw: query.routeName },
+    StopName: { Zh_tw: query.stopName },
+    StopUID: query.stopUid,
+    Direction: query.direction,
+    StopStatus: 0,
+    DataTime: new Date().toISOString(),
+  }
 
   if (!item) throw new Error(`目前沒有 ${query.routeName}／${query.stopName} 的到站資料`)
   return toETAResult(item, query)

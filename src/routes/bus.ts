@@ -18,8 +18,9 @@ import {
   type TDXEnv,
 } from '../lib/tdx'
 import { appIcon, renderAmbiguousPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
+import { getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 
-type Env = { Bindings: TDXEnv }
+type Env = { Bindings: TDXEnv & TransitBindings }
 const bus = new Hono<Env>()
 
 bus.get('/', async (c) => renderETA(c, defaultBusQuery, true))
@@ -46,15 +47,58 @@ bus.get('/bus', async (c) => {
 bus.get('/setup', (c) => c.html(renderSetupPage(supportedCities), 200, pageHeaders))
 
 bus.get('/route', async (c) => {
+  let query: BusQuery
   try {
-    const query = parseRequestQuery(c)
+    query = parseRequestQuery(c)
+  } catch (error) {
+    return renderPageError(c, error)
+  }
+  try {
     const resolved = await resolveBusQuery(c.env, query)
     const detail = await getRouteDetail(c.env, resolved)
     return c.html(renderRoutePage(resolved, detail), 200, pageHeaders)
   } catch (error) {
+    try {
+      const fallback = await getSnapshotRoutePage(c.env, query)
+      if (fallback) return c.html(renderRoutePage(fallback.resolved, fallback.detail), 200, pageHeaders)
+    } catch (fallbackError) {
+      console.error('route_snapshot_fallback_failed', fallbackError)
+    }
     return renderPageError(c, error)
   }
 })
+
+async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQuery) {
+  if (!query.stopUid) return null
+  const variants = await getSnapshotRouteVariants(env, query.city, query.routeName)
+  const variant = variants.find((candidate) =>
+    candidate.direction === query.direction
+    && candidate.stops.features.some((stop) => stop.properties.stopUid === query.stopUid),
+  )
+  if (!variant) return null
+  const selectedStop = variant.stops.features.find((stop) => stop.properties.stopUid === query.stopUid)!
+  const resolved = {
+    ...query,
+    routeUid: query.routeUid ?? variant.routeUid,
+    stopUid: selectedStop.properties.stopUid,
+    stopName: selectedStop.properties.stopName,
+  }
+  const detail = {
+    routeName: variant.routeName,
+    direction: variant.direction,
+    label: variant.label,
+    stops: [...variant.stops.features]
+      .sort((a, b) => a.properties.sequence - b.properties.sequence)
+      .map((stop) => ({
+        stopUid: stop.properties.stopUid,
+        stopName: stop.properties.stopName,
+        sequence: stop.properties.sequence,
+        selected: stop.properties.stopUid === query.stopUid,
+        etaLabel: null,
+      })),
+  }
+  return { resolved, detail }
+}
 
 bus.get('/api/v1/eta', async (c) => {
   try {
