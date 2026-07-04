@@ -450,7 +450,8 @@ function queryExistingSnapshots() {
   const result = spawnSync(process.execPath, [
     'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE,
     '--remote', '--json', '--command', sql,
-  ], { encoding: 'utf8' })
+  // 大城市的既有列表 JSON 會超過 spawnSync 預設 1MB 的 maxBuffer,截斷會讓 JSON.parse 爆掉
+  ], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(`Unable to inspect existing snapshots: ${result.stderr}`)
   const payload = JSON.parse(result.stdout)
   return payload[0]?.results ?? []
