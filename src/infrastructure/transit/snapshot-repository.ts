@@ -193,6 +193,7 @@ export async function getCityNetwork(env: TransitBindings, city: string) {
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
       WHERE p.version = ? AND p.city_code = ?
       ORDER BY r.route_name, p.direction, p.pattern_id
+      LIMIT 41
     `).bind(active.active_version, city).all<PatternRow>(),
     env.TRANSIT_DB.prepare(`
       SELECT place_id, place_name, latitude, longitude
@@ -206,6 +207,11 @@ export async function getCityNetwork(env: TransitBindings, city: string) {
       longitude: number
     }>(),
   ])
+
+  // 這條 fallback 對每個 pattern 各發一次 R2 讀取,大城市會撞 Workers 的
+  // subrequest 上限(免費方案每請求 50 次)。network.json 由 sync 保證產出,
+  // fallback 只服務小城市;pattern 數超過上限就當作尚未建立全路網。
+  if (patterns.results.length > 40) return null
 
   const routes = (await Promise.all(patterns.results.map(async (pattern) => {
     const object = await env.TRANSIT_SHAPES.get(pattern.shape_key)

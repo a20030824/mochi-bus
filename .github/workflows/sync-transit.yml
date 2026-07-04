@@ -56,6 +56,7 @@ jobs:
             # 大城市(台北/新北)一定要獨占一天。1=週一 … 7=週日
             case "$(date -u +%u)" in
               1) cities="Chiayi" ;;
+              2) cities="Tainan" ;;
               3) cities="ChiayiCounty" ;;
               5) cities="YunlinCounty" ;;
               *) cities="" ;;

@@ -239,8 +239,16 @@ sql.push(`DELETE FROM stops WHERE city_code=${sqlValue(CITY)} AND version NOT IN
 sql.push(`DELETE FROM stop_places WHERE city_code=${sqlValue(CITY)} AND version NOT IN (SELECT version FROM stop_places WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
 sql.push(`DELETE FROM patterns WHERE city_code=${sqlValue(CITY)} AND version NOT IN (SELECT version FROM patterns WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
 sql.push(`DELETE FROM routes WHERE city_code=${sqlValue(CITY)} AND version NOT IN (SELECT version FROM routes WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
-const sqlFile = join(outputRoot, 'import.sql')
-await writeFile(sqlFile, sql.join('\n'))
+// 大城市單檔數萬條 statement 會觸發 D1 大交易的內部錯誤(object reset),
+// 分塊依序執行。安全性:啟用新版本的 dataset_versions upsert 在最後一塊,
+// 中途失敗只會留下未啟用的孤兒列,線上仍由舊版本服務,重跑即可。
+const SQL_CHUNK_STATEMENTS = 5000
+const sqlFiles = []
+for (let start = 0; start < sql.length; start += SQL_CHUNK_STATEMENTS) {
+  const file = join(outputRoot, `import-${String(sqlFiles.length).padStart(2, '0')}.sql`)
+  await writeFile(file, sql.slice(start, start + SQL_CHUNK_STATEMENTS).join('\n'))
+  sqlFiles.push(file)
+}
 
 const networkKey = `snapshots/${version}/cities/${CITY}/network.json`
 const networkFile = join(outputRoot, 'network.json')
@@ -275,7 +283,7 @@ await putObjects([
   })),
   { key: networkKey, file: networkFile, contentType: 'application/json' },
 ])
-run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE, '--remote', '--file', sqlFile])
+for (const file of sqlFiles) await runD1(file)
 const previousVersion = [...new Set(existingRows.map((row) => row.version))].sort().at(-1)
 const versionsToDelete = new Set(existingRows.map((row) => row.version).filter((item) => item !== previousVersion))
 const staleRows = existingRows.filter((item) => versionsToDelete.has(item.version))
@@ -330,6 +338,18 @@ async function readVars(file) {
 function run(command, args) {
   const result = spawnSync(command, args, { stdio: 'inherit' })
   if (result.status !== 0) throw new Error(`${command} failed (${result.error?.message ?? result.status})`)
+}
+// D1 大匯入偶發 internal error 且官方明示可安全重試(失敗會 rollback)
+async function runD1(file) {
+  for (let attempt = 1; ; attempt += 1) {
+    const result = spawnSync(process.execPath, [
+      'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE, '--remote', '--file', file,
+    ], { stdio: 'inherit' })
+    if (result.status === 0) return
+    if (attempt >= 3) throw new Error(`d1 execute ${file} failed (${result.error?.message ?? result.status})`)
+    console.warn(`d1 execute ${file} 失敗,${attempt * 10} 秒後重試 (${attempt}/3)`)
+    await new Promise((resolve) => setTimeout(resolve, attempt * 10_000))
+  }
 }
 async function createR2Client() {
   const accessKeyId = vars.R2_ACCESS_KEY_ID ?? process.env.R2_ACCESS_KEY_ID
