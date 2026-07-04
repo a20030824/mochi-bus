@@ -11,6 +11,13 @@ const vars = await readVars('.dev.vars')
 if (!vars.TDX_CLIENT_ID || !vars.TDX_CLIENT_SECRET) {
   throw new Error('Missing TDX_CLIENT_ID or TDX_CLIENT_SECRET in .dev.vars')
 }
+// R2 物件走 S3 相容 API 直接 PUT/DELETE:wrangler CLI 每個物件要 spawn 一個 process,
+// 大城市數萬個物件會跑不完(GitHub Actions 單 job 上限 6 小時)。
+const r2 = await createR2Client()
+if (!r2) {
+  console.warn('R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / CLOUDFLARE_ACCOUNT_ID 未設定,'
+    + '改用 wrangler CLI 逐物件上傳(僅適合小城市,大城市會非常慢)。')
+}
 
 const tokenResponse = await fetch('https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token', {
   method: 'POST',
@@ -89,6 +96,30 @@ const stops = new Map()
 const places = new Map()
 const patternStops = []
 const usedShapes = new Map()
+// 站位合併用的網格索引:同名站牌只跟鄰近 3×3 格內的既有站位比距離,
+// 避免每個 stop 線性掃全部 places 的 O(n²)(台北規模會是數億次距離計算)。
+// 格邊長 0.002°(緯度 ~222m,台灣緯度的經度 ~201m)≥ 合併半徑 200m,鄰格掃描才涵蓋所有候選。
+const PLACE_GRID_DEGREES = 0.002
+const placeGrid = new Map()
+const placeGridKey = (normalized, latCell, lonCell) => `${normalized}:${latCell}:${lonCell}`
+function findExistingPlace(normalized, lat, lon) {
+  const latCell = Math.floor(lat / PLACE_GRID_DEGREES)
+  const lonCell = Math.floor(lon / PLACE_GRID_DEGREES)
+  for (let dLat = -1; dLat <= 1; dLat += 1) {
+    for (let dLon = -1; dLon <= 1; dLon += 1) {
+      const bucket = placeGrid.get(placeGridKey(normalized, latCell + dLat, lonCell + dLon))
+      const match = bucket?.find((place) => distanceMeters(lat, lon, place.lat, place.lon) <= 200)
+      if (match) return match
+    }
+  }
+  return undefined
+}
+function indexPlace(place) {
+  const key = placeGridKey(place.normalized, Math.floor(place.lat / PLACE_GRID_DEGREES), Math.floor(place.lon / PLACE_GRID_DEGREES))
+  const bucket = placeGrid.get(key)
+  if (bucket) bucket.push(place)
+  else placeGrid.set(key, [place])
+}
 for (const item of stopOfRouteItems) {
   if (!item.RouteUID || ![0, 1].includes(item.Direction) || !item.Stops?.length) continue
   const route = routeByUid.get(item.RouteUID)
@@ -122,12 +153,14 @@ for (const item of stopOfRouteItems) {
     const lat = stop.StopPosition.PositionLat
     const lon = stop.StopPosition.PositionLon
     const normalized = normalizeName(stop.StopName.Zh_tw)
-    const existingPlace = [...places.values()].find((place) =>
-      place.normalized === normalized && distanceMeters(lat, lon, place.lat, place.lon) <= 200,
-    )
+    const existingPlace = findExistingPlace(normalized, lat, lon)
     const placeId = existingPlace?.id ?? `${CITY}:${hash(`${normalized}:${lat.toFixed(4)}:${lon.toFixed(4)}`)}`
     stops.set(stop.StopUID, { uid: stop.StopUID, name: stop.StopName.Zh_tw, normalized, lat, lon, placeId })
-    if (!existingPlace) places.set(placeId, { id: placeId, name: stop.StopName.Zh_tw, normalized, lat, lon })
+    if (!existingPlace) {
+      const place = { id: placeId, name: stop.StopName.Zh_tw, normalized, lat, lon }
+      places.set(placeId, place)
+      indexPlace(place)
+    }
     patternStops.push({ patternId, stopUid: stop.StopUID, placeId, sequence: stop.StopSequence ?? 0 })
   }
 }
@@ -209,52 +242,37 @@ await writeFile(networkFile, JSON.stringify({
   })),
 }))
 
-await runParallel(patterns.map((pattern) => ({
-  command: process.execPath,
-  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${pattern.shapeKey}`, '--remote', '--file', join(shapeDir, `${encodeURIComponent(pattern.id)}.json`), '--content-type', 'application/geo+json'],
-})), 6)
-await runParallel([...routeByUid.values()].map((route) => ({
-  command: process.execPath,
-  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/snapshots/${version}/cities/${CITY}/schedules/${route.uid}.json`, '--remote', '--file', join(scheduleDir, `${route.uid}.json`), '--content-type', 'application/json'],
-})), 6)
-await runParallel([...placeBundles.values()].map((bundle) => ({
-  command: process.execPath,
-  args: [
-    'node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put',
-    `${BUCKET}/snapshots/${version}/cities/${CITY}/places/${bundle.placeId}.json`,
-    '--remote', '--file', join(placeDir, `${encodeURIComponent(bundle.placeId)}.json`),
-    '--content-type', 'application/json',
-  ],
-})), 6)
-run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${networkKey}`, '--remote', '--file', networkFile, '--content-type', 'application/json'])
+await putObjects([
+  ...patterns.map((pattern) => ({
+    key: pattern.shapeKey,
+    file: join(shapeDir, `${encodeURIComponent(pattern.id)}.json`),
+    contentType: 'application/geo+json',
+  })),
+  ...[...routeByUid.values()].map((route) => ({
+    key: `snapshots/${version}/cities/${CITY}/schedules/${route.uid}.json`,
+    file: join(scheduleDir, `${route.uid}.json`),
+    contentType: 'application/json',
+  })),
+  ...[...placeBundles.values()].map((bundle) => ({
+    key: `snapshots/${version}/cities/${CITY}/places/${bundle.placeId}.json`,
+    file: join(placeDir, `${encodeURIComponent(bundle.placeId)}.json`),
+    contentType: 'application/json',
+  })),
+  { key: networkKey, file: networkFile, contentType: 'application/json' },
+])
 run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE, '--remote', '--file', sqlFile])
 const previousVersion = [...new Set(existingRows.map((row) => row.version))].sort().at(-1)
 const versionsToDelete = new Set(existingRows.map((row) => row.version).filter((item) => item !== previousVersion))
-const shapesToDelete = new Set(existingRows
-  .filter((item) => versionsToDelete.has(item.version) && item.pattern_id)
-  .map((item) => `snapshots/${item.version}/cities/${CITY}/shapes/${item.pattern_id}.json`))
-await runParallel([...shapesToDelete].map((key) => ({
-  command: process.execPath,
-  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'],
-})), 6)
-const schedulesToDelete = new Set(existingRows
-  .filter((item) => versionsToDelete.has(item.version) && item.route_uid)
-  .map((item) => `snapshots/${item.version}/cities/${CITY}/schedules/${item.route_uid}.json`))
-await runParallel([...schedulesToDelete].map((key) => ({
-  command: process.execPath,
-  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'],
-})), 6)
-const placesToDelete = new Set(existingRows
-  .filter((item) => versionsToDelete.has(item.version) && item.place_id)
-  .map((item) => `snapshots/${item.version}/cities/${CITY}/places/${item.place_id}.json`))
-await runParallel([...placesToDelete].map((key) => ({
-  command: process.execPath,
-  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'],
-})), 6)
-for (const oldVersion of versionsToDelete) {
-  const key = `snapshots/${oldVersion}/cities/${CITY}/network.json`
-  run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
-}
+const staleRows = existingRows.filter((item) => versionsToDelete.has(item.version))
+await deleteObjects([...new Set([
+  ...staleRows.filter((item) => item.pattern_id)
+    .map((item) => `snapshots/${item.version}/cities/${CITY}/shapes/${item.pattern_id}.json`),
+  ...staleRows.filter((item) => item.route_uid)
+    .map((item) => `snapshots/${item.version}/cities/${CITY}/schedules/${item.route_uid}.json`),
+  ...staleRows.filter((item) => item.place_id)
+    .map((item) => `snapshots/${item.version}/cities/${CITY}/places/${item.place_id}.json`),
+  ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/network.json`),
+])])
 console.log(JSON.stringify({ city: CITY, version, routes: routeByUid.size, patterns: patterns.length, stops: stops.size, places: places.size, schedules: schedulesByRouteUid.size, placeBundles: placeBundles.size }))
 
 function values(...items) { return items.map(sqlValue).join(', ') }
@@ -293,19 +311,69 @@ function run(command, args) {
   const result = spawnSync(command, args, { stdio: 'inherit' })
   if (result.status !== 0) throw new Error(`${command} failed (${result.error?.message ?? result.status})`)
 }
-async function runParallel(tasks, concurrency) {
-  let index = 0
-  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
-    while (index < tasks.length) {
-      const task = tasks[index++]
-      await new Promise((resolve, reject) => {
-        const child = spawn(task.command, task.args, { stdio: 'ignore' })
-        child.on('error', reject)
-        child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`${task.command} failed (${code})`)))
-      })
-    }
+async function createR2Client() {
+  const accessKeyId = vars.R2_ACCESS_KEY_ID ?? process.env.R2_ACCESS_KEY_ID
+  const secretAccessKey = vars.R2_SECRET_ACCESS_KEY ?? process.env.R2_SECRET_ACCESS_KEY
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID
+  if (!accessKeyId || !secretAccessKey || !accountId) return null
+  const { AwsClient } = await import('aws4fetch')
+  return {
+    client: new AwsClient({ accessKeyId, secretAccessKey, service: 's3', region: 'auto' }),
+    baseUrl: `https://${accountId}.r2.cloudflarestorage.com/${BUCKET}`,
+  }
+}
+function objectUrl(key) {
+  // key 內含 ':' 等字元,SigV4 的 canonical URI 要求 percent-encoding,
+  // 逐段編碼讓簽章與 R2 端的正規化結果一致。
+  return `${r2.baseUrl}/${key.split('/').map(encodeURIComponent).join('/')}`
+}
+async function s3Request(method, key, body, contentType) {
+  for (let attempt = 1; ; attempt += 1) {
+    const outcome = await r2.client.fetch(objectUrl(key), {
+      method, body, headers: contentType ? { 'Content-Type': contentType } : undefined,
+    }).then(async (response) => {
+      await response.arrayBuffer()
+      if (response.ok || (method === 'DELETE' && response.status === 404)) return {}
+      return {
+        error: new Error(`R2 ${method} ${key} failed (${response.status})`),
+        retryable: response.status >= 500 || response.status === 429,
+      }
+    }).catch((error) => ({ error, retryable: true }))
+    if (!outcome.error) return
+    if (!outcome.retryable || attempt >= 4) throw outcome.error
+    await new Promise((resolve) => setTimeout(resolve, 500 * attempt))
+  }
+}
+async function putObjects(tasks) {
+  if (r2) {
+    await mapParallel(tasks, 32, async (task) =>
+      s3Request('PUT', task.key, await readFile(task.file), task.contentType))
+    return
+  }
+  await mapParallel(tasks, 6, (task) => spawnWrangler([
+    'r2', 'object', 'put', `${BUCKET}/${task.key}`, '--remote', '--file', task.file, '--content-type', task.contentType,
+  ]))
+}
+async function deleteObjects(keys) {
+  if (r2) {
+    await mapParallel(keys, 32, (key) => s3Request('DELETE', key))
+    return
+  }
+  await mapParallel(keys, 6, (key) => spawnWrangler(['r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote']))
+}
+function spawnWrangler(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['node_modules/wrangler/bin/wrangler.js', ...args], { stdio: 'ignore' })
+    child.on('error', reject)
+    child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`wrangler ${args[0]} failed (${code})`)))
   })
-  await Promise.all(workers)
+}
+async function mapParallel(items, concurrency, worker) {
+  let index = 0
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (index < items.length) await worker(items[index++])
+  })
+  await Promise.all(runners)
 }
 function queryExistingSnapshots() {
   // 從 routes 出發:沒有任何 pattern 的路線(缺 shape / StopOfRoute)也上傳過 schedule 物件,
