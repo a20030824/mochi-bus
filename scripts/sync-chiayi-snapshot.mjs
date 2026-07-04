@@ -209,14 +209,14 @@ await writeFile(networkFile, JSON.stringify({
   })),
 }))
 
-for (const pattern of patterns) {
-  const local = join(shapeDir, `${encodeURIComponent(pattern.id)}.json`)
-  run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${pattern.shapeKey}`, '--remote', '--file', local, '--content-type', 'application/geo+json'])
-}
-for (const route of routeByUid.values()) {
-  const key = `snapshots/${version}/cities/${CITY}/schedules/${route.uid}.json`
-  run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${key}`, '--remote', '--file', join(scheduleDir, `${route.uid}.json`), '--content-type', 'application/json'])
-}
+await runParallel(patterns.map((pattern) => ({
+  command: process.execPath,
+  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${pattern.shapeKey}`, '--remote', '--file', join(shapeDir, `${encodeURIComponent(pattern.id)}.json`), '--content-type', 'application/geo+json'],
+})), 6)
+await runParallel([...routeByUid.values()].map((route) => ({
+  command: process.execPath,
+  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/snapshots/${version}/cities/${CITY}/schedules/${route.uid}.json`, '--remote', '--file', join(scheduleDir, `${route.uid}.json`), '--content-type', 'application/json'],
+})), 6)
 await runParallel([...placeBundles.values()].map((bundle) => ({
   command: process.execPath,
   args: [
@@ -233,15 +233,17 @@ const versionsToDelete = new Set(existingRows.map((row) => row.version).filter((
 const shapesToDelete = new Set(existingRows
   .filter((item) => versionsToDelete.has(item.version))
   .map((item) => `snapshots/${item.version}/cities/${CITY}/shapes/${item.pattern_id}.json`))
-for (const key of shapesToDelete) {
-  run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
-}
+await runParallel([...shapesToDelete].map((key) => ({
+  command: process.execPath,
+  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'],
+})), 6)
 const schedulesToDelete = new Set(existingRows
   .filter((item) => versionsToDelete.has(item.version) && item.route_uid)
   .map((item) => `snapshots/${item.version}/cities/${CITY}/schedules/${item.route_uid}.json`))
-for (const key of schedulesToDelete) {
-  run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
-}
+await runParallel([...schedulesToDelete].map((key) => ({
+  command: process.execPath,
+  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'],
+})), 6)
 const placesToDelete = new Set(existingRows
   .filter((item) => versionsToDelete.has(item.version) && item.place_id)
   .map((item) => `snapshots/${item.version}/cities/${CITY}/places/${item.place_id}.json`))
