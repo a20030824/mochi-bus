@@ -146,15 +146,42 @@ export function renderETAPage(view: ETAView): string {
       } catch { return false; }
     }
 
+    async function loadPlaceArrivals() {
+      const city = currentBoard.city || currentBoard.buses[0]?.city;
+      if (!city || !currentBoard.placeId) return null;
+      try {
+        const response = await fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/arrivals?city=' + encodeURIComponent(city), { cache: 'no-store' });
+        const body = await response.json();
+        return response.ok && Array.isArray(body.routes) ? body.routes : null;
+      } catch { return null; }
+    }
+
     async function refreshBoard() {
       refreshButton.disabled = true;
       refreshButton.textContent = '更新中';
       noticeNode.textContent = '';
+      const placeArrivals = await loadPlaceArrivals();
       const responses = await Promise.all(currentBoard.buses.map(async bus => {
         const repaired = await repairBusFromPlace(bus);
         // 沒有站牌識別就不打 ETA,避免必然的 400。
         if (!repaired || (!bus.stopUid && !bus.stopName)) return { bus, failed: true };
         await fillDirectionLabel(bus);
+        if (placeArrivals) {
+          const arrival = placeArrivals.find(route =>
+            route.routeUid === bus.routeUid
+            && route.stopUid === bus.stopUid
+            && route.direction === bus.direction
+            && (!bus.subRouteUid || !route.subRouteUid || route.subRouteUid === bus.subRouteUid));
+          if (!arrival) return { bus, failed: true };
+          return { bus, data: {
+            label: arrival.etaLabel,
+            estimateSeconds: arrival.estimateSeconds,
+            source: arrival.source,
+            fetchedAt: new Date().toISOString(),
+            dataTime: null,
+            stale: false,
+          }};
+        }
         try {
           const response = await fetch('/api/v1/eta?' + paramsFor(bus), { cache: 'no-store' });
           const body = await response.json();

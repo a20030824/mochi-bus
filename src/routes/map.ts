@@ -3,6 +3,7 @@ import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
 import { matchingEtaItems, selectBestEta } from '../domain/map/eta'
+import { selectRealtimeCandidates } from '../domain/map/arrival-ranking'
 import { nextScheduledMinutes, type ScheduleItem } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
 import {
@@ -160,6 +161,93 @@ map.get('/api/v1/map/nearby', async (c) => {
 })
 
 map.get('/api/v1/map/place/:placeId/routes', async (c) => {
+  try {
+    const city = c.req.query('city')?.trim()
+    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
+    const routes = await getStopPlaceRoutes(c.env, city, c.req.param('placeId'))
+    return c.json({ schemaVersion: 3, city, routes }, 200, { 'Cache-Control': 'public, max-age=86400' })
+  } catch (error) {
+    const message = error instanceof QueryValidationError ? error.message : '站牌路線讀取失敗'
+    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+  }
+})
+
+map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
+  try {
+    const city = c.req.query('city')?.trim()
+    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
+    const routes = await getStopPlaceRoutes(c.env, city, c.req.param('placeId'))
+    const routeNames = [...new Set(routes.map((route) => route.routeName))]
+    const schedulesByRoute = new Map((await Promise.all(routeNames.map(async (routeName) => [
+      routeName,
+      await getSnapshotSchedule(c.env, city, routeName) ?? [],
+    ] as const))))
+    const now = new Date()
+    const scheduledRoutes = routes.map((route) => {
+      const minutes = nextScheduledMinutes(schedulesByRoute.get(route.routeName) ?? [], {
+        stopUid: route.stopUid,
+        direction: route.direction,
+        subRouteUid: route.subRouteUid,
+      }, now)
+      return { ...route, scheduleMinutes: minutes }
+    })
+    const candidates = selectRealtimeCandidates(scheduledRoutes)
+    const candidateRouteNames = [...new Set(candidates.map((route) => route.routeName))]
+    const etaItems: BusETAItem[] = []
+    let rateLimited = false
+    let realtimeQueries = 0
+    for (const routeName of candidateRouteNames) {
+      const etaUrl = new URL(
+        `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+      )
+      etaUrl.searchParams.set('$format', 'JSON')
+      try {
+        etaItems.push(...await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 15))
+        realtimeQueries += 1
+      } catch (error) {
+        rateLimited = error instanceof Error && error.message.includes('(429)')
+        console.error(JSON.stringify({
+          message: 'place_arrival_realtime_failed', city, routeName,
+          error: error instanceof Error ? error.message : String(error),
+        }))
+        if (rateLimited) break
+      }
+    }
+    const arrivals = scheduledRoutes.map((route) => {
+      const realtime = selectBestEta(etaItems, route)
+      const realtimeSeconds = typeof realtime?.EstimateTime === 'number' ? Math.max(0, realtime.EstimateTime) : null
+      const estimateSeconds = realtimeSeconds ?? (route.scheduleMinutes === null ? null : route.scheduleMinutes * 60)
+      const source = realtimeSeconds !== null ? 'realtime' as const
+        : route.scheduleMinutes !== null ? 'schedule' as const
+          : 'none' as const
+      return {
+        ...route,
+        estimateSeconds,
+        etaLabel: source === 'realtime'
+          ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0)
+          : source === 'schedule'
+            ? `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
+            : '暫無班次',
+        stopStatus: realtime?.StopStatus ?? 0,
+        source,
+      }
+    }).sort((a, b) =>
+      (a.estimateSeconds ?? Number.POSITIVE_INFINITY) - (b.estimateSeconds ?? Number.POSITIVE_INFINITY)
+      || a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }),
+    )
+    return c.json({
+      schemaVersion: 1,
+      city,
+      routes: arrivals,
+      realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
+    }, 200, { 'Cache-Control': 'public, max-age=15' })
+  } catch (error) {
+    const message = error instanceof QueryValidationError ? error.message : '到站時間讀取失敗'
+    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+  }
+})
+
+map.get('/api/v1/map/place/:placeId/legacy-arrivals', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')

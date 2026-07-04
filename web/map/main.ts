@@ -61,6 +61,7 @@ type PlaceRoute = {
   estimateSeconds: number | null
   etaLabel: string
   stopStatus: number
+  source?: 'realtime' | 'schedule' | 'none'
 }
 
 type DirectRoute = PlaceRoute & {
@@ -1370,7 +1371,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
   )
   setStatus(`正在讀取 ${place.name} 的路線…`)
   try {
-    const response = await fetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/routes?city=${encodeURIComponent(activeCity.code)}`)
+    const response = await fetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/arrivals?city=${encodeURIComponent(activeCity.code)}`)
     const data = await response.json() as { routes?: PlaceRoute[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
     if (placeRequest !== previewRequest) return
