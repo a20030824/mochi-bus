@@ -194,6 +194,9 @@ let previewRequest = 0
 let selectedTransferIndex = 0
 let routeBackAction: (() => void) | undefined
 let routeBackLabel = '更換路線'
+// 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
+let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
+let variantPickerUsed = false
 let networkVisible = false
 let networkCache: { city: string; data: CityNetwork } | undefined
 let networkStopMarkers: L.CircleMarker[] = []
@@ -561,6 +564,8 @@ async function loadRoute(
     const data = await response.json() as { variants?: RouteMapVariant[]; error?: string }
     if (!response.ok || !data.variants?.length) throw new Error(data.error)
     const preferred = data.variants.find((variant) => variant.variantKey === preferredVariant)
+    lastVariantChoices = { routeName, variants: data.variants }
+    variantPickerUsed = !preferred && data.variants.length > 1
     if (preferred) {
       drawVariant(preferred)
     } else if (data.variants.length === 1) {
@@ -575,11 +580,39 @@ async function loadRoute(
 }
 
 function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
+  // 支線選擇要能在地圖上比較走向:全部畫出來,列表與線用同色對應。
+  // 這裡的顏色是「支線區分色」,刻意不用 routeColor(同一條路線的支線會全部同色)。
+  previewRequest += 1
+  stopVehicleRefresh()
+  previewLayer.clearLayers()
+  routeLayer.clearLayers()
+  nearbyLayer.clearLayers()
+  stopMarkers = []
+  const bounds = L.latLngBounds([])
+  const previewsByKey = new Map<string, { line: LeafletGeoJSON; style: L.PathOptions }>()
+  variants.forEach((variant, index) => {
+    const color = routePalette[index % routePalette.length]
+    const style = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
+    const line = L.geoJSON(variant.shape, { pane: 'routePreviewPane', style, interactive: false }).addTo(previewLayer)
+    const hit = addHitLine(variant.shape, 'routePreviewPane', previewLayer)
+    bindHoverTooltip(hit, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
+    hit.on('mouseover', () => line.setStyle({ ...style, weight: 8, opacity: .9 }))
+    hit.on('mouseout', () => line.setStyle(style))
+    hit.on('click', (event) => {
+      L.DomEvent.stopPropagation(event)
+      drawVariant(variant)
+    })
+    previewsByKey.set(variant.variantKey, { line, style })
+    bounds.extend(line.getBounds())
+  })
+  if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [40, 90], paddingBottomRight: [40, 260] })
+
   const list = document.createElement('div')
   list.className = 'variant-list'
-  list.replaceChildren(...variants.map((variant) => {
+  list.replaceChildren(...variants.map((variant, index) => {
     const button = document.createElement('button')
     button.className = 'variant-button'
+    button.style.borderLeft = `4px solid ${routePalette[index % routePalette.length]}`
     const strong = document.createElement('strong')
     strong.textContent = variant.label
     const small = document.createElement('span')
@@ -587,11 +620,19 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     button.appendChild(strong)
     button.appendChild(small)
     button.addEventListener('click', () => drawVariant(variant))
+    button.addEventListener('mouseenter', () => {
+      const preview = previewsByKey.get(variant.variantKey)
+      preview?.line.setStyle({ ...preview.style, weight: 8, opacity: .9 })
+    })
+    button.addEventListener('mouseleave', () => {
+      const preview = previewsByKey.get(variant.variantKey)
+      preview?.line.setStyle(preview.style)
+    })
     return button
   }))
   drawer.replaceChildren(
     drawerBack(routeBackAction ? '返回站點' : '返回路線', routeBackAction ?? renderRoutePicker),
-    heading(routeName, '同一路線可能穿過不同街廓。'),
+    heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
     list,
   )
 }
@@ -630,9 +671,15 @@ function drawVariant(variant: RouteMapVariant) {
   const bounds = casing.getBounds()
   if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [40, 90], paddingBottomRight: [40, 260] })
   setStatus(`${variant.routeName} · ${variant.stops.features.length} 站`)
+  const canReturnToVariantPicker = !routeReturnsToTrip
+    && variantPickerUsed
+    && lastVariantChoices?.routeName === variant.routeName
+    && (lastVariantChoices?.variants.length ?? 0) > 1
   const change = document.createElement('button')
   change.className = 'quiet-button'
-  change.textContent = routeReturnsToTrip ? '返回行程候選' : routeBackLabel
+  change.textContent = routeReturnsToTrip
+    ? '返回行程候選'
+    : canReturnToVariantPicker ? '更換方向' : routeBackLabel
   change.addEventListener('click', () => {
     if (routeReturnsToTrip && (lastDirectRoutes.length || lastTransferPlans.length)) {
       interactionMode = 'trip-results'
@@ -645,6 +692,10 @@ function drawVariant(variant: RouteMapVariant) {
       }
       nearbyLayer.clearLayers()
       drawTripEndpoints()
+    } else if (canReturnToVariantPicker && lastVariantChoices) {
+      // 從支線選擇進來的,退回支線選擇(一層);直接跳路線列表會一次退兩層。
+      renderVariantPicker(lastVariantChoices.routeName, lastVariantChoices.variants)
+      setStatus(`${lastVariantChoices.routeName} · 選擇行駛方向`)
     } else if (routeBackAction) routeBackAction()
     else renderRoutePicker()
   })
@@ -749,8 +800,8 @@ function drawCityNetwork(network: CityNetwork) {
   nearbyLayer.clearLayers()
   networkLayer.clearLayers()
   networkStopMarkers = []
-  // 手機沒有 hover,永遠只看得到 normal 狀態,濃度不能靠 hover 補
-  const networkLineStyle = { weight: 3.2, opacity: .5, lineCap: 'round' as const, lineJoin: 'round' as const }
+  // 淡線是刻意的:全路網數百條線只當背景,站點與 hover 強調才是主角
+  const networkLineStyle = { weight: 2.6, opacity: .34, lineCap: 'round' as const, lineJoin: 'round' as const }
   network.routes.forEach((route) => {
     const color = routeColor(route.routeName)
     const line = L.geoJSON(route.shape, {
@@ -763,7 +814,7 @@ function drawCityNetwork(network: CityNetwork) {
       })
       .addTo(networkLayer)
     bindHoverTooltip(line, `${route.routeName} · ${route.label}`, { sticky: true })
-    line.on('mouseover', () => line.setStyle({ weight: 5.5, opacity: .85 }))
+    line.on('mouseover', () => line.setStyle({ weight: 5, opacity: .75 }))
     line.on('mouseout', () => line.setStyle(networkLineStyle))
   })
   const radius = map.getZoom() >= 15 ? 4 : map.getZoom() >= 12 ? 2.5 : 1.4
