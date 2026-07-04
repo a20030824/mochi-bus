@@ -83,6 +83,12 @@ export function renderETAPage(view: ETAView): string {
       const eta = document.createElement('span');
       eta.className = 'bus-eta';
       eta.textContent = failed ? '暫無資料' : data?.label || '更新中';
+      if (!failed && data?.source === 'stale-realtime') {
+        const freshness = document.createElement('small');
+        freshness.textContent = '稍早';
+        freshness.style.cssText = 'margin-left:7px;color:#777066;font-size:11px;font-weight:750;letter-spacing:0';
+        eta.appendChild(freshness);
+      }
       link.append(routeCopy, eta);
       return link;
     }

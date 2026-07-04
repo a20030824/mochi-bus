@@ -1401,6 +1401,12 @@ async function showPlaceRoutes(place: NearbyPlace) {
       const eta = document.createElement('b')
       eta.className = 'place-route-eta'
       eta.textContent = route.etaLabel
+      if (route.source === 'stale-realtime') {
+        const freshness = document.createElement('small')
+        freshness.className = 'eta-freshness'
+        freshness.textContent = '稍早'
+        eta.appendChild(freshness)
+      }
       line.appendChild(routeName)
       line.appendChild(eta)
       const detail = document.createElement('small')

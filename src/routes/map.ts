@@ -284,7 +284,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         ...route,
         estimateSeconds,
         etaLabel: source === 'realtime' || source === 'stale-realtime'
-          ? `${formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0)}${source === 'stale-realtime' ? ' · 稍早' : ''}`
+          ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0).replace('分鐘', '分')
           : source === 'schedule'
             ? `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
             : '暫無班次',
