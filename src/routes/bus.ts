@@ -103,7 +103,9 @@ async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQue
 bus.get('/api/v1/eta', async (c) => {
   try {
     const query = parseRequestQuery(c)
-    const resolved = await resolveBusQuery(c.env, query)
+    const resolved = query.stopUid && query.stopName
+      ? query as BusQuery & { stopUid: string; stopName: string }
+      : await resolveBusQuery(c.env, query)
     const result = await getCommuteETA(c.env, resolved)
     return c.json(result, 200, noStoreHeaders)
   } catch (error) {

@@ -1,5 +1,6 @@
 import type { RouteMapVariant } from '../../domain/map/map-model'
 import { classifyRouteName } from '../../domain/route-category'
+import type { ScheduleItem } from '../../domain/schedule'
 
 type ActiveVersion = { active_version: string }
 type PatternRow = {
@@ -25,6 +26,24 @@ type ShapeFeature = RouteMapVariant['shape']
 export type TransitBindings = {
   TRANSIT_DB: D1Database
   TRANSIT_SHAPES: R2Bucket
+}
+
+export async function getSnapshotSchedule(
+  env: TransitBindings,
+  city: string,
+  routeName: string,
+): Promise<ScheduleItem[] | null> {
+  const active = await env.TRANSIT_DB.prepare(`
+    SELECT dv.active_version, r.route_uid
+    FROM dataset_versions dv
+    JOIN routes r ON r.version = dv.active_version AND r.city_code = dv.city_code
+    WHERE dv.city_code = ? AND r.route_name = ?
+    LIMIT 1
+  `).bind(city, routeName).first<{ active_version: string; route_uid: string }>()
+  if (!active) return null
+  const key = `snapshots/${active.active_version}/cities/${city}/schedules/${active.route_uid}.json`
+  const object = await env.TRANSIT_SHAPES.get(key)
+  return object ? await object.json<ScheduleItem[]>() : null
 }
 
 export async function getSnapshotRouteVariants(
@@ -251,7 +270,7 @@ export async function getStopPlaceRoutes(env: TransitBindings, city: string, pla
   if (!active) return []
   const result = await env.TRANSIT_DB.prepare(`
     SELECT DISTINCT r.route_uid, r.route_name, p.pattern_id, p.direction,
-      p.departure_name, p.destination_name, p.subroute_name,
+      p.departure_name, p.destination_name, p.subroute_uid, p.subroute_name,
       ps.stop_uid, ps.stop_sequence, s.stop_name
     FROM pattern_stops ps
     JOIN patterns p ON p.version = ps.version AND p.pattern_id = ps.pattern_id
@@ -266,6 +285,7 @@ export async function getStopPlaceRoutes(env: TransitBindings, city: string, pla
     direction: 0 | 1
     departure_name: string
     destination_name: string
+    subroute_uid: string | null
     subroute_name: string
     stop_uid: string
     stop_sequence: number
@@ -277,6 +297,9 @@ export async function getStopPlaceRoutes(env: TransitBindings, city: string, pla
     variantKey: row.pattern_id,
     direction: row.direction,
     label: `${row.departure_name} → ${row.destination_name}`,
+    // 同一 routeUid 底下的支線可能共用同一個 stopUid+direction;
+    // subRouteUid 是唯二能分辨「這是哪一條支線」的欄位(另一個是 pattern_id/variantKey)。
+    subRouteUid: row.subroute_uid ?? undefined,
     subRouteName: row.subroute_name,
     stopUid: row.stop_uid,
     stopSequence: row.stop_sequence,

@@ -3,6 +3,7 @@ import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
 import { matchingEtaItems, selectBestEta } from '../domain/map/eta'
+import { nextScheduledMinutes, type ScheduleItem } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
 import {
   findNearbyStopPlaces,
@@ -12,11 +13,12 @@ import {
   getOneTransferRoutes,
   getSnapshotRouteVariants,
   getSnapshotRouteCatalog,
+  getSnapshotSchedule,
   getStopPlace,
   getStopPlaceRoutes,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getRouteCatalog, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, type BusETAItem, type TDXEnv } from '../lib/tdx'
 import { renderMapPage } from '../map-page'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
@@ -311,9 +313,11 @@ map.post('/api/v1/map/journey-eta', async (c) => {
     const missingRefs = refs.filter((ref) => realtimeEstimates.get(ref.key)?.minutes === null)
     if (missingRefs.length) {
       try {
-        const scheduleUrl = new URL(`https://tdx.transportdata.tw/api/basic/v2/Bus/Schedule/City/${encodeURIComponent(city)}`)
-        scheduleUrl.searchParams.set('$format', 'JSON')
-        const schedules = await fetchTDXJson<ScheduleItem[]>(c.env, scheduleUrl, 6 * 60 * 60)
+        const routeNames = [...new Set(missingRefs.map((ref) => ref.routeName))]
+        const schedules = (await Promise.all(routeNames.map(async (routeName) =>
+          await getSnapshotSchedule(c.env, city, routeName)
+          ?? await getBusSchedule(c.env, city, routeName),
+        ))).flat()
         const scheduled = getScheduledEstimates(missingRefs, schedules)
         scheduled.forEach((estimate, key) => realtimeEstimates.set(key, estimate))
       } catch (error) {
@@ -340,19 +344,6 @@ map.post('/api/v1/map/journey-eta', async (c) => {
   }
 })
 
-type ScheduleItem = {
-  SubRouteUID?: string
-  Direction?: number
-  Timetables?: Array<{
-    ServiceDay?: Record<string, number>
-    StopTimes?: Array<{
-      StopUID?: string
-      ArrivalTime?: string
-      DepartureTime?: string
-    }>
-  }>
-}
-
 type JourneyEstimate = {
   key: string
   routeName: string
@@ -368,29 +359,12 @@ function getScheduledEstimates(
   schedules: ScheduleItem[],
 ) {
   const now = new Date()
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Taipei', weekday: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(now)
-  const weekday = parts.find((part) => part.type === 'weekday')?.value ?? 'Sunday'
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0)
-  const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
-  const nowMinutes = hour * 60 + minute
   const result = new Map<string, JourneyEstimate>()
 
   refs.forEach((ref) => {
-    const subRouteUid = ref.patternId.split(':')[0]
-    const schedule = schedules.find((item) =>
-      (!subRouteUid || item.SubRouteUID === subRouteUid) && item.Direction === ref.direction,
-    ) ?? schedules.find((item) => item.Direction === ref.direction
-      && item.Timetables?.some((timetable) => timetable.StopTimes?.some((stop) => stop.StopUID === ref.stopUid)))
-    const candidates = (schedule?.Timetables ?? [])
-      .filter((timetable) => timetable.ServiceDay?.[weekday] === 1)
-      .flatMap((timetable) => timetable.StopTimes ?? [])
-      .filter((stop) => stop.StopUID === ref.stopUid)
-      .map((stop) => timeToMinutes(stop.ArrivalTime ?? stop.DepartureTime))
-      .filter((value): value is number => value !== null && value >= nowMinutes)
-      .map((value) => value - nowMinutes)
-    const minutes = candidates.length ? Math.min(...candidates) : null
+    const minutes = nextScheduledMinutes(schedules, {
+      stopUid: ref.stopUid, direction: ref.direction, subRouteUid: ref.patternId.split(':')[0],
+    }, now)
     result.set(ref.key, {
       key: ref.key,
       routeName: ref.routeName,
@@ -402,12 +376,6 @@ function getScheduledEstimates(
     })
   })
   return result
-}
-
-function timeToMinutes(value?: string): number | null {
-  if (!value || !/^\d{2}:\d{2}$/.test(value)) return null
-  const [hour, minute] = value.split(':').map(Number)
-  return hour * 60 + minute
 }
 
 export default map

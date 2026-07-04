@@ -43,10 +43,13 @@ const get = async (resource) => {
 const routeItems = await get('Route')
 const stopOfRouteItems = await get('StopOfRoute')
 const shapeItems = await get('Shape')
+const scheduleItems = await get('Schedule')
 const version = new Date().toISOString().replace(/[-:.]/g, '')
 const shapeDir = join(outputRoot, 'shapes')
+const scheduleDir = join(outputRoot, 'schedules')
 await rm(outputRoot, { recursive: true, force: true })
 await mkdir(shapeDir, { recursive: true })
+await mkdir(scheduleDir, { recursive: true })
 
 const routeByUid = new Map()
 for (const item of routeItems) {
@@ -66,6 +69,17 @@ for (const item of shapeItems) {
   const list = shapesByIdentity.get(key) ?? []
   list.push(item)
   shapesByIdentity.set(key, list)
+}
+
+const schedulesByRouteUid = new Map()
+for (const item of scheduleItems) {
+  if (!item.RouteUID || !routeByUid.has(item.RouteUID)) continue
+  const list = schedulesByRouteUid.get(item.RouteUID) ?? []
+  list.push(item)
+  schedulesByRouteUid.set(item.RouteUID, list)
+}
+for (const route of routeByUid.values()) {
+  await writeFile(join(scheduleDir, `${route.uid}.json`), JSON.stringify(schedulesByRouteUid.get(route.uid) ?? []))
 }
 
 const patterns = []
@@ -151,6 +165,10 @@ for (const pattern of patterns) {
   const local = join(shapeDir, `${encodeURIComponent(pattern.id)}.json`)
   run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${pattern.shapeKey}`, '--remote', '--file', local, '--content-type', 'application/geo+json'])
 }
+for (const route of routeByUid.values()) {
+  const key = `snapshots/${version}/cities/${CITY}/schedules/${route.uid}.json`
+  run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${key}`, '--remote', '--file', join(scheduleDir, `${route.uid}.json`), '--content-type', 'application/json'])
+}
 run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${networkKey}`, '--remote', '--file', networkFile, '--content-type', 'application/json'])
 run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE, '--remote', '--file', sqlFile])
 const previousVersion = [...new Set(existingRows.map((row) => row.version))].sort().at(-1)
@@ -159,11 +177,17 @@ for (const row of existingRows.filter((item) => versionsToDelete.has(item.versio
   const key = `snapshots/${row.version}/cities/${CITY}/shapes/${row.pattern_id}.json`
   run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
 }
+const schedulesToDelete = new Set(existingRows
+  .filter((item) => versionsToDelete.has(item.version) && item.route_uid)
+  .map((item) => `snapshots/${item.version}/cities/${CITY}/schedules/${item.route_uid}.json`))
+for (const key of schedulesToDelete) {
+  run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
+}
 for (const oldVersion of versionsToDelete) {
   const key = `snapshots/${oldVersion}/cities/${CITY}/network.json`
   run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
 }
-console.log(JSON.stringify({ city: CITY, version, routes: routeByUid.size, patterns: patterns.length, stops: stops.size, places: places.size }))
+console.log(JSON.stringify({ city: CITY, version, routes: routeByUid.size, patterns: patterns.length, stops: stops.size, places: places.size, schedules: schedulesByRouteUid.size }))
 
 function values(...items) { return items.map(sqlValue).join(', ') }
 function sqlValue(value) {
@@ -202,7 +226,7 @@ function run(command, args) {
   if (result.status !== 0) throw new Error(`${command} failed (${result.error?.message ?? result.status})`)
 }
 function queryExistingSnapshots() {
-  const sql = `SELECT version, pattern_id FROM patterns WHERE city_code='${CITY.replaceAll("'", "''")}'`
+  const sql = `SELECT DISTINCT p.version, p.pattern_id, p.route_uid FROM patterns p WHERE p.city_code='${CITY.replaceAll("'", "''")}'`
   const result = spawnSync(process.execPath, [
     'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE,
     '--remote', '--json', '--command', sql,

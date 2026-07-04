@@ -6,6 +6,8 @@ export type BusQuery = {
   stopName?: string
   stopUid?: string
   routeUid?: string
+  // 同一站牌可能有多條支線共用同一個 stopUid;有這個欄位時用來排除其他支線。
+  subRouteUid?: string
   direction: Direction
 }
 
@@ -33,6 +35,7 @@ export function parseBusQuery(
   const stopName = clean(input.stop) ?? clean(input.stopName) ?? fallback?.stopName
   const stopUid = clean(input.stopUid) ?? fallback?.stopUid
   const routeUid = clean(input.routeUid) ?? fallback?.routeUid
+  const subRouteUid = clean(input.subRouteUid) ?? fallback?.subRouteUid
   const directionValue = clean(input.direction) ?? fallback?.direction?.toString()
 
   if (!city) throw new QueryValidationError('缺少縣市')
@@ -53,6 +56,7 @@ export function parseBusQuery(
     stopName,
     stopUid,
     routeUid,
+    subRouteUid,
     direction: Number(directionValue) as Direction,
   }
 }
@@ -67,6 +71,7 @@ export function toBusSearchParams(query: BusQuery): URLSearchParams {
   if (query.stopName) params.set('stop', query.stopName)
   if (query.stopUid) params.set('stopUid', query.stopUid)
   if (query.routeUid) params.set('routeUid', query.routeUid)
+  if (query.subRouteUid) params.set('subRouteUid', query.subRouteUid)
   return params
 }
 

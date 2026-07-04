@@ -21,4 +21,20 @@ describe('selectBestEta', () => {
     ], route)
     expect(selected?.EstimateTime).toBe(600)
   })
+
+  it('disambiguates co-located subroutes sharing the same routeUid+stopUid+direction', () => {
+    const items = [
+      { RouteUID: 'CYI0714', SubRouteUID: 'CYI071401', StopUID: 'CYI304410', Direction: 0, EstimateTime: 660 },
+      { RouteUID: 'CYI0714', SubRouteUID: 'CYI0714A1', StopUID: 'CYI304410', Direction: 0, EstimateTime: 900 },
+    ]
+    expect(selectBestEta(items, { ...route, subRouteUid: 'CYI071401' })?.EstimateTime).toBe(660)
+    expect(selectBestEta(items, { ...route, subRouteUid: 'CYI0714A1' })?.EstimateTime).toBe(900)
+  })
+
+  it('falls back to matching without subRouteUid when the source data lacks it', () => {
+    const selected = selectBestEta([
+      { RouteUID: 'CYI0714', StopUID: 'CYI304410', Direction: 0, EstimateTime: 300 },
+    ], { ...route, subRouteUid: 'CYI071401' })
+    expect(selected?.EstimateTime).toBe(300)
+  })
 })

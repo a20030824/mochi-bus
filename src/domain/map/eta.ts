@@ -1,16 +1,20 @@
 import type { BusETAItem } from '../../lib/tdx'
 
 export type StopRouteRef = {
-  routeUid: string
+  routeUid?: string
   stopUid: string
   direction: number
+  subRouteUid?: string
 }
 
 export function matchingEtaItems(items: BusETAItem[], route: StopRouteRef): BusETAItem[] {
   return items.filter((item) =>
     item.StopUID === route.stopUid
     && item.Direction === route.direction
-    && (!item.RouteUID || item.RouteUID === route.routeUid),
+    && (!route.routeUid || !item.RouteUID || item.RouteUID === route.routeUid)
+    // 同一 routeUid 底下的支線可能共用同一個 stopUid+direction(例如共站的幹線與支線變體)。
+    // 兩邊都有 subRouteUid 時才要求相符,任一邊缺值就當作無法分辨、不排除。
+    && (!route.subRouteUid || !item.SubRouteUID || item.SubRouteUID === route.subRouteUid),
   )
 }
 

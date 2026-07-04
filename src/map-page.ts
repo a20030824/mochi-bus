@@ -9,6 +9,7 @@ export function renderMapPage(): string {
   <title>公車地圖｜Mochi Bus</title>
   <link rel="stylesheet" href="/assets/map.css">
   <link rel="modulepreload" href="/assets/map.js">
+  <link rel="modulepreload" href="/assets/boards.js">
   <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
 </head>
 <body>

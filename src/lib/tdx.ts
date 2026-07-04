@@ -1,5 +1,8 @@
 import type { BusQuery, Direction, ResolvedBusQuery } from '../domain/bus-query'
 import { classifyRouteName, type RouteCategory } from '../domain/route-category'
+import { nextScheduledMinutes, type ScheduleItem } from '../domain/schedule'
+import { selectBestEta } from '../domain/map/eta'
+import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 
 export type TDXEnv = {
   TDX_CLIENT_ID: string
@@ -14,6 +17,7 @@ type LocalizedName = {
 export type BusETAItem = {
   RouteUID?: string
   RouteName?: LocalizedName
+  SubRouteUID?: string
   StopUID?: string
   StopName?: LocalizedName
   Direction?: number
@@ -102,6 +106,8 @@ export type ETAResult = {
   dataTime: string | null
   fetchedAt: string
   stale: boolean
+  // 即時 GPS 沒有預估時間時，會退回查時刻表；source 讓前端知道這是不是真的即時資料。
+  source: 'realtime' | 'schedule' | 'none'
 }
 
 export type StopRouteSuggestion = ResolvedBusQuery & {
@@ -186,6 +192,9 @@ export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<Res
     .filter((stop) => query.stopUid
       ? stop.stopUid === query.stopUid
       : stop.stopName === query.stopName)
+    // 同一站牌可能有多條支線共用同一個 stopUid(例如共站的幹線與支線變體)；
+    // 有 subRouteUid 時用它排除其他支線，避免撞到錯誤的班次。
+    .filter((stop) => !query.subRouteUid || !stop.subRouteUid || stop.subRouteUid === query.subRouteUid)
 
   const unique = dedupeStops(candidates)
   if (unique.length === 0) {
@@ -199,16 +208,30 @@ export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<Res
   return {
     ...query,
     routeUid: query.routeUid ?? match.routeUid,
+    subRouteUid: query.subRouteUid ?? match.subRouteUid,
     stopUid: match.stopUid,
     stopName: match.stopName,
   }
 }
 
-export async function getCommuteETA(env: TDXEnv, query: ResolvedBusQuery): Promise<ETAResult> {
-  const items = await getBusETA(env, query)
-  const item = items.find((candidate) =>
-    candidate.StopUID === query.stopUid && candidate.Direction === query.direction,
-  ) ?? {
+export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, query: ResolvedBusQuery): Promise<ETAResult> {
+  let items: BusETAItem[] = []
+  try {
+    items = await getBusETA(env, query)
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'commute_eta_realtime_failed',
+      city: query.city,
+      routeName: query.routeName,
+      error: error instanceof Error ? error.message : String(error),
+    }))
+  }
+  const item = selectBestEta(items, {
+    routeUid: query.routeUid,
+    stopUid: query.stopUid,
+    direction: query.direction,
+    subRouteUid: query.subRouteUid,
+  }) ?? {
     RouteName: { Zh_tw: query.routeName },
     StopName: { Zh_tw: query.stopName },
     StopUID: query.stopUid,
@@ -218,7 +241,40 @@ export async function getCommuteETA(env: TDXEnv, query: ResolvedBusQuery): Promi
   }
 
   if (!item) throw new Error(`目前沒有 ${query.routeName}／${query.stopName} 的到站資料`)
-  return toETAResult(item, query)
+  const result = toETAResult(item, query)
+  if (result.minutes !== null) return result
+
+  // 即時資料沒有預估時間(尚未發車／資料中斷)時，退回查時刻表，避免小型客運業者
+  // 即時回報不穩定時整面板一直卡在「暫無資料」。
+  try {
+    const schedules = env.TRANSIT_DB && env.TRANSIT_SHAPES
+      ? await getSnapshotSchedule(env as TDXEnv & TransitBindings, query.city, query.routeName)
+        ?? await getBusSchedule(env, query.city, query.routeName)
+      : await getBusSchedule(env, query.city, query.routeName)
+    const minutes = nextScheduledMinutes(schedules, {
+      stopUid: query.stopUid, direction: query.direction, subRouteUid: query.subRouteUid,
+    }, new Date())
+    if (minutes === null) return result
+    return {
+      ...result,
+      minutes,
+      estimateSeconds: minutes * 60,
+      label: formatETALabel(minutes, result.stopStatus),
+      statusLabel: '時刻表預估',
+      source: 'schedule',
+    }
+  } catch (error) {
+    console.error('eta_schedule_fallback_failed', error)
+    return result
+  }
+}
+
+export async function getBusSchedule(env: TDXEnv, city: string, routeName: string): Promise<ScheduleItem[]> {
+  const url = new URL(
+    `https://tdx.transportdata.tw/api/basic/v2/Bus/Schedule/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+  )
+  url.searchParams.set('$format', 'JSON')
+  return fetchTDXJson<ScheduleItem[]>(env, url, 6 * 60 * 60)
 }
 
 export async function getRouteStopGroups(
@@ -496,6 +552,7 @@ export function toETAResult(item: BusETAItem, query: ResolvedBusQuery, now = new
     dataTime,
     fetchedAt: now.toISOString(),
     stale: Number.isFinite(dataTimestamp) && now.getTime() - dataTimestamp > STALE_AFTER_MS,
+    source: estimateSeconds === null ? 'none' : 'realtime',
   }
 }
 
