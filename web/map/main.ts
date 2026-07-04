@@ -142,6 +142,10 @@ networkButton.setAttribute('aria-label', '切換全路網與全部站點')
 networkButton.hidden = true
 document.getElementById('map-app')?.appendChild(networkButton)
 
+// 觸控裝置沒有 hover、手指也比游標粗得多,才需要放大命中範圍;
+// 滑鼠本身夠精準,放大命中範圍反而讓 hover 判定跟不上游標移動(看起來卡住不會變回原狀)。
+const hoverCapable = window.matchMedia('(hover: hover)').matches
+
 // 互動圖層一律用 SVG:canvas 會以整張地圖大小攔截點擊,
 // 疊在上層的 pane 會擋住下層線條的 click(候選路線點不到、誤觸地圖點擊)。
 const map = L.map(mapNode, {
@@ -158,8 +162,8 @@ map.createPane('vehiclePane').style.zIndex = '520'
 
 // 全路網一次畫數百條線與站點,效能上仍用 canvas;
 // networkPane 在所有互動 pane 之下,canvas 攔截不會影響其他圖層。
-// tolerance 給細線加點擊容差,手機上才點得到。
-const networkRenderer = L.canvas({ pane: 'networkPane', tolerance: 12 })
+// tolerance 只在觸控裝置放大,滑鼠維持原生線寬判定,hover 才會跟手即時復原。
+const networkRenderer = L.canvas({ pane: 'networkPane', tolerance: hoverCapable ? 0 : 12 })
 
 L.control.zoom({ position: 'bottomleft' }).addTo(map)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -223,23 +227,29 @@ function transferLegColors(first: string, second: string): [string, string] {
 }
 
 // 觸控裝置沒有 hover,tooltip 會在點按瞬間彈出並蓋住點擊目標,直接不綁。
-const hoverCapable = window.matchMedia('(hover: hover)').matches
 function bindHoverTooltip<T extends L.Layer>(layer: T, content: string | HTMLElement, options?: L.TooltipOptions): T {
   if (hoverCapable) layer.bindTooltip(content, options)
   return layer
 }
 
-// SVG 線的命中範圍就是視覺線寬,手機上 5px 的線幾乎點不到;
-// 疊一條同幾何的透明胖線接事件,視覺樣式仍由細線呈現。
-function addHitLine(
+// 觸控裝置沒有 hover 也沒有游標精準度,才需要疊一條同幾何的透明胖線接事件;
+// 滑鼠夠精準,直接讓可見線本身接互動,hover 判定才會跟著游標即時進出。
+function bindSelectableLine(
   shape: RouteMapVariant['shape'],
   pane: string,
   layerGroup: L.LayerGroup,
-): LeafletGeoJSON {
-  return L.geoJSON(shape, {
+  style: L.PathOptions,
+): { line: LeafletGeoJSON; target: LeafletGeoJSON } {
+  if (hoverCapable) {
+    const line = L.geoJSON(shape, { pane, style }).addTo(layerGroup)
+    return { line, target: line }
+  }
+  const line = L.geoJSON(shape, { pane, style: { ...style, interactive: false } }).addTo(layerGroup)
+  const hit = L.geoJSON(shape, {
     pane,
     style: { color: '#000', opacity: 0, weight: 26, lineCap: 'round', lineJoin: 'round' },
   }).addTo(layerGroup)
+  return { line, target: hit }
 }
 
 void initialise()
@@ -593,12 +603,11 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
   variants.forEach((variant, index) => {
     const color = routePalette[index % routePalette.length]
     const style = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
-    const line = L.geoJSON(variant.shape, { pane: 'routePreviewPane', style, interactive: false }).addTo(previewLayer)
-    const hit = addHitLine(variant.shape, 'routePreviewPane', previewLayer)
-    bindHoverTooltip(hit, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
-    hit.on('mouseover', () => line.setStyle({ ...style, weight: 8, opacity: .9 }))
-    hit.on('mouseout', () => line.setStyle(style))
-    hit.on('click', (event) => {
+    const { line, target } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, style)
+    bindHoverTooltip(target, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
+    target.on('mouseover', () => line.setStyle({ ...style, weight: 8, opacity: .9 }))
+    target.on('mouseout', () => line.setStyle(style))
+    target.on('click', (event) => {
       L.DomEvent.stopPropagation(event)
       drawVariant(variant)
     })
@@ -1306,24 +1315,14 @@ function addSelectablePreview(
   backAction?: () => void,
 ): LeafletGeoJSON {
   const normalStyle = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
-  const line = L.geoJSON(variant.shape, {
-    pane: 'routePreviewPane',
-    style: normalStyle,
-    interactive: false,
-  }).addTo(previewLayer)
-  const hit = addHitLine(variant.shape, 'routePreviewPane', previewLayer)
-  bindHoverTooltip(hit, `${variant.routeName} · ${variant.label}`, { sticky: true })
-  hit.on('mouseover', () => {
+  const { line, target } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, normalStyle)
+  bindHoverTooltip(target, `${variant.routeName} · ${variant.label}`, { sticky: true })
+  target.on('mouseover', () => {
     line.setStyle({ ...normalStyle, weight: 8, opacity: .9 })
-    line.eachLayer((layer) => {
-      if (layer instanceof L.Path) layer.bringToFront()
-    })
-    hit.eachLayer((layer) => {
-      if (layer instanceof L.Path) layer.bringToFront()
-    })
+    line.bringToFront()
   })
-  hit.on('mouseout', () => line.setStyle(normalStyle))
-  hit.on('click', (event) => {
+  target.on('mouseout', () => line.setStyle(normalStyle))
+  target.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
     void loadRoute(variant.routeName, variant.variantKey, returnToTrip, color, backAction)
   })
@@ -1337,14 +1336,11 @@ function addJourneyLegPreview(
   alightSequence: number,
   labels: readonly [string, string],
 ): LeafletGeoJSON {
-  const fullLine = L.geoJSON(variant.shape, {
-    pane: 'routePreviewPane',
-    style: { color, weight: 3.5, opacity: .2, lineCap: 'round', lineJoin: 'round' },
-    interactive: false,
-  }).addTo(previewLayer)
-  const hit = addHitLine(variant.shape, 'routePreviewPane', previewLayer)
-  bindHoverTooltip(hit, `${variant.routeName} · ${variant.label}`, { sticky: true })
-  hit.on('click', (event) => {
+  const { line: fullLine, target: fullLineTarget } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, {
+    color, weight: 3.5, opacity: .2, lineCap: 'round', lineJoin: 'round',
+  })
+  bindHoverTooltip(fullLineTarget, `${variant.routeName} · ${variant.label}`, { sticky: true })
+  fullLineTarget.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
     void loadRoute(variant.routeName, variant.variantKey, true, color)
   })
@@ -1382,11 +1378,6 @@ function addJourneyLegPreview(
       style: { color, weight: 7, opacity: .92, lineCap: 'round', lineJoin: 'round' },
     }).addTo(previewLayer)
     bindHoverTooltip(segment, `${variant.routeName} · ${board.properties.stopName} → ${alight.properties.stopName}`, { sticky: true })
-    // 乘車段疊在胖 hit line 上方會攔到點擊,行為必須一致
-    segment.on('click', (event) => {
-      L.DomEvent.stopPropagation(event)
-      void loadRoute(variant.routeName, variant.variantKey, true, color)
-    })
     segment.on('click', (event) => {
       L.DomEvent.stopPropagation(event)
       void loadRoute(variant.routeName, variant.variantKey, true, color)
