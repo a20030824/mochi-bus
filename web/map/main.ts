@@ -158,7 +158,8 @@ map.createPane('vehiclePane').style.zIndex = '520'
 
 // 全路網一次畫數百條線與站點,效能上仍用 canvas;
 // networkPane 在所有互動 pane 之下,canvas 攔截不會影響其他圖層。
-const networkRenderer = L.canvas({ pane: 'networkPane' })
+// tolerance 給細線加點擊容差,手機上才點得到。
+const networkRenderer = L.canvas({ pane: 'networkPane', tolerance: 12 })
 
 L.control.zoom({ position: 'bottomleft' }).addTo(map)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -199,6 +200,44 @@ let networkStopMarkers: L.CircleMarker[] = []
 let vehicleRefreshTimer: number | undefined
 
 const routePalette = ['#b85f49', '#4f685b', '#55718a', '#b08a47', '#765b78', '#6f7561']
+
+// 依路線名稱 hash 配色:同一條路線在清單、預覽、路線頁永遠同色,
+// 使用者才能建立「路線=顏色」的連結;依清單位置配色會讓顏色隨排序漂移。
+function routeColor(routeName: string): string {
+  let hash = 2166136261
+  for (const char of routeName) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
+  return routePalette[(hash >>> 0) % routePalette.length]
+}
+
+// 轉乘兩段撞色時把第二段移到下一個色格,乘車段落才分得開。
+function transferLegColors(first: string, second: string): [string, string] {
+  const firstColor = routeColor(first)
+  let secondColor = routeColor(second)
+  if (secondColor === firstColor) {
+    secondColor = routePalette[(routePalette.indexOf(firstColor) + 1) % routePalette.length]
+  }
+  return [firstColor, secondColor]
+}
+
+// 觸控裝置沒有 hover,tooltip 會在點按瞬間彈出並蓋住點擊目標,直接不綁。
+const hoverCapable = window.matchMedia('(hover: hover)').matches
+function bindHoverTooltip<T extends L.Layer>(layer: T, content: string | HTMLElement, options?: L.TooltipOptions): T {
+  if (hoverCapable) layer.bindTooltip(content, options)
+  return layer
+}
+
+// SVG 線的命中範圍就是視覺線寬,手機上 5px 的線幾乎點不到;
+// 疊一條同幾何的透明胖線接事件,視覺樣式仍由細線呈現。
+function addHitLine(
+  shape: RouteMapVariant['shape'],
+  pane: string,
+  layerGroup: L.LayerGroup,
+): LeafletGeoJSON {
+  return L.geoJSON(shape, {
+    pane,
+    style: { color: '#000', opacity: 0, weight: 26, lineCap: 'round', lineJoin: 'round' },
+  }).addTo(layerGroup)
+}
 
 void initialise()
 
@@ -243,6 +282,12 @@ async function initialise() {
 }
 
 networkButton.addEventListener('click', () => void toggleCityNetwork())
+// 品牌鍵 = 回到全台總覽(留在地圖內);右上「首頁」才是離開地圖的出口。
+document.getElementById('map-brand')?.addEventListener('click', (event) => {
+  event.preventDefault()
+  showTaiwan()
+  history.replaceState(null, '', '/map')
+})
 map.on('zoomend', updateStopMarkerSize)
 map.on('click', (event) => {
   if (!activeCity) return
@@ -569,11 +614,10 @@ function drawVariant(variant: RouteMapVariant) {
   }).addTo(routeLayer)
   L.geoJSON(variant.stops, {
     pointToLayer: (feature, latlng) => {
-      const marker = unifiedStopMarker(latlng)
-        .bindTooltip(`${feature.properties.sequence}. ${feature.properties.stopName}`, {
-          direction: 'top',
-          offset: [0, -5],
-        })
+      const marker = bindHoverTooltip(unifiedStopMarker(latlng), `${feature.properties.sequence}. ${feature.properties.stopName}`, {
+        direction: 'top',
+        offset: [0, -5],
+      })
         .on('click', (event) => {
           L.DomEvent.stopPropagation(event)
           void findNearbyPlaces(latlng.lat, latlng.lng, true)
@@ -661,7 +705,7 @@ function startVehicleRefresh(variant: RouteMapVariant) {
         })
         const tooltip = document.createElement('span')
         tooltip.textContent = `${vehicle.plate ?? '公車'}${vehicle.speed === null ? '' : ` · ${Math.round(vehicle.speed)} km/h`}`
-        marker.bindTooltip(tooltip).addTo(vehicleLayer)
+        bindHoverTooltip(marker, tooltip).addTo(vehicleLayer)
       })
     } catch {
       // 車輛定位是輔助資訊，失敗時保留主路線而不打斷操作。
@@ -705,30 +749,34 @@ function drawCityNetwork(network: CityNetwork) {
   nearbyLayer.clearLayers()
   networkLayer.clearLayers()
   networkStopMarkers = []
-  network.routes.forEach((route, index) => {
-    const color = routePalette[index % routePalette.length]
+  // 手機沒有 hover,永遠只看得到 normal 狀態,濃度不能靠 hover 補
+  const networkLineStyle = { weight: 3.2, opacity: .5, lineCap: 'round' as const, lineJoin: 'round' as const }
+  network.routes.forEach((route) => {
+    const color = routeColor(route.routeName)
     const line = L.geoJSON(route.shape, {
       // renderer 屬於 PathOptions,經 resetStyle 併入 layer options,在加入地圖前生效。
-      style: { renderer: networkRenderer, color, weight: 2.6, opacity: .34, lineCap: 'round', lineJoin: 'round' },
-    }).bindTooltip(`${route.routeName} · ${route.label}`, { sticky: true })
+      style: { renderer: networkRenderer, color, ...networkLineStyle },
+    })
       .on('click', (event) => {
         L.DomEvent.stopPropagation(event)
         void loadRoute(route.routeName, route.variantKey, false, color)
       })
       .addTo(networkLayer)
-    line.on('mouseover', () => line.setStyle({ weight: 5, opacity: .75 }))
-    line.on('mouseout', () => line.setStyle({ weight: 2.6, opacity: .34 }))
+    bindHoverTooltip(line, `${route.routeName} · ${route.label}`, { sticky: true })
+    line.on('mouseover', () => line.setStyle({ weight: 5.5, opacity: .85 }))
+    line.on('mouseout', () => line.setStyle(networkLineStyle))
   })
   const radius = map.getZoom() >= 15 ? 4 : map.getZoom() >= 12 ? 2.5 : 1.4
   network.places.forEach((place) => {
     const marker = L.circleMarker([place.latitude, place.longitude], {
       renderer: networkRenderer, radius, weight: 1, color: '#fffaf0', fillColor: '#4f685b', fillOpacity: .72,
-    }).bindTooltip(place.name)
+    })
       .on('click', (event) => {
         L.DomEvent.stopPropagation(event)
         void findNearbyPlaces(place.latitude, place.longitude, true)
       })
       .addTo(networkLayer)
+    bindHoverTooltip(marker, place.name)
     networkStopMarkers.push(marker)
   })
   networkVisible = true
@@ -797,11 +845,10 @@ function renderNearbyPlaces() {
   if (!activeCity || !lastNearbyOrigin) return
   nearbyLayer.clearLayers()
   const origin = unifiedStopMarker(lastNearbyOrigin, true, '#b85f49').addTo(nearbyLayer)
-  origin.bindTooltip('你點的位置')
+  bindHoverTooltip(origin, '你點的位置')
 
   for (const place of lastNearbyPlaces) {
-    unifiedStopMarker([place.latitude, place.longitude], true)
-      .bindTooltip(`${place.name} · ${Math.round(place.distanceMeters)} m`)
+    bindHoverTooltip(unifiedStopMarker([place.latitude, place.longitude], true), `${place.name} · ${Math.round(place.distanceMeters)} m`)
       .on('click', (event) => {
         L.DomEvent.stopPropagation(event)
         void showPlaceRoutes(place)
@@ -980,10 +1027,11 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
   const list = document.createElement('div')
   list.className = 'direct-route-list'
   if (!directRoutes.length) list.appendChild(paragraph('目前沒有找到直達車。下一版可以接一次轉乘搜尋。'))
-  directRoutes.forEach((route, index) => {
+  directRoutes.forEach((route) => {
+    const color = routeColor(route.routeName)
     const button = document.createElement('button')
     button.className = 'direct-route-button'
-    button.style.setProperty('--route-color', routePalette[index % routePalette.length])
+    button.style.setProperty('--route-color', color)
     const top = document.createElement('span')
     const name = document.createElement('strong')
     name.textContent = route.routeName
@@ -997,7 +1045,6 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     detail.textContent = route.label
     button.appendChild(top)
     button.appendChild(detail)
-    const color = routePalette[index % routePalette.length]
     button.addEventListener('click', () => void loadRoute(route.routeName, route.variantKey, true, color))
     list.appendChild(button)
   })
@@ -1062,8 +1109,9 @@ function renderTransferPlans(plans: TransferPlan[]) {
     title.appendChild(count)
     if (plan.connectionStatus === 'tight') card.classList.add('connection-tight')
     card.appendChild(title)
+    const legColors = transferLegColors(plan.first.routeName, plan.second.routeName)
     ;[plan.first, plan.second].forEach((leg, legIndex) => {
-      const color = routePalette[(index * 2 + legIndex) % routePalette.length]
+      const color = legColors[legIndex]
       const button = document.createElement('button')
       button.className = 'transfer-leg-button'
       button.style.setProperty('--route-color', color)
@@ -1117,9 +1165,10 @@ async function previewTransferPlans(plans: TransferPlan[]) {
   previewLayer.clearLayers()
   const plan = plans[selectedTransferIndex]
   if (!plan) return
+  const previewLegColors = transferLegColors(plan.first.routeName, plan.second.routeName)
   const legs = [
-    { ...plan.first, color: routePalette[(selectedTransferIndex * 2) % routePalette.length] },
-    { ...plan.second, color: routePalette[(selectedTransferIndex * 2 + 1) % routePalette.length] },
+    { ...plan.first, color: previewLegColors[0] },
+    { ...plan.second, color: previewLegColors[1] },
   ]
   const previews = await Promise.all(legs.map(async (leg) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: leg.routeName })
@@ -1154,13 +1203,13 @@ async function previewDirectRoutes(directRoutes: DirectRoute[]) {
   if (!activeCity) return
   const requestId = ++previewRequest
   previewLayer.clearLayers()
-  const previews = await Promise.all(directRoutes.slice(0, 8).map(async (route, index) => {
+  const previews = await Promise.all(directRoutes.slice(0, 8).map(async (route) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
     const response = await fetch(`/api/v1/map/route?${params}`)
     if (!response.ok) return null
     const data = await response.json() as { variants?: RouteMapVariant[] }
     const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
-    return variant ? { variant, color: routePalette[index % routePalette.length], route } : null
+    return variant ? { variant, color: routeColor(route.routeName), route } : null
   }))
   if (requestId !== previewRequest) return
   const bounds = L.latLngBounds([])
@@ -1184,13 +1233,13 @@ async function previewPlaceRoutes(placeRoutes: PlaceRoute[], place: NearbyPlace)
   if (!activeCity) return
   const requestId = ++previewRequest
   previewLayer.clearLayers()
-  const previews = await Promise.all(placeRoutes.slice(0, 8).map(async (route, index) => {
+  const previews = await Promise.all(placeRoutes.slice(0, 8).map(async (route) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
     const response = await fetch(`/api/v1/map/route?${params}`)
     if (!response.ok) return null
     const data = await response.json() as { variants?: RouteMapVariant[] }
     const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
-    return variant ? { variant, color: routePalette[index % routePalette.length] } : null
+    return variant ? { variant, color: routeColor(route.routeName) } : null
   }))
   if (requestId !== previewRequest) return
   previews.forEach((preview) => {
@@ -1206,16 +1255,24 @@ function addSelectablePreview(
   backAction?: () => void,
 ): LeafletGeoJSON {
   const normalStyle = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
-  const line = L.geoJSON(variant.shape, { pane: 'routePreviewPane', style: normalStyle }).addTo(previewLayer)
-  line.bindTooltip(`${variant.routeName} · ${variant.label}`, { sticky: true })
-  line.on('mouseover', () => {
+  const line = L.geoJSON(variant.shape, {
+    pane: 'routePreviewPane',
+    style: normalStyle,
+    interactive: false,
+  }).addTo(previewLayer)
+  const hit = addHitLine(variant.shape, 'routePreviewPane', previewLayer)
+  bindHoverTooltip(hit, `${variant.routeName} · ${variant.label}`, { sticky: true })
+  hit.on('mouseover', () => {
     line.setStyle({ ...normalStyle, weight: 8, opacity: .9 })
     line.eachLayer((layer) => {
       if (layer instanceof L.Path) layer.bringToFront()
     })
+    hit.eachLayer((layer) => {
+      if (layer instanceof L.Path) layer.bringToFront()
+    })
   })
-  line.on('mouseout', () => line.setStyle(normalStyle))
-  line.on('click', (event) => {
+  hit.on('mouseout', () => line.setStyle(normalStyle))
+  hit.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
     void loadRoute(variant.routeName, variant.variantKey, returnToTrip, color, backAction)
   })
@@ -1232,9 +1289,11 @@ function addJourneyLegPreview(
   const fullLine = L.geoJSON(variant.shape, {
     pane: 'routePreviewPane',
     style: { color, weight: 3.5, opacity: .2, lineCap: 'round', lineJoin: 'round' },
+    interactive: false,
   }).addTo(previewLayer)
-  fullLine.bindTooltip(`${variant.routeName} · ${variant.label}`, { sticky: true })
-  fullLine.on('click', (event) => {
+  const hit = addHitLine(variant.shape, 'routePreviewPane', previewLayer)
+  bindHoverTooltip(hit, `${variant.routeName} · ${variant.label}`, { sticky: true })
+  hit.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
     void loadRoute(variant.routeName, variant.variantKey, true, color)
   })
@@ -1271,7 +1330,12 @@ function addJourneyLegPreview(
       pane: 'routePreviewPane',
       style: { color, weight: 7, opacity: .92, lineCap: 'round', lineJoin: 'round' },
     }).addTo(previewLayer)
-    segment.bindTooltip(`${variant.routeName} · ${board.properties.stopName} → ${alight.properties.stopName}`, { sticky: true })
+    bindHoverTooltip(segment, `${variant.routeName} · ${board.properties.stopName} → ${alight.properties.stopName}`, { sticky: true })
+    // 乘車段疊在胖 hit line 上方會攔到點擊,行為必須一致
+    segment.on('click', (event) => {
+      L.DomEvent.stopPropagation(event)
+      void loadRoute(variant.routeName, variant.variantKey, true, color)
+    })
     segment.on('click', (event) => {
       L.DomEvent.stopPropagation(event)
       void loadRoute(variant.routeName, variant.variantKey, true, color)
@@ -1386,12 +1450,12 @@ async function showPlaceRoutes(place: NearbyPlace) {
     )
     const list = document.createElement('div')
     list.className = 'place-route-list'
-    for (const [index, route] of sortedRoutes.entries()) {
+    for (const route of sortedRoutes) {
       const row = document.createElement('div')
       row.className = 'place-route-row'
       const button = document.createElement('button')
       button.className = 'place-route-button'
-      const color = routePalette[index % routePalette.length]
+      const color = routeColor(route.routeName)
       row.style.setProperty('--route-color', color)
       const line = document.createElement('span')
       const routeName = document.createElement('strong')

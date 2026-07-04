@@ -32,7 +32,10 @@ export function renderETAPage(view: ETAView): string {
     </section>
     <footer class="eta-footer">
       <span id="updated">${result ? `資料 ${formatTaipeiTime(result.dataTime ?? result.fetchedAt)}` : '尚未更新'}</span>
-      <button class="primary compact" id="refresh" type="button">重新整理</button>
+      <span style="display:flex;align-items:center;gap:16px">
+        <a href="/setup" style="color:inherit;font-weight:750;text-decoration:none;border-bottom:1px solid currentColor">管理常用站牌</a>
+        <button class="primary compact" id="refresh" type="button">重新整理</button>
+      </span>
     </footer>
   </main>`, `
   <script type="module">

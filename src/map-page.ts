@@ -16,7 +16,7 @@ export function renderMapPage(): string {
   <div id="map-app">
     <div id="map" aria-label="公車路線地圖"></div>
     <header class="map-header">
-      <a href="/" class="map-brand">MOCHI <span>MAP</span></a>
+      <a id="map-brand" href="/map" class="map-brand" title="回到全台總覽">MOCHI <span>MAP</span></a>
       <a class="quiet-button map-home" href="/">首頁</a>
     </header>
     <div id="map-status" class="map-status">選一個區域，看看公車如何穿過城市。</div>
