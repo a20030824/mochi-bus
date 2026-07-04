@@ -1,4 +1,5 @@
 import type { RouteMapVariant } from '../../domain/map/map-model'
+import { pairTransferLegs, type TransferLegCandidate } from '../../domain/map/transfer'
 import { classifyRouteName } from '../../domain/route-category'
 import type { ScheduleItem } from '../../domain/schedule'
 
@@ -394,6 +395,20 @@ export async function getDirectRoutes(
   }))
 }
 
+type TransferLegRow = {
+  pattern_id: string
+  route_uid: string
+  route_name: string
+  departure_name: string
+  destination_name: string
+  board_sequence: number
+  alight_sequence: number
+  transfer_place_id: string
+  place_name: string
+  latitude: number
+  longitude: number
+}
+
 export async function getOneTransferRoutes(
   env: TransitBindings,
   city: string,
@@ -405,134 +420,64 @@ export async function getOneTransferRoutes(
   ).bind(city).first<ActiveVersion>()
   if (!active || fromPlaceId === toPlaceId) return []
 
-  const result = await env.TRANSIT_DB.prepare(`
-    WITH first_legs AS (
-      SELECT board.pattern_id, transfer.place_id AS transfer_place_id,
-        board.stop_sequence AS board_sequence, transfer.stop_sequence AS transfer_sequence
+  // SQL 只做便宜的兩端展開(各數百列、走索引),步行距離的空間接合交給
+  // pairTransferLegs 在記憶體用網格做。舊版把接合塞在 SQL 的經緯度 box join,
+  // 用不到索引,台南規模(2,500+ 站位)會直接撞 D1 的 CPU 上限。
+  const [forward, backward] = await env.TRANSIT_DB.batch([
+    env.TRANSIT_DB.prepare(`
+      SELECT p.pattern_id, p.route_uid, r.route_name,
+        p.departure_name, p.destination_name,
+        board.stop_sequence AS board_sequence,
+        transfer.stop_sequence AS alight_sequence,
+        transfer.place_id AS transfer_place_id,
+        place.place_name, place.latitude, place.longitude
       FROM pattern_stops board
       JOIN pattern_stops transfer
         ON transfer.version = board.version
         AND transfer.pattern_id = board.pattern_id
         AND transfer.stop_sequence > board.stop_sequence
-      WHERE board.version = ? AND board.place_id = ?
-    ),
-    second_legs AS (
-      SELECT transfer.pattern_id, transfer.place_id AS transfer_place_id,
-        transfer.stop_sequence AS transfer_sequence, alight.stop_sequence AS alight_sequence
-      FROM pattern_stops transfer
-      JOIN pattern_stops alight
-        ON alight.version = transfer.version
-        AND alight.pattern_id = transfer.pattern_id
-        AND alight.stop_sequence > transfer.stop_sequence
-      WHERE transfer.version = ? AND alight.place_id = ?
-    )
-    SELECT DISTINCT
-      first_legs.transfer_place_id,
-      second_legs.transfer_place_id AS second_transfer_place_id,
-      first_place.place_name AS transfer_name,
-      second_place.place_name AS second_transfer_name,
-      first_place.latitude AS first_transfer_latitude,
-      first_place.longitude AS first_transfer_longitude,
-      second_place.latitude AS second_transfer_latitude,
-      second_place.longitude AS second_transfer_longitude,
-      first_pattern.pattern_id AS first_pattern_id,
-      first_route.route_name AS first_route_name,
-      first_pattern.departure_name AS first_departure_name,
-      first_pattern.destination_name AS first_destination_name,
-      first_legs.board_sequence, first_legs.transfer_sequence AS first_alight_sequence,
-      second_pattern.pattern_id AS second_pattern_id,
-      second_route.route_name AS second_route_name,
-      second_pattern.departure_name AS second_departure_name,
-      second_pattern.destination_name AS second_destination_name,
-      second_legs.transfer_sequence AS second_board_sequence, second_legs.alight_sequence,
-      (first_legs.transfer_sequence - first_legs.board_sequence
-       + second_legs.alight_sequence - second_legs.transfer_sequence) AS total_stops
-    FROM first_legs
-    JOIN stop_places first_place
-      ON first_place.version = ? AND first_place.place_id = first_legs.transfer_place_id
-    JOIN stop_places second_place
-      ON second_place.version = first_place.version
-      AND second_place.latitude BETWEEN first_place.latitude - 0.0032 AND first_place.latitude + 0.0032
-      AND second_place.longitude BETWEEN first_place.longitude - 0.0036 AND first_place.longitude + 0.0036
-    JOIN second_legs ON second_legs.transfer_place_id = second_place.place_id
-    JOIN patterns first_pattern
-      ON first_pattern.version = ? AND first_pattern.pattern_id = first_legs.pattern_id
-    JOIN patterns second_pattern
-      ON second_pattern.version = first_pattern.version AND second_pattern.pattern_id = second_legs.pattern_id
-    JOIN routes first_route
-      ON first_route.version = first_pattern.version AND first_route.route_uid = first_pattern.route_uid
-    JOIN routes second_route
-      ON second_route.version = second_pattern.version AND second_route.route_uid = second_pattern.route_uid
-    WHERE first_pattern.city_code = ?
-      AND first_pattern.route_uid <> second_pattern.route_uid
-    ORDER BY total_stops, first_route.route_name, second_route.route_name
-    LIMIT 200
-  `).bind(
-    active.active_version, fromPlaceId,
-    active.active_version, toPlaceId,
-    active.active_version,
-    active.active_version, city,
-  ).all<{
-    transfer_place_id: string
-    second_transfer_place_id: string
-    transfer_name: string
-    second_transfer_name: string
-    first_transfer_latitude: number
-    first_transfer_longitude: number
-    second_transfer_latitude: number
-    second_transfer_longitude: number
-    first_pattern_id: string
-    first_route_name: string
-    first_departure_name: string
-    first_destination_name: string
-    board_sequence: number
-    first_alight_sequence: number
-    second_pattern_id: string
-    second_route_name: string
-    second_departure_name: string
-    second_destination_name: string
-    second_board_sequence: number
-    alight_sequence: number
-    total_stops: number
-  }>()
+      JOIN patterns p ON p.version = board.version AND p.pattern_id = board.pattern_id
+      JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
+      JOIN stop_places place ON place.version = board.version AND place.place_id = transfer.place_id
+      WHERE board.version = ? AND board.place_id = ? AND p.city_code = ?
+    `).bind(active.active_version, fromPlaceId, city),
+    env.TRANSIT_DB.prepare(`
+      SELECT p.pattern_id, p.route_uid, r.route_name,
+        p.departure_name, p.destination_name,
+        transfer.stop_sequence AS board_sequence,
+        alight.stop_sequence AS alight_sequence,
+        transfer.place_id AS transfer_place_id,
+        place.place_name, place.latitude, place.longitude
+      FROM pattern_stops alight
+      JOIN pattern_stops transfer
+        ON transfer.version = alight.version
+        AND transfer.pattern_id = alight.pattern_id
+        AND transfer.stop_sequence < alight.stop_sequence
+      JOIN patterns p ON p.version = alight.version AND p.pattern_id = alight.pattern_id
+      JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
+      JOIN stop_places place ON place.version = alight.version AND place.place_id = transfer.place_id
+      WHERE alight.version = ? AND alight.place_id = ? AND p.city_code = ?
+    `).bind(active.active_version, toPlaceId, city),
+  ])
 
-  const plans = result.results.map((row) => ({
-    transferPlaceId: row.transfer_place_id,
-    secondTransferPlaceId: row.second_transfer_place_id,
-    transferName: row.transfer_place_id === row.second_transfer_place_id
-      ? row.transfer_name
-      : `${row.transfer_name} ↔ ${row.second_transfer_name}`,
-    transferWalkMeters: Math.round(distanceMeters(
-      row.first_transfer_latitude,
-      row.first_transfer_longitude,
-      row.second_transfer_latitude,
-      row.second_transfer_longitude,
-    )),
-    totalStops: row.total_stops,
-    first: {
-      routeName: row.first_route_name,
-      variantKey: row.first_pattern_id,
-      label: `${row.first_departure_name} → ${row.first_destination_name}`,
-      boardSequence: row.board_sequence,
-      alightSequence: row.first_alight_sequence,
-      stopCount: row.first_alight_sequence - row.board_sequence,
-    },
-    second: {
-      routeName: row.second_route_name,
-      variantKey: row.second_pattern_id,
-      label: `${row.second_departure_name} → ${row.second_destination_name}`,
-      boardSequence: row.second_board_sequence,
-      alightSequence: row.alight_sequence,
-      stopCount: row.alight_sequence - row.second_board_sequence,
-    },
-  })).filter((plan) => plan.transferWalkMeters <= 350)
+  const toCandidate = (row: TransferLegRow): TransferLegCandidate => ({
+    patternId: row.pattern_id,
+    routeUid: row.route_uid,
+    routeName: row.route_name,
+    label: `${row.departure_name} → ${row.destination_name}`,
+    placeId: row.transfer_place_id,
+    placeName: row.place_name,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    boardSequence: row.board_sequence,
+    alightSequence: row.alight_sequence,
+    stopCount: row.alight_sequence - row.board_sequence,
+  })
 
-  return [...new Map(plans.map((plan) => [
-    `${plan.first.routeName}:${plan.second.routeName}:${plan.transferPlaceId}:${plan.secondTransferPlaceId}`,
-    plan,
-  ])).values()]
-    .sort((a, b) => (a.totalStops + a.transferWalkMeters / 100) - (b.totalStops + b.transferWalkMeters / 100))
-    .slice(0, 5)
+  return pairTransferLegs(
+    (forward.results as TransferLegRow[]).map(toCandidate),
+    (backward.results as TransferLegRow[]).map(toCandidate),
+  )
 }
 
 export async function getJourneyLegStopRefs(
