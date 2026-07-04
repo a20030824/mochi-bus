@@ -290,15 +290,17 @@ await putObjects([
   { key: networkKey, file: networkFile, contentType: 'application/json' },
 ])
 for (const file of sqlFiles) await runD1(file)
-const previousVersion = [...new Set(existingRows.map((row) => row.version))].sort().at(-1)
-const versionsToDelete = new Set(existingRows.map((row) => row.version).filter((item) => item !== previousVersion))
-const staleRows = existingRows.filter((item) => versionsToDelete.has(item.version))
+const allVersions = [
+  ...existingRows.routes, ...existingRows.patterns, ...existingRows.places,
+].map((row) => row.version)
+const previousVersion = [...new Set(allVersions)].sort().at(-1)
+const versionsToDelete = new Set(allVersions.filter((item) => item !== previousVersion))
 await deleteObjects([...new Set([
-  ...staleRows.filter((item) => item.pattern_id)
+  ...existingRows.patterns.filter((item) => versionsToDelete.has(item.version))
     .map((item) => `snapshots/${item.version}/cities/${CITY}/shapes/${item.pattern_id}.json`),
-  ...staleRows.filter((item) => item.route_uid)
+  ...existingRows.routes.filter((item) => versionsToDelete.has(item.version))
     .map((item) => `snapshots/${item.version}/cities/${CITY}/schedules/${item.route_uid}.json`),
-  ...staleRows.filter((item) => item.place_id)
+  ...existingRows.places.filter((item) => versionsToDelete.has(item.version))
     .map((item) => `snapshots/${item.version}/cities/${CITY}/places/${item.place_id}.json`),
   ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/network.json`),
 ])])
@@ -444,9 +446,15 @@ async function mapParallel(items, concurrency, worker) {
   await Promise.all(runners)
 }
 function queryExistingSnapshots() {
-  // 從 routes 出發:沒有任何 pattern 的路線(缺 shape / StopOfRoute)也上傳過 schedule 物件,
-  // 清理必須涵蓋它們,否則舊版 schedule 會永遠留在 R2。
-  const sql = `SELECT DISTINCT r.version, r.route_uid, p.pattern_id, ps.place_id FROM routes r LEFT JOIN patterns p ON p.version=r.version AND p.route_uid=r.route_uid LEFT JOIN pattern_stops ps ON ps.version=p.version AND ps.pattern_id=p.pattern_id WHERE r.city_code='${CITY.replaceAll("'", "''")}'`
+  // 三張表各自平掃,不 join:R2 的三類物件 key 分別只依賴一張表
+  // (schedules←routes、shapes←patterns、place bundles←stop_places),
+  // 舊版的三表 LEFT JOIN + DISTINCT 用不到索引前綴,台南規模單次要掃 700 萬列。
+  const cityLiteral = `'${CITY.replaceAll("'", "''")}'`
+  const sql = [
+    `SELECT DISTINCT version, route_uid FROM routes WHERE city_code=${cityLiteral}`,
+    `SELECT DISTINCT version, pattern_id FROM patterns WHERE city_code=${cityLiteral}`,
+    `SELECT DISTINCT version, place_id FROM stop_places WHERE city_code=${cityLiteral}`,
+  ].join(';')
   const result = spawnSync(process.execPath, [
     'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE,
     '--remote', '--json', '--command', sql,
@@ -454,5 +462,9 @@ function queryExistingSnapshots() {
   ], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(`Unable to inspect existing snapshots: ${result.stderr}`)
   const payload = JSON.parse(result.stdout)
-  return payload[0]?.results ?? []
+  return {
+    routes: payload[0]?.results ?? [],
+    patterns: payload[1]?.results ?? [],
+    places: payload[2]?.results ?? [],
+  }
 }

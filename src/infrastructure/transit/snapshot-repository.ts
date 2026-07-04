@@ -423,40 +423,53 @@ export async function getOneTransferRoutes(
   // SQL 只做便宜的兩端展開(各數百列、走索引),步行距離的空間接合交給
   // pairTransferLegs 在記憶體用網格做。舊版把接合塞在 SQL 的經緯度 box join,
   // 用不到索引,台南規模(2,500+ 站位)會直接撞 D1 的 CPU 上限。
+  // anchor 先用 MATERIALIZED CTE 固定住(本站的十幾列,走 place 索引),
+  // 再往 pattern_stops 的主鍵 join。不釘住的話查詢計畫器可能反過來
+  // 先掃整個版本的 pattern_stops(單次 50 萬+列讀取)。
   const [forward, backward] = await env.TRANSIT_DB.batch([
     env.TRANSIT_DB.prepare(`
+      WITH anchor AS MATERIALIZED (
+        SELECT version, pattern_id, stop_sequence
+        FROM pattern_stops
+        WHERE version = ? AND place_id = ?
+      )
       SELECT p.pattern_id, p.route_uid, r.route_name,
         p.departure_name, p.destination_name,
-        board.stop_sequence AS board_sequence,
+        anchor.stop_sequence AS board_sequence,
         transfer.stop_sequence AS alight_sequence,
         transfer.place_id AS transfer_place_id,
         place.place_name, place.latitude, place.longitude
-      FROM pattern_stops board
-      JOIN pattern_stops transfer
-        ON transfer.version = board.version
-        AND transfer.pattern_id = board.pattern_id
-        AND transfer.stop_sequence > board.stop_sequence
-      JOIN patterns p ON p.version = board.version AND p.pattern_id = board.pattern_id
+      FROM anchor
+      CROSS JOIN pattern_stops transfer
+        ON transfer.version = anchor.version
+        AND transfer.pattern_id = anchor.pattern_id
+        AND transfer.stop_sequence > anchor.stop_sequence
+      JOIN patterns p ON p.version = anchor.version AND p.pattern_id = anchor.pattern_id
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
-      JOIN stop_places place ON place.version = board.version AND place.place_id = transfer.place_id
-      WHERE board.version = ? AND board.place_id = ? AND p.city_code = ?
+      JOIN stop_places place ON place.version = anchor.version AND place.place_id = transfer.place_id
+      WHERE p.city_code = ?
     `).bind(active.active_version, fromPlaceId, city),
     env.TRANSIT_DB.prepare(`
+      WITH anchor AS MATERIALIZED (
+        SELECT version, pattern_id, stop_sequence
+        FROM pattern_stops
+        WHERE version = ? AND place_id = ?
+      )
       SELECT p.pattern_id, p.route_uid, r.route_name,
         p.departure_name, p.destination_name,
         transfer.stop_sequence AS board_sequence,
-        alight.stop_sequence AS alight_sequence,
+        anchor.stop_sequence AS alight_sequence,
         transfer.place_id AS transfer_place_id,
         place.place_name, place.latitude, place.longitude
-      FROM pattern_stops alight
-      JOIN pattern_stops transfer
-        ON transfer.version = alight.version
-        AND transfer.pattern_id = alight.pattern_id
-        AND transfer.stop_sequence < alight.stop_sequence
-      JOIN patterns p ON p.version = alight.version AND p.pattern_id = alight.pattern_id
+      FROM anchor
+      CROSS JOIN pattern_stops transfer
+        ON transfer.version = anchor.version
+        AND transfer.pattern_id = anchor.pattern_id
+        AND transfer.stop_sequence < anchor.stop_sequence
+      JOIN patterns p ON p.version = anchor.version AND p.pattern_id = anchor.pattern_id
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
-      JOIN stop_places place ON place.version = alight.version AND place.place_id = transfer.place_id
-      WHERE alight.version = ? AND alight.place_id = ? AND p.city_code = ?
+      JOIN stop_places place ON place.version = anchor.version AND place.place_id = transfer.place_id
+      WHERE p.city_code = ?
     `).bind(active.active_version, toPlaceId, city),
   ])
 
