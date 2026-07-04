@@ -46,6 +46,35 @@ export async function getSnapshotSchedule(
   return object ? await object.json<ScheduleItem[]>() : null
 }
 
+export type StopPlaceBundleRoute = {
+  routeUid: string
+  routeName: string
+  variantKey: string
+  direction: 0 | 1
+  label: string
+  subRouteUid?: string
+  subRouteName: string
+  stopUid: string
+  stopSequence: number
+  stopName: string
+  schedules: ScheduleItem[]
+}
+
+export async function getStopPlaceBundle(env: TransitBindings, city: string, placeId: string) {
+  const active = await env.TRANSIT_DB.prepare(
+    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
+  ).bind(city).first<ActiveVersion>()
+  if (!active) return null
+  const key = `snapshots/${active.active_version}/cities/${city}/places/${placeId}.json`
+  const object = await env.TRANSIT_SHAPES.get(key)
+  return object ? await object.json<{
+    version: string
+    placeId: string
+    name: string
+    routes: StopPlaceBundleRoute[]
+  }>() : null
+}
+
 export async function getSnapshotRouteVariants(
   env: TransitBindings,
   city: string,

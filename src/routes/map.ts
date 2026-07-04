@@ -16,6 +16,7 @@ import {
   getSnapshotRouteCatalog,
   getSnapshotSchedule,
   getStopPlace,
+  getStopPlaceBundle,
   getStopPlaceRoutes,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
@@ -25,7 +26,7 @@ import { renderMapPage } from '../map-page'
 type Env = { Bindings: TDXEnv & TransitBindings }
 const map = new Hono<Env>()
 
-const REALTIME_COOLDOWN_SECONDS = 90
+const REALTIME_COOLDOWN_SECONDS = 60
 const LAST_REALTIME_SECONDS = 120
 
 function arrivalCacheKey(kind: 'cooldown' | 'last', city: string, routeName = ''): Request {
@@ -211,21 +212,32 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const routes = await getStopPlaceRoutes(c.env, city, c.req.param('placeId'))
-    const routeNames = [...new Set(routes.map((route) => route.routeName))]
-    const schedulesByRoute = new Map((await Promise.all(routeNames.map(async (routeName) => [
-      routeName,
-      await getSnapshotSchedule(c.env, city, routeName) ?? [],
-    ] as const))))
+    const placeId = c.req.param('placeId')
+    const bundle = await getStopPlaceBundle(c.env, city, placeId)
     const now = new Date()
-    const scheduledRoutes = routes.map((route) => {
-      const minutes = nextScheduledMinutes(schedulesByRoute.get(route.routeName) ?? [], {
+    const scheduledRoutes = bundle ? bundle.routes.map(({ schedules, ...route }) => ({
+      ...route,
+      scheduleMinutes: nextScheduledMinutes(schedules, {
         stopUid: route.stopUid,
         direction: route.direction,
         subRouteUid: route.subRouteUid,
-      }, now)
-      return { ...route, scheduleMinutes: minutes }
-    })
+      }, now),
+    })) : await (async () => {
+      const routes = await getStopPlaceRoutes(c.env, city, placeId)
+      const routeNames = [...new Set(routes.map((route) => route.routeName))]
+      const schedulesByRoute = new Map((await Promise.all(routeNames.map(async (routeName) => [
+        routeName,
+        await getSnapshotSchedule(c.env, city, routeName) ?? [],
+      ] as const))))
+      return routes.map((route) => ({
+        ...route,
+        scheduleMinutes: nextScheduledMinutes(schedulesByRoute.get(route.routeName) ?? [], {
+          stopUid: route.stopUid,
+          direction: route.direction,
+          subRouteUid: route.subRouteUid,
+        }, now),
+      }))
+    })()
     const focusStopUid = c.req.query('focusStopUid')?.trim()
     const focusSubRouteUid = c.req.query('focusSubRouteUid')?.trim()
     const focusDirection = Number(c.req.query('focusDirection'))
@@ -299,6 +311,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       schemaVersion: 1,
       city,
       routes: arrivals,
+      scheduleSource: bundle ? 'place-bundle' : 'route-objects',
       realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
     }, 200, { 'Cache-Control': 'public, max-age=15' })
   } catch (error) {

@@ -1,6 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 
 const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
@@ -47,9 +47,11 @@ const scheduleItems = await get('Schedule')
 const version = new Date().toISOString().replace(/[-:.]/g, '')
 const shapeDir = join(outputRoot, 'shapes')
 const scheduleDir = join(outputRoot, 'schedules')
+const placeDir = join(outputRoot, 'places')
 await rm(outputRoot, { recursive: true, force: true })
 await mkdir(shapeDir, { recursive: true })
 await mkdir(scheduleDir, { recursive: true })
+await mkdir(placeDir, { recursive: true })
 
 const routeByUid = new Map()
 for (const item of routeItems) {
@@ -130,6 +132,52 @@ for (const item of stopOfRouteItems) {
   }
 }
 
+const patternById = new Map(patterns.map((pattern) => [pattern.id, pattern]))
+const placeBundles = new Map([...places.values()].map((place) => [place.id, {
+  version,
+  placeId: place.id,
+  name: place.name,
+  routes: [],
+}]))
+const seenPlaceRoutes = new Set()
+for (const item of patternStops) {
+  const pattern = patternById.get(item.patternId)
+  const stop = stops.get(item.stopUid)
+  const bundle = placeBundles.get(item.placeId)
+  if (!pattern || !stop || !bundle) continue
+  const identity = `${item.placeId}:${pattern.id}:${item.stopUid}`
+  if (seenPlaceRoutes.has(identity)) continue
+  seenPlaceRoutes.add(identity)
+  const routeSchedules = schedulesByRouteUid.get(pattern.routeUid) ?? []
+  const matchingSchedules = routeSchedules.filter((schedule) =>
+    schedule.Direction === pattern.direction
+    && (!pattern.subrouteUid || !schedule.SubRouteUID || schedule.SubRouteUID === pattern.subrouteUid))
+  const schedules = matchingSchedules.map((schedule) => ({
+    SubRouteUID: schedule.SubRouteUID,
+    Direction: schedule.Direction,
+    Timetables: (schedule.Timetables ?? []).map((timetable) => ({
+      ServiceDay: timetable.ServiceDay,
+      StopTimes: (timetable.StopTimes ?? []).filter((time) => time.StopUID === item.stopUid),
+    })).filter((timetable) => timetable.StopTimes.length),
+  })).filter((schedule) => schedule.Timetables.length)
+  bundle.routes.push({
+    routeUid: pattern.routeUid,
+    routeName: routeByUid.get(pattern.routeUid).name,
+    variantKey: pattern.id,
+    direction: pattern.direction,
+    label: `${pattern.departure} → ${pattern.destination}`,
+    subRouteUid: pattern.subrouteUid ?? undefined,
+    subRouteName: pattern.subrouteName,
+    stopUid: item.stopUid,
+    stopSequence: item.sequence,
+    stopName: stop.name,
+    schedules,
+  })
+}
+for (const bundle of placeBundles.values()) {
+  await writeFile(join(placeDir, `${encodeURIComponent(bundle.placeId)}.json`), JSON.stringify(bundle))
+}
+
 const sql = []
 sql.push('PRAGMA foreign_keys=OFF;')
 for (const route of routeByUid.values()) sql.push(`INSERT INTO routes VALUES (${values(version, CITY, route.uid, route.name, route.departure, route.destination)});`)
@@ -169,12 +217,23 @@ for (const route of routeByUid.values()) {
   const key = `snapshots/${version}/cities/${CITY}/schedules/${route.uid}.json`
   run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${key}`, '--remote', '--file', join(scheduleDir, `${route.uid}.json`), '--content-type', 'application/json'])
 }
+await runParallel([...placeBundles.values()].map((bundle) => ({
+  command: process.execPath,
+  args: [
+    'node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put',
+    `${BUCKET}/snapshots/${version}/cities/${CITY}/places/${bundle.placeId}.json`,
+    '--remote', '--file', join(placeDir, `${encodeURIComponent(bundle.placeId)}.json`),
+    '--content-type', 'application/json',
+  ],
+})), 6)
 run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'put', `${BUCKET}/${networkKey}`, '--remote', '--file', networkFile, '--content-type', 'application/json'])
 run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE, '--remote', '--file', sqlFile])
 const previousVersion = [...new Set(existingRows.map((row) => row.version))].sort().at(-1)
 const versionsToDelete = new Set(existingRows.map((row) => row.version).filter((item) => item !== previousVersion))
-for (const row of existingRows.filter((item) => versionsToDelete.has(item.version))) {
-  const key = `snapshots/${row.version}/cities/${CITY}/shapes/${row.pattern_id}.json`
+const shapesToDelete = new Set(existingRows
+  .filter((item) => versionsToDelete.has(item.version))
+  .map((item) => `snapshots/${item.version}/cities/${CITY}/shapes/${item.pattern_id}.json`))
+for (const key of shapesToDelete) {
   run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
 }
 const schedulesToDelete = new Set(existingRows
@@ -183,11 +242,18 @@ const schedulesToDelete = new Set(existingRows
 for (const key of schedulesToDelete) {
   run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
 }
+const placesToDelete = new Set(existingRows
+  .filter((item) => versionsToDelete.has(item.version) && item.place_id)
+  .map((item) => `snapshots/${item.version}/cities/${CITY}/places/${item.place_id}.json`))
+await runParallel([...placesToDelete].map((key) => ({
+  command: process.execPath,
+  args: ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'],
+})), 6)
 for (const oldVersion of versionsToDelete) {
   const key = `snapshots/${oldVersion}/cities/${CITY}/network.json`
   run(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'r2', 'object', 'delete', `${BUCKET}/${key}`, '--remote'])
 }
-console.log(JSON.stringify({ city: CITY, version, routes: routeByUid.size, patterns: patterns.length, stops: stops.size, places: places.size, schedules: schedulesByRouteUid.size }))
+console.log(JSON.stringify({ city: CITY, version, routes: routeByUid.size, patterns: patterns.length, stops: stops.size, places: places.size, schedules: schedulesByRouteUid.size, placeBundles: placeBundles.size }))
 
 function values(...items) { return items.map(sqlValue).join(', ') }
 function sqlValue(value) {
@@ -225,8 +291,22 @@ function run(command, args) {
   const result = spawnSync(command, args, { stdio: 'inherit' })
   if (result.status !== 0) throw new Error(`${command} failed (${result.error?.message ?? result.status})`)
 }
+async function runParallel(tasks, concurrency) {
+  let index = 0
+  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
+    while (index < tasks.length) {
+      const task = tasks[index++]
+      await new Promise((resolve, reject) => {
+        const child = spawn(task.command, task.args, { stdio: 'ignore' })
+        child.on('error', reject)
+        child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`${task.command} failed (${code})`)))
+      })
+    }
+  })
+  await Promise.all(workers)
+}
 function queryExistingSnapshots() {
-  const sql = `SELECT DISTINCT p.version, p.pattern_id, p.route_uid FROM patterns p WHERE p.city_code='${CITY.replaceAll("'", "''")}'`
+  const sql = `SELECT DISTINCT p.version, p.pattern_id, p.route_uid, ps.place_id FROM patterns p LEFT JOIN pattern_stops ps ON ps.version=p.version AND ps.pattern_id=p.pattern_id WHERE p.city_code='${CITY.replaceAll("'", "''")}'`
   const result = spawnSync(process.execPath, [
     'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE,
     '--remote', '--json', '--command', sql,
