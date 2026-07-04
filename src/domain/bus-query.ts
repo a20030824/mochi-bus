@@ -76,5 +76,6 @@ export function canonicalBusPath(query: ResolvedBusQuery): string {
 
 function clean(value: string | undefined): string | undefined {
   const cleaned = value?.trim()
+  if (cleaned?.toLowerCase() === 'undefined' || cleaned?.toLowerCase() === 'null') return undefined
   return cleaned ? cleaned : undefined
 }

@@ -79,12 +79,19 @@ export function renderETAPage(view: ETAView): string {
     }
 
     function paramsFor(bus) {
-      const params = new URLSearchParams({ city: bus.city, route: bus.routeName, stop: bus.stopName, stopUid: bus.stopUid, direction: String(bus.direction) });
+      const params = new URLSearchParams({ city: bus.city || currentBoard.city, route: bus.routeName, direction: String(bus.direction) });
+      if (bus.stopName) params.set('stop', bus.stopName);
+      if (bus.stopUid) params.set('stopUid', bus.stopUid);
       if (bus.routeUid) params.set('routeUid', bus.routeUid);
       return params;
     }
 
-    function routeLink(bus) { return '/route?' + paramsFor(bus); }
+    function routeLink(bus) {
+      if (bus.stopName && bus.stopUid) return '/route?' + paramsFor(bus);
+      const params = new URLSearchParams({ city: bus.city || currentBoard.city });
+      if (currentBoard.placeId) params.set('place', currentBoard.placeId);
+      return '/map?' + params;
+    }
 
     function makeRow(bus, data, failed = false) {
       const link = document.createElement('a');
@@ -120,11 +127,37 @@ export function renderETAPage(view: ETAView): string {
       } catch {}
     }
 
+    let placeRoutesPromise;
+    async function repairBusFromPlace(bus) {
+      if (bus.stopName && bus.stopUid) return true;
+      const city = bus.city || currentBoard.city;
+      if (!city || !currentBoard.placeId) return false;
+      try {
+        placeRoutesPromise ||= fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/routes?city=' + encodeURIComponent(city))
+          .then(response => response.ok ? response.json() : Promise.reject());
+        const body = await placeRoutesPromise;
+        const candidates = (body.routes || []).filter(route =>
+          route.routeName === bus.routeName
+          && route.direction === bus.direction
+          && (!bus.routeUid || route.routeUid === bus.routeUid));
+        const match = candidates.find(route => !bus.directionLabel || route.label === bus.directionLabel) || candidates[0];
+        if (!match) return false;
+        bus.city = city;
+        bus.routeUid = match.routeUid;
+        bus.stopName = match.stopName;
+        bus.stopUid = match.stopUid;
+        bus.directionLabel = match.label;
+        return true;
+      } catch { return false; }
+    }
+
     async function refreshBoard() {
       refreshButton.disabled = true;
       refreshButton.textContent = '更新中';
       noticeNode.textContent = '';
       const responses = await Promise.all(currentBoard.buses.map(async bus => {
+        const repaired = await repairBusFromPlace(bus);
+        if (!repaired) return { bus, failed: true };
         await fillDirectionLabel(bus);
         try {
           const response = await fetch('/api/v1/eta?' + paramsFor(bus), { cache: 'no-store' });

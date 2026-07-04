@@ -9,6 +9,15 @@ import {
 const cities = new Set(['Taipei', 'NewTaipei'])
 
 describe('parseBusQuery', () => {
+  it('rejects JavaScript null-like strings as missing stop values', () => {
+    expect(() => parseBusQuery({
+      city: 'Chiayi',
+      route: '中山幹線(綠線)',
+      stop: 'undefined',
+      stopUid: 'undefined',
+      direction: '0',
+    }, undefined, new Set(['Chiayi']))).toThrow(QueryValidationError)
+  })
   it('parses a human-readable bus query', () => {
     expect(parseBusQuery({
       city: 'Taipei',
