@@ -252,6 +252,21 @@ function bindSelectableLine(
   return { line, target: hit }
 }
 
+// 預覽淡線也標出小站點(跟全路網的小圓點同款),看得出停靠密度與站距。
+function addPreviewStopDots(
+  stops: RouteMapVariant['stops'],
+  color: string,
+  layerGroup: L.LayerGroup,
+): void {
+  L.geoJSON(stops, {
+    pane: 'stopPane',
+    pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
+      pane: 'stopPane', radius: 2.4, weight: 1, color: '#fffaf0', fillColor: color, fillOpacity: .6,
+      interactive: false,
+    }),
+  }).addTo(layerGroup)
+}
+
 void initialise()
 
 async function initialise() {
@@ -604,6 +619,7 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     const color = routePalette[index % routePalette.length]
     const style = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
     const { line, target } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, style)
+    addPreviewStopDots(variant.stops, color, previewLayer)
     bindHoverTooltip(target, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
     target.on('mouseover', () => line.setStyle({ ...style, weight: 8, opacity: .9 }))
     target.on('mouseout', () => line.setStyle(style))
@@ -692,6 +708,10 @@ function drawVariant(variant: RouteMapVariant) {
   change.addEventListener('click', () => {
     if (routeReturnsToTrip && (lastDirectRoutes.length || lastTransferPlans.length)) {
       interactionMode = 'trip-results'
+      // 選中的路線畫在 routeLayer、車輛有自己的計時器,回候選清單時要一併收掉
+      stopVehicleRefresh()
+      routeLayer.clearLayers()
+      stopMarkers = []
       if (lastDirectRoutes.length) {
         renderDirectRoutes(lastDirectRoutes)
         void previewDirectRoutes(lastDirectRoutes)
@@ -1316,6 +1336,7 @@ function addSelectablePreview(
 ): LeafletGeoJSON {
   const normalStyle = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
   const { line, target } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, normalStyle)
+  addPreviewStopDots(variant.stops, color, previewLayer)
   bindHoverTooltip(target, `${variant.routeName} · ${variant.label}`, { sticky: true })
   target.on('mouseover', () => {
     line.setStyle({ ...normalStyle, weight: 8, opacity: .9 })
@@ -1349,13 +1370,7 @@ function addJourneyLegPreview(
   const alight = variant.stops.features.find((stop) => stop.properties.sequence === alightSequence)
   if (!board || !alight) return fullLine
 
-  L.geoJSON(variant.stops, {
-    pane: 'stopPane',
-    pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
-      pane: 'stopPane', radius: 2.4, weight: 1, color: '#fffaf0', fillColor: color, fillOpacity: .35,
-      interactive: false,
-    }),
-  }).addTo(previewLayer)
+  addPreviewStopDots(variant.stops, color, previewLayer)
 
   const coordinates = variant.shape.geometry.coordinates as Array<[number, number]>
   const matches = matchStopsToShape(variant.stops.features.map((stop) => ({
