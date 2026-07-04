@@ -40,11 +40,18 @@ type NearbyPlace = {
 }
 
 type PlaceRoute = {
+  routeUid: string
   routeName: string
   variantKey: string
   direction: 0 | 1
   label: string
   subRouteName: string
+  stopUid: string
+  stopName: string
+  stopSequence: number
+  estimateSeconds: number | null
+  etaLabel: string
+  stopStatus: number
 }
 
 type DirectRoute = PlaceRoute & {
@@ -65,7 +72,9 @@ type TransferLeg = {
 
 type TransferPlan = {
   transferPlaceId: string
+  secondTransferPlaceId?: string
   transferName: string
+  transferWalkMeters?: number
   totalStops: number
   first: TransferLeg
   second: TransferLeg
@@ -112,9 +121,11 @@ const regions: Array<{
 ]
 
 const mapNode = requiredElement('map')
+const ACTIVE_CITY_KEY = 'mochi.bus.activeCity.v1'
+const BOARDS_KEY = 'mochi.bus.boards.v2'
+const ACTIVE_BOARD_KEY = 'mochi.bus.activeBoard.v2'
 const drawer = requiredElement('map-drawer')
 const statusNode = requiredElement('map-status')
-const taiwanButton = requiredElement<HTMLButtonElement>('taiwan-button')
 const networkButton = document.createElement('button')
 networkButton.className = 'network-toggle'
 networkButton.type = 'button'
@@ -185,7 +196,7 @@ async function initialise() {
     const data = await response.json() as { cities: MapCity[] }
     cities = data.cities
     const params = new URLSearchParams(location.search)
-    const cityCode = params.get('city')
+    const cityCode = params.get('city') || localStorage.getItem(ACTIVE_CITY_KEY)
     const routeName = params.get('route')
     if (cityCode) {
       const city = cities.find((candidate) => candidate.code === cityCode)
@@ -196,9 +207,16 @@ async function initialise() {
           await loadRoute(routeName, params.get('variant'))
         } else {
           await chooseCity(city)
-          const latitude = Number(params.get('lat'))
-          const longitude = Number(params.get('lon'))
-          if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+          const placeId = params.get('place')
+          if (placeId) {
+            await openPlaceById(placeId)
+            return
+          }
+          const latitudeParam = params.get('lat')
+          const longitudeParam = params.get('lon')
+          const latitude = Number(latitudeParam)
+          const longitude = Number(longitudeParam)
+          if (latitudeParam !== null && longitudeParam !== null && Number.isFinite(latitude) && Number.isFinite(longitude)) {
             map.setView([latitude, longitude], 15)
             await findNearbyPlaces(latitude, longitude)
           }
@@ -212,13 +230,16 @@ async function initialise() {
   }
 }
 
-taiwanButton.addEventListener('click', showTaiwan)
 networkButton.addEventListener('click', () => void toggleCityNetwork())
 map.on('zoomend', updateStopMarkerSize)
 map.on('click', (event) => {
   if (!activeCity) return
   if (tripStage !== 'idle') void selectTripCoordinate(event.latlng.lat, event.latlng.lng)
-  else void findNearbyPlaces(event.latlng.lat, event.latlng.lng, true)
+  else if (map.getZoom() >= 14) void findNearbyPlaces(event.latlng.lat, event.latlng.lng, true)
+  else {
+    map.flyTo(event.latlng, 14)
+    setStatus('放大後再選站牌，避免誤選太遠的位置')
+  }
 })
 
 function showTaiwan() {
@@ -300,6 +321,7 @@ function showRegion(regionCode: RegionCode) {
 async function chooseCity(city: MapCity) {
   stopVehicleRefresh()
   activeCity = city
+  localStorage.setItem(ACTIVE_CITY_KEY, city.code)
   networkButton.hidden = false
   setNetworkVisible(false)
   selectionLayer.clearLayers()
@@ -318,7 +340,7 @@ async function chooseCity(city: MapCity) {
   drawer.replaceChildren(drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…'))
 
   try {
-    const response = await fetch(`/api/v1/routes?schema=2&city=${encodeURIComponent(city.code)}`, { cache: 'no-store' })
+    const response = await fetch(`/api/v1/map/routes?city=${encodeURIComponent(city.code)}`)
     const data = await response.json() as { routes?: RouteItem[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
     routes = data.routes
@@ -438,11 +460,12 @@ function unifiedStopMarker(
   prominent = false,
   fillColor = '#4f685b',
 ): L.CircleMarker {
+  const prominentRadius = map.getZoom() >= 16 ? 11 : 9
   return L.circleMarker(position, {
     pane: 'stopPane',
-    radius: prominent ? 7 : stopStyleForZoom(map.getZoom()).radius,
+    radius: prominent ? prominentRadius : stopStyleForZoom(map.getZoom()).radius,
     color: '#fffaf0',
-    weight: prominent ? 2 : 1.4,
+    weight: prominent ? 2.4 : 1.4,
     fillColor,
     fillOpacity: .96,
   })
@@ -510,7 +533,11 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     button.addEventListener('click', () => drawVariant(variant))
     return button
   }))
-  drawer.replaceChildren(drawerBack('返回路線', renderRoutePicker), heading(routeName, '同一路線可能穿過不同街廓。'), list)
+  drawer.replaceChildren(
+    drawerBack(routeBackAction ? '返回站點' : '返回路線', routeBackAction ?? renderRoutePicker),
+    heading(routeName, '同一路線可能穿過不同街廓。'),
+    list,
+  )
 }
 
 function drawVariant(variant: RouteMapVariant) {
@@ -616,9 +643,9 @@ function startVehicleRefresh(variant: RouteMapVariant) {
           pane: 'vehiclePane',
           icon: L.divIcon({
             className: 'vehicle-marker-wrap',
-            html: `<span class="vehicle-marker" style="transform:rotate(${azimuth}deg)">➤</span>`,
-            iconSize: [30, 30],
-            iconAnchor: [15, 15],
+            html: `<span class="vehicle-marker" style="transform:rotate(${azimuth}deg)"></span>`,
+            iconSize: [26, 32],
+            iconAnchor: [13, 16],
           }),
         })
         const tooltip = document.createElement('span')
@@ -718,6 +745,18 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
   previewLayer.clearLayers()
   routeLayer.clearLayers()
   stopMarkers = []
+  const loadingList = document.createElement('div')
+  loadingList.className = 'place-route-loading'
+  for (let index = 0; index < 3; index += 1) {
+    const skeleton = document.createElement('div')
+    skeleton.className = 'place-route-skeleton'
+    loadingList.appendChild(skeleton)
+  }
+  drawer.replaceChildren(
+    drawerBack('附近站牌', renderNearbyPlaces),
+    heading('附近站牌', '正在搜尋附近站牌'),
+    loadingList,
+  )
   nearbyLayer.clearLayers()
   lastNearbyOrigin = [latitude, longitude]
   const city = activeCity
@@ -1001,7 +1040,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     const title = document.createElement('div')
     title.className = 'transfer-title'
     const transfer = document.createElement('strong')
-    transfer.textContent = `${plan.transferName} 轉乘`
+    transfer.textContent = `${plan.transferName} 轉乘${plan.transferWalkMeters ? ` · 步行 ${plan.transferWalkMeters} m` : ''}`
     const count = document.createElement('span')
     count.textContent = plan.estimatedTotalMinutes === null || plan.estimatedTotalMinutes === undefined
       ? `共 ${plan.totalStops} 站`
@@ -1253,29 +1292,257 @@ function nearestCoordinateIndex(coordinates: GeoJSON.Position[], target: GeoJSON
   return nearest
 }
 
+async function openPlaceById(placeId: string) {
+  if (!activeCity) return
+  const response = await fetch(`/api/v1/map/place/${encodeURIComponent(placeId)}?city=${encodeURIComponent(activeCity.code)}`)
+  const data = await response.json() as { place?: NearbyPlace; error?: string }
+  if (!response.ok || !data.place) throw new Error(data.error || '找不到這個站牌')
+  map.setView([data.place.latitude, data.place.longitude], 16)
+  lastNearbyOrigin = [data.place.latitude, data.place.longitude]
+  lastNearbyPlaces = [data.place]
+  interactionMode = 'nearby'
+  await showPlaceRoutes(data.place)
+}
+
+type StoredBoard = {
+  version?: number
+  id: string
+  title: string
+  placeId?: string
+  city?: string
+  latitude?: number
+  longitude?: number
+  buses: Array<Record<string, unknown>>
+  createdAt?: string
+  updatedAt?: string
+}
+
+function readBoards(): StoredBoard[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(BOARDS_KEY) || '[]')
+    return Array.isArray(value) ? value : []
+  } catch {
+    return []
+  }
+}
+
+function placeRouteRank(route: PlaceRoute, frequency: Map<string, number>): number {
+  const eta = route.estimateSeconds === null ? 1_000_000 : route.estimateSeconds
+  return eta - Math.min(frequency.get(route.routeUid) ?? 0, 5) * 15
+}
+
+function favoritePlaceButton(place: NearbyPlace, placeRoutes: PlaceRoute[]): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.className = 'favorite-place-button'
+  const existing = readBoards().find((board) => board.city === activeCity?.code && board.placeId === place.placeId)
+  button.textContent = existing ? '已在首頁' : '加入首頁'
+  button.disabled = Boolean(existing)
+  button.addEventListener('click', () => {
+    if (!activeCity) return
+    const boards = readBoards()
+    const now = new Date().toISOString()
+    const uniqueRoutes = [...new Map(placeRoutes.map((route) => [
+      `${route.routeUid}:${route.stopUid}:${route.direction}`,
+      route,
+    ])).values()].slice(0, 8)
+    const board = {
+      version: 2,
+      id: crypto.randomUUID?.() || String(Date.now()),
+      title: place.name,
+      city: activeCity.code,
+      placeId: place.placeId,
+      latitude: place.latitude,
+      longitude: place.longitude,
+      buses: uniqueRoutes.map((route) => ({
+        city: activeCity!.code,
+        routeName: route.routeName,
+        routeUid: route.routeUid,
+        stopName: route.stopName,
+        stopUid: route.stopUid,
+        direction: route.direction,
+      })),
+      createdAt: now,
+      updatedAt: now,
+    }
+    boards.push(board)
+    localStorage.setItem(BOARDS_KEY, JSON.stringify(boards))
+    localStorage.setItem(ACTIVE_BOARD_KEY, board.id)
+    button.textContent = '已加入首頁'
+    button.disabled = true
+  })
+  return button
+}
+
+function favoriteDirectionButton(place: NearbyPlace, route: PlaceRoute): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.className = 'favorite-direction-button'
+  const routeKey = `${route.routeUid}:${route.stopUid}:${route.direction}`
+  const existing = readBoards().find((board) =>
+    board.city === activeCity?.code
+    && board.placeId === place.placeId
+    && board.buses.some((bus) => `${bus.routeUid}:${bus.stopUid}:${bus.direction}` === routeKey),
+  )
+  button.textContent = existing ? '✓' : '＋'
+  button.title = existing ? '已在首頁' : '將這個方向加入首頁'
+  button.setAttribute('aria-label', button.title)
+  button.disabled = Boolean(existing)
+  button.addEventListener('click', () => {
+    if (!activeCity) return
+    const boards = readBoards()
+    const now = new Date().toISOString()
+    const bus = {
+      city: activeCity.code,
+      routeName: route.routeName,
+      routeUid: route.routeUid,
+      stopName: route.stopName,
+      stopUid: route.stopUid,
+      direction: route.direction,
+      directionLabel: route.label,
+    }
+    let board: StoredBoard | undefined = boards.find((item) => item.city === activeCity!.code && item.placeId === place.placeId)
+    if (board) board.buses.push(bus)
+    else {
+      const newBoard: StoredBoard = {
+        version: 2,
+        id: crypto.randomUUID?.() || String(Date.now()),
+        title: place.name,
+        city: activeCity.code,
+        placeId: place.placeId,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        buses: [bus],
+        createdAt: now,
+        updatedAt: now,
+      }
+      boards.push(newBoard)
+      board = newBoard
+    }
+    localStorage.setItem(BOARDS_KEY, JSON.stringify(boards))
+    localStorage.setItem(ACTIVE_BOARD_KEY, board.id)
+    button.textContent = '✓'
+    button.title = '已在首頁'
+    button.disabled = true
+  })
+  return button
+}
+
+function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLButtonElement {
+  const control = document.createElement('button')
+  control.className = 'favorite-direction-button'
+  const key = `${route.routeUid}:${route.stopUid}:${route.direction}:${route.label}`
+  const matches = (bus: Record<string, unknown>) =>
+    `${bus.routeUid}:${bus.stopUid}:${bus.direction}:${bus.directionLabel ?? ''}` === key
+  let selected = readBoards().some((board) =>
+    board.city === activeCity?.code && board.placeId === place.placeId && board.buses.some(matches),
+  )
+
+  const render = () => {
+    control.textContent = selected ? '×' : '＋'
+    control.title = selected ? '從首頁移除這個方向' : '將這個方向加入首頁'
+    control.setAttribute('aria-label', control.title)
+    control.classList.toggle('selected', selected)
+  }
+
+  control.addEventListener('click', () => {
+    if (!activeCity) return
+    const boards = readBoards()
+    const boardIndex = boards.findIndex((board) => board.city === activeCity!.code && board.placeId === place.placeId)
+    if (selected && boardIndex >= 0) {
+      boards[boardIndex].buses = boards[boardIndex].buses.filter((bus) => !matches(bus))
+      if (!boards[boardIndex].buses.length) boards.splice(boardIndex, 1)
+      selected = false
+    } else {
+      const bus = {
+        city: activeCity.code,
+        routeName: route.routeName,
+        routeUid: route.routeUid,
+        stopName: route.stopName,
+        stopUid: route.stopUid,
+        direction: route.direction,
+        directionLabel: route.label,
+      }
+      if (boardIndex >= 0) boards[boardIndex].buses.push(bus)
+      else boards.push({
+        version: 2,
+        id: crypto.randomUUID?.() || String(Date.now()),
+        title: place.name,
+        city: activeCity.code,
+        placeId: place.placeId,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        buses: [bus],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+      selected = true
+    }
+    localStorage.setItem(BOARDS_KEY, JSON.stringify(boards))
+    const selectedBoard = boards.find((board) => board.city === activeCity!.code && board.placeId === place.placeId)
+    if (selectedBoard) localStorage.setItem(ACTIVE_BOARD_KEY, selectedBoard.id)
+    else if (localStorage.getItem(ACTIVE_BOARD_KEY) && !boards.some((board) => board.id === localStorage.getItem(ACTIVE_BOARD_KEY))) {
+      if (boards[0]) localStorage.setItem(ACTIVE_BOARD_KEY, boards[0].id)
+      else localStorage.removeItem(ACTIVE_BOARD_KEY)
+    }
+    render()
+  })
+  render()
+  return control
+}
+
 async function showPlaceRoutes(place: NearbyPlace) {
   if (!activeCity) return
+  const placeRequest = ++previewRequest
+  previewLayer.clearLayers()
+  routeLayer.clearLayers()
+  stopMarkers = []
+  const loadingList = document.createElement('div')
+  loadingList.className = 'place-route-loading'
+  for (let index = 0; index < 3; index += 1) {
+    const skeleton = document.createElement('div')
+    skeleton.className = 'place-route-skeleton'
+    loadingList.appendChild(skeleton)
+  }
+  drawer.replaceChildren(
+    drawerBack('附近站牌', renderNearbyPlaces),
+    heading(place.name, '正在取得路線與到站時間'),
+    loadingList,
+  )
   setStatus(`正在讀取 ${place.name} 的路線…`)
   try {
     const response = await fetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/routes?city=${encodeURIComponent(activeCity.code)}`)
     const data = await response.json() as { routes?: PlaceRoute[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
+    if (placeRequest !== previewRequest) return
+    const frequency = new Map<string, number>()
+    readBoards().flatMap((board) => board.buses).forEach((bus) => {
+      const routeUid = typeof bus.routeUid === 'string' ? bus.routeUid : ''
+      if (routeUid) frequency.set(routeUid, (frequency.get(routeUid) ?? 0) + 1)
+    })
+    const sortedRoutes = [...data.routes].sort((a, b) =>
+      placeRouteRank(a, frequency) - placeRouteRank(b, frequency)
+      || a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }),
+    )
     const list = document.createElement('div')
     list.className = 'place-route-list'
-    for (const [index, route] of data.routes.entries()) {
+    for (const [index, route] of sortedRoutes.entries()) {
+      const row = document.createElement('div')
+      row.className = 'place-route-row'
       const button = document.createElement('button')
       button.className = 'place-route-button'
       const color = routePalette[index % routePalette.length]
-      button.style.setProperty('--route-color', color)
+      row.style.setProperty('--route-color', color)
       const line = document.createElement('span')
       const routeName = document.createElement('strong')
       routeName.textContent = route.routeName
       const direction = document.createElement('span')
       direction.textContent = route.label
+      const eta = document.createElement('b')
+      eta.className = 'place-route-eta'
+      eta.textContent = route.etaLabel
       line.appendChild(routeName)
-      line.appendChild(direction)
+      line.appendChild(eta)
       const detail = document.createElement('small')
-      detail.textContent = route.subRouteName
+      detail.textContent = route.label
       button.appendChild(line)
       button.appendChild(detail)
       button.addEventListener('click', () => void loadRoute(
@@ -1285,16 +1552,19 @@ async function showPlaceRoutes(place: NearbyPlace) {
         color,
         () => void showPlaceRoutes(place),
       ))
-      list.appendChild(button)
+      row.appendChild(button)
+      row.appendChild(directionFavoriteControl(place, route))
+      list.appendChild(row)
     }
     drawer.replaceChildren(
       drawerBack('附近站牌', renderNearbyPlaces),
       heading(place.name, `${Math.round(place.distanceMeters)} 公尺 · ${data.routes.length} 個行車方向`),
       list,
     )
-    await previewPlaceRoutes(data.routes, place)
+    await previewPlaceRoutes(sortedRoutes, place)
     drawTripEndpoints()
     map.panTo([place.latitude, place.longitude])
+    history.replaceState(null, '', `/map?city=${activeCity.code}&place=${encodeURIComponent(place.placeId)}`)
     setStatus(`${place.name} · ${data.routes.length} 個行車方向`)
   } catch (error) {
     setStatus(error instanceof Error && error.message ? error.message : '站牌路線讀取失敗', true)

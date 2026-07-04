@@ -23,7 +23,7 @@ export function renderETAPage(view: ETAView): string {
   <main class="eta-page">
     <header class="topbar">
       <a class="brand" href="/">MOCHI BUS</a>
-      <a class="icon-link" href="/setup">我的公車</a>
+      <nav class="top-actions" aria-label="主要功能" style="display:flex;align-items:center;gap:8px"><a class="icon-link" style="border-color:#a9b7ad;color:#3f594c" href="/map">地圖</a><a class="icon-link" href="/setup">我的公車</a></nav>
     </header>
     <section class="cover" aria-live="polite">
       <p class="eyebrow" id="board-title">${escapeHTML(query.stopName)}</p>
@@ -40,6 +40,7 @@ export function renderETAPage(view: ETAView): string {
     const ACTIVE_KEY = 'mochi.bus.activeBoard.v2';
     const OLD_PRESETS_KEY = 'mochi.bus.presets.v1';
     const OLD_ACTIVE_KEY = 'mochi.bus.activePreset.v1';
+    const ACTIVE_CITY_KEY = 'mochi.bus.activeCity.v1';
     const initialBoard = ${safeJSON(initialBoard)};
     const useLocalBoard = ${useLocalBoard};
     let currentBoard = initialBoard;
@@ -48,6 +49,10 @@ export function renderETAPage(view: ETAView): string {
     const noticeNode = document.querySelector('#notice');
     const updatedNode = document.querySelector('#updated');
     const refreshButton = document.querySelector('#refresh');
+    const topActionLinks = document.querySelectorAll('.top-actions a');
+    const mapLink = topActionLinks[0];
+    mapLink.removeAttribute('style');
+    if (topActionLinks[1]) topActionLinks[1].remove();
 
     function readJSON(key, fallback) {
       try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
@@ -85,14 +90,34 @@ export function renderETAPage(view: ETAView): string {
       const link = document.createElement('a');
       link.className = 'bus-row';
       link.href = routeLink(bus);
+      const routeCopy = document.createElement('span');
+      routeCopy.className = 'bus-route-copy';
+      routeCopy.style.cssText = 'display:grid;min-width:0;gap:3px';
       const route = document.createElement('strong');
       route.className = 'bus-name';
       route.textContent = bus.routeName;
+      const direction = document.createElement('small');
+      direction.className = 'bus-direction';
+      direction.textContent = bus.directionLabel || '';
+      direction.hidden = !bus.directionLabel;
+      direction.style.cssText = 'overflow:hidden;color:#777066;font-size:13px;font-weight:700;text-overflow:ellipsis;white-space:nowrap';
+      routeCopy.append(route, direction);
       const eta = document.createElement('span');
       eta.className = 'bus-eta';
       eta.textContent = failed ? '暫無資料' : data?.label || '更新中';
-      link.append(route, eta);
+      link.append(routeCopy, eta);
       return link;
+    }
+
+    async function fillDirectionLabel(bus) {
+      if (bus.directionLabel) return;
+      try {
+        const params = new URLSearchParams({ city: bus.city, route: bus.routeName });
+        const response = await fetch('/api/v1/stops?' + params);
+        const body = await response.json();
+        const group = body.groups?.find(group => group.direction === bus.direction && group.stops?.some(stop => stop.stopUid === bus.stopUid));
+        if (group?.label) bus.directionLabel = group.label;
+      } catch {}
     }
 
     async function refreshBoard() {
@@ -100,6 +125,7 @@ export function renderETAPage(view: ETAView): string {
       refreshButton.textContent = '更新中';
       noticeNode.textContent = '';
       const responses = await Promise.all(currentBoard.buses.map(async bus => {
+        await fillDirectionLabel(bus);
         try {
           const response = await fetch('/api/v1/eta?' + paramsFor(bus), { cache: 'no-store' });
           const body = await response.json();
@@ -107,7 +133,13 @@ export function renderETAPage(view: ETAView): string {
           return { bus, data: body };
         } catch { return { bus, failed: true }; }
       }));
+      responses.sort((a, b) => {
+        const aEta = typeof a.data?.estimateSeconds === 'number' ? a.data.estimateSeconds : Number.POSITIVE_INFINITY;
+        const bEta = typeof b.data?.estimateSeconds === 'number' ? b.data.estimateSeconds : Number.POSITIVE_INFINITY;
+        return aEta - bEta || a.bus.routeName.localeCompare(b.bus.routeName, 'zh-Hant', { numeric: true });
+      });
       listNode.replaceChildren(...responses.map(item => makeRow(item.bus, item.data, item.failed)));
+      localStorage.setItem(BOARDS_KEY, JSON.stringify(migrateBoards().map(board => board.id === currentBoard.id ? currentBoard : board)));
       const fresh = responses.filter(item => item.data).map(item => item.data);
       if (fresh.some(item => item.stale)) noticeNode.textContent = '部分資料可能延遲，請留意站牌資訊';
       updatedNode.textContent = fresh[0] ? '資料 ' + new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(fresh[0].dataTime || fresh[0].fetchedAt)) : '暫時無法更新';
@@ -116,15 +148,31 @@ export function renderETAPage(view: ETAView): string {
     }
 
     if (useLocalBoard) {
-      const boards = migrateBoards();
+      const storedBoards = migrateBoards();
+      const boards = storedBoards.filter(board => !(board.placeId && board.buses?.length > 1 && board.buses.every(bus => !bus.directionLabel)));
+      if (boards.length !== storedBoards.length) {
+        localStorage.setItem(BOARDS_KEY, JSON.stringify(boards));
+        if (!boards.some(board => board.id === localStorage.getItem(ACTIVE_KEY))) {
+          if (boards[0]) localStorage.setItem(ACTIVE_KEY, boards[0].id);
+          else localStorage.removeItem(ACTIVE_KEY);
+        }
+      }
+      if (!boards.length) boards.push(initialBoard);
       const activeId = localStorage.getItem(ACTIVE_KEY) || boards[0].id;
       currentBoard = boards.find(item => item.id === activeId) || boards[0];
       titleNode.textContent = currentBoard.title;
       const firstBus = currentBoard.buses[0];
+      const city = currentBoard.city || firstBus?.city;
+      if (city) {
+        localStorage.setItem(ACTIVE_CITY_KEY, city);
+        const mapParams = new URLSearchParams({ city });
+        if (currentBoard.placeId) mapParams.set('place', currentBoard.placeId);
+        mapLink.href = '/map?' + mapParams;
+      }
       if (currentBoard.id !== initialBoard.id || currentBoard.buses.length > 1 || firstBus?.stopUid !== initialBoard.buses[0].stopUid || firstBus?.routeName !== initialBoard.buses[0].routeName || firstBus?.direction !== initialBoard.buses[0].direction) {
         listNode.replaceChildren(...currentBoard.buses.map(bus => makeRow(bus)));
         refreshBoard();
-      }
+      } else refreshBoard();
     }
     refreshButton.addEventListener('click', refreshBoard);
     setInterval(refreshBoard, 30_000);

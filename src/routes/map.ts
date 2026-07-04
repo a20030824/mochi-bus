@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
+import { matchingEtaItems, selectBestEta } from '../domain/map/eta'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
 import {
   findNearbyStopPlaces,
@@ -10,10 +11,12 @@ import {
   getJourneyLegStopRefs,
   getOneTransferRoutes,
   getSnapshotRouteVariants,
+  getSnapshotRouteCatalog,
+  getStopPlace,
   getStopPlaceRoutes,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getRouteCatalog, type BusETAItem, type TDXEnv } from '../lib/tdx'
 import { renderMapPage } from '../map-page'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
@@ -28,6 +31,21 @@ map.get('/map', (c) => c.html(renderMapPage(), 200, {
 map.get('/api/v1/map/cities', (c) => c.json({ schemaVersion: 1, cities: mapCities }, 200, {
   'Cache-Control': 'public, max-age=86400',
 }))
+
+map.get('/api/v1/map/routes', async (c) => {
+  try {
+    const city = c.req.query('city')?.trim()
+    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
+    const snapshotRoutes = await getSnapshotRouteCatalog(c.env, city)
+    const routes = snapshotRoutes.length ? snapshotRoutes : await getRouteCatalog(c.env, city)
+    return c.json({ schemaVersion: 2, city, source: snapshotRoutes.length ? 'snapshot' : 'tdx', routes }, 200, {
+      'Cache-Control': `public, max-age=${snapshotRoutes.length ? 86400 : 300}`,
+    })
+  } catch (error) {
+    const message = error instanceof QueryValidationError ? error.message : '路線目錄讀取失敗'
+    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+  }
+})
 
 map.get('/api/v1/map/route', async (c) => {
   try {
@@ -144,9 +162,69 @@ map.get('/api/v1/map/place/:placeId/routes', async (c) => {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
     const routes = await getStopPlaceRoutes(c.env, city, c.req.param('placeId'))
-    return c.json({ schemaVersion: 1, city, routes }, 200, { 'Cache-Control': 'public, max-age=86400' })
+    const stopUids = [...new Set(routes.map((route) => route.stopUid))]
+    const stopNames = [...new Set(routes.map((route) => route.stopName))]
+    let etaItems: BusETAItem[] = []
+    let etaUpstreamAvailable = true
+    if (stopUids.length) {
+      const nameResults = await Promise.allSettled(stopNames.map(async (stopName) => {
+        const etaUrl = new URL(
+          `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}`,
+        )
+        etaUrl.searchParams.set('$filter', `StopName/Zh_tw eq '${stopName.replaceAll("'", "''")}'`)
+        etaUrl.searchParams.set('$format', 'JSON')
+        return await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 8)
+      }))
+      etaUpstreamAvailable = nameResults.some((result) => result.status === 'fulfilled')
+      etaItems = nameResults.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+      nameResults.forEach((result) => {
+        if (result.status === 'rejected') console.error('place_eta_name_failed', city, c.req.param('placeId'), result.reason)
+      })
+
+      const hasMatchingItem = routes.some((route) => matchingEtaItems(etaItems, route).length > 0)
+      if (!hasMatchingItem) {
+        const routeNames = [...new Set(routes.map((route) => route.routeName))]
+        const fallbackResults = await Promise.allSettled(routeNames.map(async (routeName) => {
+          const etaUrl = new URL(
+            `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+          )
+          etaUrl.searchParams.set('$format', 'JSON')
+          return await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 8)
+        }))
+        if (fallbackResults.some((result) => result.status === 'fulfilled')) etaUpstreamAvailable = true
+        etaItems.push(...fallbackResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []))
+      }
+    }
+    const withEta = routes.map((route) => {
+      const eta = selectBestEta(etaItems, route)
+      const estimateSeconds = typeof eta?.EstimateTime === 'number' ? Math.max(0, eta.EstimateTime) : null
+      const stopStatus = eta?.StopStatus ?? 0
+      return {
+        ...route,
+        estimateSeconds,
+        etaLabel: etaUpstreamAvailable ? formatETALabel(
+          estimateSeconds === null ? null : Math.ceil(estimateSeconds / 60),
+          stopStatus,
+        ) : '即時資料暫時無法取得',
+        stopStatus,
+      }
+    })
+    return c.json({ schemaVersion: 2, city, etaAvailable: etaUpstreamAvailable, routes: withEta }, 200, { 'Cache-Control': 'public, max-age=8' })
   } catch (error) {
     const message = error instanceof QueryValidationError ? error.message : '站牌路線查詢失敗'
+    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+  }
+})
+
+map.get('/api/v1/map/place/:placeId', async (c) => {
+  try {
+    const city = c.req.query('city')?.trim()
+    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
+    const place = await getStopPlace(c.env, city, c.req.param('placeId'))
+    if (!place) return c.json({ error: '找不到這個站牌' }, 404)
+    return c.json({ schemaVersion: 1, city, place }, 200, { 'Cache-Control': 'public, max-age=86400' })
+  } catch (error) {
+    const message = error instanceof QueryValidationError ? error.message : '站牌資料讀取失敗'
     return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
   }
 })

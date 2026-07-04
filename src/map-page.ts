@@ -8,13 +8,15 @@ export function renderMapPage(): string {
   <meta name="description" content="把公車路線直接畫在城市裡">
   <title>公車地圖｜Mochi Bus</title>
   <link rel="stylesheet" href="/assets/map.css">
+  <link rel="modulepreload" href="/assets/map.js">
+  <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
 </head>
 <body>
   <div id="map-app">
     <div id="map" aria-label="公車路線地圖"></div>
     <header class="map-header">
       <a href="/" class="map-brand">MOCHI <span>MAP</span></a>
-      <button id="taiwan-button" class="quiet-button" type="button">全台</button>
+      <a class="quiet-button map-home" href="/">首頁</a>
     </header>
     <div id="map-status" class="map-status">選一個區域，看看公車如何穿過城市。</div>
     <aside id="map-drawer" class="map-drawer" aria-live="polite"></aside>

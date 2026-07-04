@@ -40,6 +40,7 @@ button { cursor: pointer; }
   text-decoration: none;
 }
 .map-brand span { color: #b85f49; }
+.map-home { text-decoration: none; }
 
 .quiet-button, .drawer-back {
   border: 1px solid rgba(54, 54, 48, .18);
@@ -91,16 +92,32 @@ button { cursor: pointer; }
 
 .vehicle-marker-wrap { border: 0; background: transparent; }
 .vehicle-marker {
-  display: grid;
-  width: 30px;
+  position: relative;
+  display: block;
+  width: 24px;
   height: 30px;
-  place-items: center;
-  border: 2px solid #fffaf0;
-  border-radius: 50%;
-  background: #292a25;
-  box-shadow: 0 5px 16px rgba(41, 42, 37, .32);
-  color: #f0a36f;
-  font-size: 14px;
+  border: 1.5px solid #292a25;
+  border-radius: 4px 4px 7px 7px;
+  background: #f4efe4;
+  box-shadow: 0 4px 13px rgba(41, 42, 37, .28), 0 0 0 2px rgba(244, 239, 228, .75);
+}
+.vehicle-marker::before {
+  content: "";
+  position: absolute;
+  inset: 4px 4px 11px;
+  border-radius: 2px;
+  background: #4f685b;
+  box-shadow: inset 0 -3px rgba(255,255,255,.16);
+}
+.vehicle-marker::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 4px;
+  left: 3px;
+  height: 4px;
+  border-radius: 1px;
+  background: #b85f49;
 }
 
 .map-drawer {
@@ -212,6 +229,14 @@ button { cursor: pointer; }
 .place-route-button { display: grid; gap: 5px; padding: 11px 12px 11px 15px; border-left: 5px solid var(--route-color, #4f685b); }
 .place-route-button > span { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .place-route-button > span > span, .place-route-button small { color: #67685f; font-size: 12px; }
+.place-route-eta { padding: 3px 7px; border-radius: 3px; background: #f7f2e8; color: #29251f; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.place-route-row { display: grid; grid-template-columns: minmax(0, 1fr) 42px; align-items: stretch; overflow: hidden; border: 1px solid #c9c2b4; border-left: 5px solid var(--route-color, #4f685b); border-radius: 3px; background: #ebe5d9; }
+.place-route-row .place-route-button { border: 0; border-radius: 0; border-left: 0; background: transparent; }
+.favorite-direction-button { width: 42px; min-height: 100%; padding: 0; border: 0; border-left: 1px solid #d1c8ba; border-radius: 0; background: transparent; color: #8f4939; font-size: 20px; box-shadow: none; }
+.favorite-direction-button.selected { background: #df735714; color: #9b4735; }
+.place-route-loading { display: grid; gap: 7px; }
+.place-route-skeleton { height: 66px; border: 1px solid #d5cdbf; border-radius: 3px; background: linear-gradient(100deg, #e8e1d5 20%, #f3ede3 42%, #e8e1d5 64%); background-size: 220% 100%; animation: route-loading 1.1s ease-in-out infinite; }
+@keyframes route-loading { to { background-position-x: -220%; } }
 .nearby-place-button:hover, .place-route-button:hover { border-color: #b85f49; }
 .endpoint-button {
   min-width: 68px;
