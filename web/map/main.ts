@@ -290,17 +290,32 @@ function bindSelectableLine(
 // 預覽淡線也標出小站點(跟全路網的小圓點同款),看得出停靠密度與站距。
 // 放在 routePreviewPane(而非 stopPane):小點屬於預覽層,必須墊在
 // 附近站牌等互動大圓點(stopPane)之下,不能蓋住它們。
+// 尺寸隨 zoom 走但始終小於 stopPane 的互動圓點,放大才不會縮成針尖。
+const previewStopDots = new Set<L.CircleMarker>()
+
+function previewDotStyleForZoom(zoom: number): { radius: number; weight: number } {
+  if (zoom >= 16) return { radius: 5, weight: 1.4 }
+  if (zoom >= 14) return { radius: 3.5, weight: 1.2 }
+  if (zoom >= 12) return { radius: 2.4, weight: 1 }
+  return { radius: 1.8, weight: 1 }
+}
+
 function addPreviewStopDots(
   stops: RouteMapVariant['stops'],
   color: string,
   layerGroup: L.LayerGroup,
 ): void {
+  const { radius, weight } = previewDotStyleForZoom(map.getZoom())
   L.geoJSON(stops, {
     pane: 'routePreviewPane',
-    pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
-      pane: 'routePreviewPane', radius: 2.4, weight: 1, color: '#fffaf0', fillColor: color, fillOpacity: .6,
-      interactive: false,
-    }),
+    pointToLayer: (_feature, latlng) => {
+      const dot = L.circleMarker(latlng, {
+        pane: 'routePreviewPane', radius, weight, color: '#fffaf0', fillColor: color, fillOpacity: .6,
+        interactive: false,
+      })
+      previewStopDots.add(dot)
+      return dot
+    },
   }).addTo(layerGroup)
 }
 
@@ -842,6 +857,15 @@ function updateStopMarkerSize() {
   stopMarkers.forEach((marker) => marker.setStyle(style))
   const radius = map.getZoom() >= 15 ? 4 : map.getZoom() >= 12 ? 2.5 : 1.4
   networkStopMarkers.forEach((marker) => marker.setRadius(radius))
+  // 預覽小點由 previewLayer.clearLayers() 收掉,這裡順手把已離場的踢出集合。
+  const previewStyle = previewDotStyleForZoom(map.getZoom())
+  previewStopDots.forEach((dot) => {
+    if (!map.hasLayer(dot)) {
+      previewStopDots.delete(dot)
+      return
+    }
+    dot.setStyle(previewStyle)
+  })
 }
 
 function startVehicleRefresh(variant: RouteMapVariant) {
