@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
-import { matchingEtaItems, selectBestEta } from '../domain/map/eta'
+import { selectBestEta } from '../domain/map/eta'
 import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
@@ -21,6 +21,7 @@ import {
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
 import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
 import { renderMapPage } from '../map-page'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
@@ -37,22 +38,29 @@ function edgeCache(): Cache {
   return (caches as CacheStorage & { default: Cache }).default
 }
 
+// 記憶體層在前、Cache API 在後:Cache API 在 workers.dev 上是 no-op、
+// 自訂網域上也只限同機房,單靠它冷卻旗標常常寫了就不見。
 async function hasRealtimeCooldown(city: string): Promise<boolean> {
+  if (memoryCacheGet<boolean>(`arrivals/cooldown/${city}`)) return true
   return Boolean(await edgeCache().match(arrivalCacheKey('cooldown', city)))
 }
 
 async function setRealtimeCooldown(city: string): Promise<void> {
+  memoryCacheSet(`arrivals/cooldown/${city}`, true, REALTIME_COOLDOWN_SECONDS)
   await edgeCache().put(arrivalCacheKey('cooldown', city), new Response('1', {
     headers: { 'Cache-Control': `public, max-age=${REALTIME_COOLDOWN_SECONDS}` },
   }))
 }
 
 async function readLastRealtime(city: string, routeName: string): Promise<BusETAItem[]> {
+  const memoized = memoryCacheGet<BusETAItem[]>(`arrivals/last/${city}/${routeName}`)
+  if (memoized) return memoized
   const response = await edgeCache().match(arrivalCacheKey('last', city, routeName))
   return response ? await response.json<BusETAItem[]>() : []
 }
 
 async function writeLastRealtime(city: string, routeName: string, items: BusETAItem[]): Promise<void> {
+  memoryCacheSet(`arrivals/last/${city}/${routeName}`, items, LAST_REALTIME_SECONDS)
   await edgeCache().put(arrivalCacheKey('last', city, routeName), new Response(JSON.stringify(items), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
@@ -333,65 +341,6 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
     }, 200, { 'Cache-Control': 'public, max-age=15' })
   } catch (error) {
     const message = error instanceof QueryValidationError ? error.message : '到站時間讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
-  }
-})
-
-map.get('/api/v1/map/place/:placeId/legacy-arrivals', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    const routes = await getStopPlaceRoutes(c.env, city, c.req.param('placeId'))
-    const stopUids = [...new Set(routes.map((route) => route.stopUid))]
-    const stopNames = [...new Set(routes.map((route) => route.stopName))]
-    let etaItems: BusETAItem[] = []
-    let etaUpstreamAvailable = true
-    if (stopUids.length) {
-      const nameResults = await Promise.allSettled(stopNames.map(async (stopName) => {
-        const etaUrl = new URL(
-          `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}`,
-        )
-        etaUrl.searchParams.set('$filter', `StopName/Zh_tw eq '${stopName.replaceAll("'", "''")}'`)
-        etaUrl.searchParams.set('$format', 'JSON')
-        return await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 8)
-      }))
-      etaUpstreamAvailable = nameResults.some((result) => result.status === 'fulfilled')
-      etaItems = nameResults.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
-      nameResults.forEach((result) => {
-        if (result.status === 'rejected') console.error('place_eta_name_failed', city, c.req.param('placeId'), result.reason)
-      })
-
-      const hasMatchingItem = routes.some((route) => matchingEtaItems(etaItems, route).length > 0)
-      if (!hasMatchingItem) {
-        const routeNames = [...new Set(routes.map((route) => route.routeName))]
-        const fallbackResults = await Promise.allSettled(routeNames.map(async (routeName) => {
-          const etaUrl = new URL(
-            `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
-          )
-          etaUrl.searchParams.set('$format', 'JSON')
-          return await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 8)
-        }))
-        if (fallbackResults.some((result) => result.status === 'fulfilled')) etaUpstreamAvailable = true
-        etaItems.push(...fallbackResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []))
-      }
-    }
-    const withEta = routes.map((route) => {
-      const eta = selectBestEta(etaItems, route)
-      const estimateSeconds = typeof eta?.EstimateTime === 'number' ? Math.max(0, eta.EstimateTime) : null
-      const stopStatus = eta?.StopStatus ?? 0
-      return {
-        ...route,
-        estimateSeconds,
-        etaLabel: etaUpstreamAvailable ? formatETALabel(
-          estimateSeconds === null ? null : Math.ceil(estimateSeconds / 60),
-          stopStatus,
-        ) : '即時資料暫時無法取得',
-        stopStatus,
-      }
-    })
-    return c.json({ schemaVersion: 2, city, etaAvailable: etaUpstreamAvailable, routes: withEta }, 200, { 'Cache-Control': 'public, max-age=8' })
-  } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '站牌路線查詢失敗'
     return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
   }
 })

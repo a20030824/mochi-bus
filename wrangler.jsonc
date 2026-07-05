@@ -3,6 +3,9 @@
   "name": "mochi-tools",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-03",
+  // Cache API 在 *.workers.dev 上是 no-op,只走自訂網域才吃得到快取,
+  // 關掉 workers.dev URL 避免舊連結繞過快取層。
+  "workers_dev": false,
   "assets": {
     "directory": "./public"
   },

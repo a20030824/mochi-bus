@@ -3,6 +3,7 @@ import { classifyRouteName, type RouteCategory } from '../domain/route-category'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../domain/schedule'
 import { selectBestEta } from '../domain/map/eta'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
+import { memoryCacheGet, memoryCacheSet } from './memory-cache'
 
 export type TDXEnv = {
   TDX_CLIENT_ID: string
@@ -480,10 +481,18 @@ async function getBusETA(env: TDXEnv, query: BusQuery): Promise<BusETAItem[]> {
 }
 
 export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number): Promise<T> {
+  const memoryKey = `tdx/${url.toString()}`
+  const memoized = memoryCacheGet<T>(memoryKey)
+  if (memoized !== undefined) return memoized
+
   const edgeCache = (caches as CacheStorage & { default: Cache }).default
   const cacheKey = new Request(`https://mochi-cache.invalid/tdx/${encodeURIComponent(url.toString())}`)
   const cached = await edgeCache.match(cacheKey)
-  if (cached) return await cached.json() as T
+  if (cached) {
+    const data = await cached.json() as T
+    memoryCacheSet(memoryKey, data, ttlSeconds)
+    return data
+  }
 
   const token = await getTDXToken(env)
   const response = await fetch(url, {
@@ -493,6 +502,7 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
   if (!response.ok) throw new Error(`TDX request failed (${response.status})`)
 
   const data = await response.json() as T
+  memoryCacheSet(memoryKey, data, ttlSeconds)
   await edgeCache.put(cacheKey, new Response(JSON.stringify(data), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',

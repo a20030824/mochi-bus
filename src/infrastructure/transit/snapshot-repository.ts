@@ -2,6 +2,7 @@ import type { RouteMapVariant } from '../../domain/map/map-model'
 import { pairTransferLegs, type TransferLegCandidate } from '../../domain/map/transfer'
 import { classifyRouteName } from '../../domain/route-category'
 import type { ScheduleItem } from '../../domain/schedule'
+import { memoryCacheGet, memoryCacheSet } from '../../lib/memory-cache'
 
 type ActiveVersion = { active_version: string }
 type PatternRow = {
@@ -29,20 +30,35 @@ export type TransitBindings = {
   TRANSIT_SHAPES: R2Bucket
 }
 
+// 每個查詢都要先知道 active_version,但它只在 sync 換版時才變;
+// 記憶體快取 60 秒,省掉每個請求開頭那一次序列 D1 往返。
+async function getActiveVersion(env: TransitBindings, city: string): Promise<string | null> {
+  const memoryKey = `transit/active-version/${city}`
+  const memoized = memoryCacheGet<string>(memoryKey)
+  if (memoized) return memoized
+  const row = await env.TRANSIT_DB.prepare(
+    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
+  ).bind(city).first<ActiveVersion>()
+  if (!row) return null
+  memoryCacheSet(memoryKey, row.active_version, 60)
+  return row.active_version
+}
+
 export async function getSnapshotSchedule(
   env: TransitBindings,
   city: string,
   routeName: string,
 ): Promise<ScheduleItem[] | null> {
-  const active = await env.TRANSIT_DB.prepare(`
-    SELECT dv.active_version, r.route_uid
-    FROM dataset_versions dv
-    JOIN routes r ON r.version = dv.active_version AND r.city_code = dv.city_code
-    WHERE dv.city_code = ? AND r.route_name = ?
+  const version = await getActiveVersion(env, city)
+  if (!version) return null
+  const route = await env.TRANSIT_DB.prepare(`
+    SELECT route_uid
+    FROM routes
+    WHERE version = ? AND city_code = ? AND route_name = ?
     LIMIT 1
-  `).bind(city, routeName).first<{ active_version: string; route_uid: string }>()
-  if (!active) return null
-  const key = `snapshots/${active.active_version}/cities/${city}/schedules/${active.route_uid}.json`
+  `).bind(version, city, routeName).first<{ route_uid: string }>()
+  if (!route) return null
+  const key = `snapshots/${version}/cities/${city}/schedules/${route.route_uid}.json`
   const object = await env.TRANSIT_SHAPES.get(key)
   return object ? await object.json<ScheduleItem[]>() : null
 }
@@ -62,11 +78,9 @@ export type StopPlaceBundleRoute = {
 }
 
 export async function getStopPlaceBundle(env: TransitBindings, city: string, placeId: string) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active) return null
-  const key = `snapshots/${active.active_version}/cities/${city}/places/${placeId}.json`
+  const version = await getActiveVersion(env, city)
+  if (!version) return null
+  const key = `snapshots/${version}/cities/${city}/places/${placeId}.json`
   const object = await env.TRANSIT_SHAPES.get(key)
   return object ? await object.json<{
     version: string
@@ -81,10 +95,8 @@ export async function getSnapshotRouteVariants(
   city: string,
   routeName: string,
 ): Promise<RouteMapVariant[]> {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active) return []
+  const version = await getActiveVersion(env, city)
+  if (!version) return []
 
   const patterns = await env.TRANSIT_DB.prepare(`
     SELECT p.pattern_id, p.route_uid, r.route_name, p.subroute_name, p.direction,
@@ -93,7 +105,7 @@ export async function getSnapshotRouteVariants(
     JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
     WHERE p.version = ? AND p.city_code = ? AND r.route_name = ?
     ORDER BY p.direction, p.pattern_id
-  `).bind(active.active_version, city, routeName).all<PatternRow>()
+  `).bind(version, city, routeName).all<PatternRow>()
   if (!patterns.results.length) return []
 
   return (await Promise.all(patterns.results.map(async (pattern) => {
@@ -104,7 +116,7 @@ export async function getSnapshotRouteVariants(
         JOIN stops s ON s.version = ps.version AND s.stop_uid = ps.stop_uid
         WHERE ps.version = ? AND ps.pattern_id = ?
         ORDER BY ps.stop_sequence
-      `).bind(active.active_version, pattern.pattern_id).all<StopRow>(),
+      `).bind(version, pattern.pattern_id).all<StopRow>(),
       env.TRANSIT_SHAPES.get(pattern.shape_key),
     ])
     if (!shapeObject) return null
@@ -138,16 +150,14 @@ export async function getSnapshotRouteVariants(
 }
 
 export async function getSnapshotRouteCatalog(env: TransitBindings, city: string) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active) return []
+  const version = await getActiveVersion(env, city)
+  if (!version) return []
   const result = await env.TRANSIT_DB.prepare(`
     SELECT route_uid, route_name, departure_name, destination_name
     FROM routes
     WHERE version = ? AND city_code = ?
     ORDER BY route_name
-  `).bind(active.active_version, city).all<{
+  `).bind(version, city).all<{
     route_uid: string
     route_name: string
     departure_name: string | null
@@ -163,12 +173,10 @@ export async function getSnapshotRouteCatalog(env: TransitBindings, city: string
 }
 
 export async function getCityNetwork(env: TransitBindings, city: string) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active) return null
+  const version = await getActiveVersion(env, city)
+  if (!version) return null
 
-  const bundleKey = `snapshots/${active.active_version}/cities/${city}/network.json`
+  const bundleKey = `snapshots/${version}/cities/${city}/network.json`
   const bundle = await env.TRANSIT_SHAPES.get(bundleKey)
   if (bundle) return await bundle.json<{
     version: string
@@ -195,13 +203,13 @@ export async function getCityNetwork(env: TransitBindings, city: string) {
       WHERE p.version = ? AND p.city_code = ?
       ORDER BY r.route_name, p.direction, p.pattern_id
       LIMIT 41
-    `).bind(active.active_version, city).all<PatternRow>(),
+    `).bind(version, city).all<PatternRow>(),
     env.TRANSIT_DB.prepare(`
       SELECT place_id, place_name, latitude, longitude
       FROM stop_places
       WHERE version = ? AND city_code = ?
       ORDER BY place_name
-    `).bind(active.active_version, city).all<{
+    `).bind(version, city).all<{
       place_id: string
       place_name: string
       latitude: number
@@ -226,7 +234,7 @@ export async function getCityNetwork(env: TransitBindings, city: string) {
   }))).filter((route): route is NonNullable<typeof route> => route !== null)
 
   return {
-    version: active.active_version,
+    version: version,
     routes,
     places: places.results.map((place) => ({
       placeId: place.place_id,
@@ -244,10 +252,8 @@ export async function findNearbyStopPlaces(
   longitude: number,
   radiusMeters: number,
 ) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active) return []
+  const version = await getActiveVersion(env, city)
+  if (!version) return []
 
   const latitudeDelta = radiusMeters / 111_320
   const longitudeDelta = radiusMeters / (111_320 * Math.max(0.2, Math.cos(latitude * Math.PI / 180)))
@@ -258,7 +264,7 @@ export async function findNearbyStopPlaces(
       AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
     LIMIT 100
   `).bind(
-    active.active_version, city,
+    version, city,
     latitude - latitudeDelta, latitude + latitudeDelta,
     longitude - longitudeDelta, longitude + longitudeDelta,
   ).all<{ place_id: string; place_name: string; latitude: number; longitude: number }>()
@@ -276,15 +282,13 @@ export async function findNearbyStopPlaces(
 }
 
 export async function getStopPlace(env: TransitBindings, city: string, placeId: string) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active) return null
+  const version = await getActiveVersion(env, city)
+  if (!version) return null
   const place = await env.TRANSIT_DB.prepare(`
     SELECT place_id, place_name, latitude, longitude
     FROM stop_places
     WHERE version = ? AND city_code = ? AND place_id = ?
-  `).bind(active.active_version, city, placeId).first<{
+  `).bind(version, city, placeId).first<{
     place_id: string
     place_name: string
     latitude: number
@@ -300,10 +304,8 @@ export async function getStopPlace(env: TransitBindings, city: string, placeId: 
 }
 
 export async function getStopPlaceRoutes(env: TransitBindings, city: string, placeId: string) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active) return []
+  const version = await getActiveVersion(env, city)
+  if (!version) return []
   const result = await env.TRANSIT_DB.prepare(`
     SELECT DISTINCT r.route_uid, r.route_name, p.pattern_id, p.direction,
       p.departure_name, p.destination_name, p.subroute_uid, p.subroute_name,
@@ -314,7 +316,7 @@ export async function getStopPlaceRoutes(env: TransitBindings, city: string, pla
     JOIN stops s ON s.version = ps.version AND s.stop_uid = ps.stop_uid
     WHERE ps.version = ? AND p.city_code = ? AND ps.place_id = ?
     ORDER BY r.route_name, p.direction
-  `).bind(active.active_version, city, placeId).all<{
+  `).bind(version, city, placeId).all<{
     route_uid: string
     route_name: string
     pattern_id: string
@@ -349,10 +351,8 @@ export async function getDirectRoutes(
   fromPlaceId: string,
   toPlaceId: string,
 ) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active || fromPlaceId === toPlaceId) return []
+  const version = await getActiveVersion(env, city)
+  if (!version || fromPlaceId === toPlaceId) return []
 
   const result = await env.TRANSIT_DB.prepare(`
     SELECT DISTINCT r.route_name, p.pattern_id, p.direction, p.subroute_name,
@@ -372,7 +372,7 @@ export async function getDirectRoutes(
       AND board.place_id = ? AND alight.place_id = ?
     ORDER BY (alight.stop_sequence - board.stop_sequence), r.route_name
     LIMIT 24
-  `).bind(active.active_version, city, fromPlaceId, toPlaceId).all<{
+  `).bind(version, city, fromPlaceId, toPlaceId).all<{
     route_name: string
     pattern_id: string
     direction: 0 | 1
@@ -415,10 +415,8 @@ export async function getOneTransferRoutes(
   fromPlaceId: string,
   toPlaceId: string,
 ) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active || fromPlaceId === toPlaceId) return []
+  const version = await getActiveVersion(env, city)
+  if (!version || fromPlaceId === toPlaceId) return []
 
   // SQL 只做便宜的兩端展開(各數百列、走索引),步行距離的空間接合交給
   // pairTransferLegs 在記憶體用網格做。舊版把接合塞在 SQL 的經緯度 box join,
@@ -448,7 +446,7 @@ export async function getOneTransferRoutes(
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
       JOIN stop_places place ON place.version = anchor.version AND place.place_id = transfer.place_id
       WHERE p.city_code = ?
-    `).bind(active.active_version, fromPlaceId, city),
+    `).bind(version, fromPlaceId, city),
     env.TRANSIT_DB.prepare(`
       WITH anchor AS MATERIALIZED (
         SELECT version, pattern_id, stop_sequence
@@ -470,7 +468,7 @@ export async function getOneTransferRoutes(
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
       JOIN stop_places place ON place.version = anchor.version AND place.place_id = transfer.place_id
       WHERE p.city_code = ?
-    `).bind(active.active_version, toPlaceId, city),
+    `).bind(version, toPlaceId, city),
   ])
 
   const toCandidate = (row: TransferLegRow): TransferLegCandidate => ({
@@ -498,10 +496,8 @@ export async function getJourneyLegStopRefs(
   city: string,
   legs: Array<{ key: string; patternId: string; sequence: number }>,
 ) {
-  const active = await env.TRANSIT_DB.prepare(
-    'SELECT active_version FROM dataset_versions WHERE city_code = ?',
-  ).bind(city).first<ActiveVersion>()
-  if (!active || !legs.length) return []
+  const version = await getActiveVersion(env, city)
+  if (!version || !legs.length) return []
 
   const results = await env.TRANSIT_DB.batch(legs.map((leg) => env.TRANSIT_DB.prepare(`
     SELECT p.route_uid, p.direction, r.route_name, ps.stop_uid
@@ -510,7 +506,7 @@ export async function getJourneyLegStopRefs(
     JOIN pattern_stops ps ON ps.version = p.version AND ps.pattern_id = p.pattern_id
     WHERE p.version = ? AND p.city_code = ? AND p.pattern_id = ? AND ps.stop_sequence = ?
     LIMIT 1
-  `).bind(active.active_version, city, leg.patternId, leg.sequence)))
+  `).bind(version, city, leg.patternId, leg.sequence)))
 
   return results.flatMap((result, index) => {
     const row = result.results[0] as {
