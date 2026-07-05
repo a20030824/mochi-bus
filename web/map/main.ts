@@ -218,6 +218,8 @@ const vehicleLayer = L.layerGroup().addTo(map)
 let cities: MapCity[] = []
 let activeCity: MapCity | undefined
 let routes: RouteItem[] = []
+// routes 屬於哪個縣市:深連結直接進路線不會經過 chooseCity,目錄是空的
+let routesCityCode: string | undefined
 let category = '全部'
 let stopMarkers: L.CircleMarker[] = []
 let lastNearbyPlaces: NearbyPlace[] = []
@@ -227,6 +229,7 @@ let selectedTo: NearbyPlace | undefined
 let fromCoordinate: [number, number] | undefined
 let toCoordinate: [number, number] | undefined
 let tripStage: 'idle' | 'from' | 'to' = 'idle'
+let tripSelecting = false
 let lastDirectRoutes: DirectRoute[] = []
 let lastTransferPlans: TransferPlan[] = []
 let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = 'browse'
@@ -528,6 +531,7 @@ async function chooseCity(city: MapCity) {
     const data = await response.json() as { routes?: RouteItem[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
     routes = data.routes
+    routesCityCode = city.code
     category = '全部'
     renderRoutePicker()
     setStatus(`${city.name} · ${routes.length} 條路線`)
@@ -547,6 +551,31 @@ function renderRoutePicker() {
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
   stopMarkers = []
+  if (!routes.length || routesCityCode !== activeCity.code) {
+    // 深連結直接進路線(沒經過 chooseCity)後按返回會走到這:目錄還沒載,
+    // 先補抓再重畫,不然會看到一片空白的路線選單。
+    drawer.replaceChildren(
+      drawerBack('返回縣市', () => showRegion(activeCity!.region)),
+      heading(activeCity.name, '正在載入路線…'),
+    )
+    setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
+    const cityCode = activeCity.code
+    void (async () => {
+      try {
+        const response = await fetch(`/api/v1/map/routes?city=${encodeURIComponent(cityCode)}`)
+        const data = await response.json() as { routes?: RouteItem[]; error?: string }
+        if (!response.ok || !data.routes) throw new Error(data.error)
+        routes = data.routes
+        routesCityCode = cityCode
+        category = '全部'
+        // 載回來時使用者可能已經離開選單(開了路線、換了城市),別把畫面搶回來
+        if (interactionMode === 'browse' && activeCity?.code === cityCode) renderRoutePicker()
+      } catch {
+        setStatus('目前無法載入這個縣市的路線。', true)
+      }
+    })()
+    return
+  }
   const back = drawerBack('返回縣市', () => showRegion(activeCity!.region))
   const title = heading(activeCity.name, '不用設定起終點，直接看一條公車。')
   const search = document.createElement('input')
@@ -639,6 +668,35 @@ function clearTripState() {
   lastTransferPlans = []
 }
 
+function hasTripResults(): boolean {
+  return Boolean(selectedFrom && selectedTo && (lastDirectRoutes.length || lastTransferPlans.length))
+}
+
+// 從岔出去的畫面(檢視候選路線、附近站牌)回到行程候選清單。
+// 行程結果只在明確出口丟棄(路線列表、取消規劃、換城市),
+// 中途點站牌、開路線都保留狀態,靠這裡回得來。
+function returnToTripResults() {
+  if (!hasTripResults()) {
+    renderRoutePicker()
+    return
+  }
+  interactionMode = 'trip-results'
+  routeReturnsToTrip = false
+  // 選中的路線畫在 routeLayer、車輛有自己的計時器,回候選清單時一併收掉
+  stopVehicleRefresh()
+  routeLayer.clearLayers()
+  stopMarkers = []
+  nearbyLayer.clearLayers()
+  if (lastDirectRoutes.length) {
+    renderDirectRoutes(lastDirectRoutes)
+    void previewDirectRoutes(lastDirectRoutes)
+  } else {
+    renderTransferPlans(lastTransferPlans)
+    void previewTransferPlans(lastTransferPlans)
+  }
+  drawTripEndpoints()
+}
+
 function unifiedStopMarker(
   position: L.LatLngExpression,
   prominent = false,
@@ -680,10 +738,14 @@ async function loadRoute(
   previewRequest += 1
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
-  if (!returnToTrip) clearTripState()
+  if (!returnToTrip && !hasTripResults()) clearTripState()
+  // 載入中(和載入失敗時)的返回也要指對地方:從行程候選進來的,
+  // 退路是候選清單;指到 renderRoutePicker 會把整趟規劃清掉。
+  const loadingBack = returnToTrip ? returnToTripResults : backAction ?? renderRoutePicker
+  const loadingLabel = returnToTrip ? '返回行程候選' : backAction ? '返回站點' : '返回路線'
   setStatus(`${routeName} · 正在讀取城市裡的路徑…`)
-  drawer.replaceChildren(drawerBack('返回路線', renderRoutePicker), heading(routeName, '正在拼起路線與站牌…'))
-  setViewBack(backAction ?? renderRoutePicker)
+  drawer.replaceChildren(drawerBack(loadingLabel, loadingBack), heading(routeName, '正在拼起路線與站牌…'))
+  setViewBack(loadingBack)
   try {
     const params = new URLSearchParams({ city: activeCity.code, route: routeName })
     const response = await fetch(`/api/v1/map/route?${params}`)
@@ -756,12 +818,15 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     })
     return button
   }))
+  // 行程候選帶著過期的 variantKey 進來時會落到這裡,退路一樣要回候選清單
+  const variantBack = routeReturnsToTrip ? returnToTripResults : routeBackAction ?? renderRoutePicker
+  const variantBackLabel = routeReturnsToTrip ? '返回行程候選' : routeBackAction ? '返回站點' : '返回路線'
   drawer.replaceChildren(
-    drawerBack(routeBackAction ? '返回站點' : '返回路線', routeBackAction ?? renderRoutePicker),
+    drawerBack(variantBackLabel, variantBack),
     heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
     list,
   )
-  setViewBack(routeBackAction ?? renderRoutePicker)
+  setViewBack(variantBack)
 }
 
 function drawVariant(variant: RouteMapVariant) {
@@ -808,21 +873,8 @@ function drawVariant(variant: RouteMapVariant) {
     ? '返回行程候選'
     : canReturnToVariantPicker ? '更換方向' : routeBackLabel
   const goBack = () => {
-    if (routeReturnsToTrip && (lastDirectRoutes.length || lastTransferPlans.length)) {
-      interactionMode = 'trip-results'
-      // 選中的路線畫在 routeLayer、車輛有自己的計時器,回候選清單時要一併收掉
-      stopVehicleRefresh()
-      routeLayer.clearLayers()
-      stopMarkers = []
-      if (lastDirectRoutes.length) {
-        renderDirectRoutes(lastDirectRoutes)
-        void previewDirectRoutes(lastDirectRoutes)
-      } else {
-        renderTransferPlans(lastTransferPlans)
-        void previewTransferPlans(lastTransferPlans)
-      }
-      nearbyLayer.clearLayers()
-      drawTripEndpoints()
+    if (routeReturnsToTrip && hasTripResults()) {
+      returnToTripResults()
     } else if (canReturnToVariantPicker && lastVariantChoices) {
       // 從支線選擇進來的,退回支線選擇(一層);直接跳路線列表會一次退兩層。
       renderVariantPicker(lastVariantChoices.routeName, lastVariantChoices.variants)
@@ -1002,7 +1054,9 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
   if (!activeCity) return
   stopVehicleRefresh()
   setNetworkVisible(false)
-  if (interactionMode === 'trip' || interactionMode === 'trip-results' || routeReturnsToTrip) clearTripState()
+  // 只有「選點進行中」需要中止規劃;已有行程結果就保留,
+  // 點站牌不再把整趟規劃清掉,附近站牌視圖會給「返回行程候選」的退路。
+  if (interactionMode === 'trip') clearTripState()
   interactionMode = 'nearby'
   routeReturnsToTrip = false
   previewRequest += 1
@@ -1078,8 +1132,9 @@ function renderNearbyPlaces() {
     button.addEventListener('click', () => void showPlaceRoutes(place))
     list.appendChild(button)
   }
+  const nearbyBack = hasTripResults() ? returnToTripResults : renderRoutePicker
   drawer.replaceChildren(
-    drawerBack('路線列表', renderRoutePicker),
+    drawerBack(hasTripResults() ? '返回行程候選' : '路線列表', nearbyBack),
     heading('附近站牌', '點任一站牌，就會預覽所有經過路線。'),
     list,
     tripModeButton(),
@@ -1087,11 +1142,15 @@ function renderNearbyPlaces() {
   setStatus(lastNearbyPlaces.length ? `找到 ${lastNearbyPlaces.length} 個附近站牌` : '附近沒有站牌')
   const [latitude, longitude] = lastNearbyOrigin
   history.replaceState(null, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
-  setViewBack(renderRoutePicker)
+  setViewBack(nearbyBack)
 }
 
 async function selectTripCoordinate(latitude: number, longitude: number) {
   if (!activeCity) return
+  // 連點(桌機雙擊尤其)會發出兩次選點;第二發會在第一發把階段推進之後
+  // 才回來,被誤當成目的地。一次只處理一發,其餘直接丟掉。
+  if (tripSelecting) return
+  tripSelecting = true
   const radius = map.getZoom() >= 15 ? 300 : 500
   const params = new URLSearchParams({ city: activeCity.code, lat: String(latitude), lon: String(longitude), radius: String(radius) })
   setStatus(tripStage === 'from' ? '正在配對出發位置附近站牌…' : '正在配對目的地附近站牌…')
@@ -1129,6 +1188,8 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
     }
   } catch (error) {
     setStatus(error instanceof Error ? error.message : '站牌配對失敗', true)
+  } finally {
+    tripSelecting = false
   }
 }
 
@@ -1162,6 +1223,18 @@ async function loadDirectRoutes() {
     await previewTransferPlans(rankedPlans)
   } catch (error) {
     setStatus(error instanceof Error && error.message ? error.message : '直達路線查詢失敗', true)
+    // 這時 tripStage 已回 idle(點地圖會變成逛附近站牌),不能把使用者
+    // 留在「再點一下目的地」的殘局:給重試,退路則回到重新選目的地。
+    const retry = document.createElement('button')
+    retry.className = 'quiet-button'
+    retry.textContent = '再試一次'
+    retry.addEventListener('click', () => void loadDirectRoutes())
+    drawer.replaceChildren(
+      drawerBack('重新選目的地', resumeDestinationSelection),
+      heading('查詢失敗了', `${from.name} → ${to.name} 暫時查不到，稍等一下再試。`),
+      retry,
+    )
+    setViewBack(resumeDestinationSelection)
   }
 }
 
