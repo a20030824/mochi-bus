@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nextScheduledMinutes, type ScheduleItem } from './schedule'
+import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from './schedule'
 
 // 2026-07-04 是週六,UTC 07:00 = 台北時間 15:00。
 const saturdayAt15 = new Date('2026-07-04T07:00:00.000Z')
@@ -143,5 +143,22 @@ describe('nextScheduledMinutes', () => {
     }]
     expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15))
       .toEqual({ minutes: 20, departureBased: false })
+  })
+})
+
+describe('scheduleClockLabel', () => {
+  it('keeps relative time within an hour', () => {
+    expect(scheduleClockLabel({ minutes: 60, departureBased: true }, saturdayAt15)).toBeNull()
+    expect(scheduleClockLabel({ minutes: 12, departureBased: false }, saturdayAt15)).toBeNull()
+  })
+
+  it('switches to an absolute Taipei clock beyond an hour', () => {
+    // 台北 15:00 + 131 分 = 17:11
+    expect(scheduleClockLabel({ minutes: 131, departureBased: true }, saturdayAt15)).toBe('17:11 發車')
+    expect(scheduleClockLabel({ minutes: 61, departureBased: false }, saturdayAt15)).toBe('16:01 到站')
+  })
+
+  it('never converts headway estimates (minutes is a headway, not a departure)', () => {
+    expect(scheduleClockLabel({ minutes: 90, departureBased: true, headwayMinutes: [60, 90] }, saturdayAt15)).toBeNull()
   })
 })

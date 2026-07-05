@@ -146,6 +146,41 @@ document.getElementById('map-app')?.appendChild(networkButton)
 // 滑鼠本身夠精準,放大命中範圍反而讓 hover 判定跟不上游標移動(看起來卡住不會變回原狀)。
 const hoverCapable = window.matchMedia('(hover: hover)').matches
 
+// 手機的返回鍵/返回手勢應該退回上一層畫面,不是直接離開整個地圖。
+// 做法:只維護「一個」history 哨兵——離開全台總覽時 push 一筆,
+// popstate(使用者按返回)時執行目前畫面的返回動作,退完還沒到根層就再補推一筆。
+// 各畫面照常用 replaceState 更新網址;哨兵只負責把「返回」這個動作攔下來。
+let viewBackAction: (() => void) | undefined
+let historySentinel = false
+let skipNextPop = false
+
+function setViewBack(back?: () => void) {
+  viewBackAction = back
+  if (back && !historySentinel) {
+    history.pushState({ mochi: true }, '', location.href)
+    historySentinel = true
+  } else if (!back && historySentinel) {
+    // 經 UI 按鈕回到根層:把哨兵吃掉,下一次瀏覽器返回才會真的離開地圖。
+    historySentinel = false
+    skipNextPop = true
+    history.back()
+  }
+}
+
+window.addEventListener('popstate', () => {
+  if (skipNextPop) {
+    skipNextPop = false
+    // 被吃掉的哨兵底下那筆網址可能還停在舊畫面(例如 deep link),校正回根層網址。
+    history.replaceState(null, '', '/map')
+    return
+  }
+  if (!historySentinel) return
+  historySentinel = false
+  const back = viewBackAction
+  viewBackAction = undefined
+  back?.()
+})
+
 // 互動圖層一律用 SVG:canvas 會以整張地圖大小攔截點擊,
 // 疊在上層的 pane 會擋住下層線條的 click(候選路線點不到、誤觸地圖點擊)。
 const map = L.map(mapNode, {
@@ -354,8 +389,50 @@ function showTaiwan() {
       label: region.name,
       onClick: () => showRegion(region.code),
     }))),
+    locateCityButton(),
   )
   history.replaceState(null, '', '/map')
+  setViewBack(undefined)
+}
+
+// 「跳到你所在的縣市」用 Cloudflare 依連線 IP 推估的粗略位置(縣市級),
+// 完全不觸發瀏覽器定位授權;精度只夠選縣市,所以不拿來找站牌。
+function locateCityButton(): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.className = 'locate-button'
+  button.textContent = '跳到你所在的縣市'
+  button.addEventListener('click', () => void jumpToNearestCity(button))
+  return button
+}
+
+async function jumpToNearestCity(button: HTMLButtonElement) {
+  button.disabled = true
+  button.textContent = '正在判斷你的位置…'
+  try {
+    const response = await fetch('/api/v1/map/locate', { cache: 'no-store' })
+    const data = await response.json() as { latitude?: number; longitude?: number; error?: string }
+    if (!response.ok || typeof data.latitude !== 'number' || typeof data.longitude !== 'number' || !cities.length) {
+      throw new Error(data.error || '這次判斷不出位置，直接手動選吧')
+    }
+    const origin: [number, number] = [data.latitude, data.longitude]
+    const nearest = cities.reduce((best, city) =>
+      coarseKilometers(city.center, origin) < coarseKilometers(best.center, origin) ? city : best)
+    // 離最近縣市中心太遠,代表人大概不在台灣(或 IP 出口在國外),硬跳只會誤導。
+    if (coarseKilometers(nearest.center, origin) > 150) throw new Error('看起來你不在台灣附近，直接手動選吧')
+    await chooseCity(nearest)
+    setStatus(`依網路位置猜你在${nearest.name}，猜錯就按「返回縣市」重選。`)
+  } catch (error) {
+    setStatus(error instanceof Error && error.message ? error.message : '定位失敗，直接手動選吧', true)
+    button.disabled = false
+    button.textContent = '跳到你所在的縣市'
+  }
+}
+
+// 粗略公里距離(等距圓柱近似),挑最近縣市夠用。
+function coarseKilometers(a: [number, number], b: [number, number]): number {
+  const kmLat = (a[0] - b[0]) * 110.6
+  const kmLon = (a[1] - b[1]) * 111.3 * Math.cos(((a[0] + b[0]) / 2) * Math.PI / 180)
+  return Math.sqrt(kmLat * kmLat + kmLon * kmLon)
 }
 
 function renderRegionMarkers() {
@@ -403,6 +480,7 @@ function showRegion(regionCode: RegionCode) {
       onClick: () => void chooseCity(city),
     }))),
   )
+  setViewBack(showTaiwan)
 }
 
 async function chooseCity(city: MapCity) {
@@ -425,6 +503,7 @@ async function chooseCity(city: MapCity) {
   map.setView(city.center, 11)
   setStatus(`${city.name} · 正在整理路線…`)
   drawer.replaceChildren(drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…'))
+  setViewBack(() => showRegion(city.region))
 
   try {
     const response = await fetch(`/api/v1/map/routes?city=${encodeURIComponent(city.code)}`)
@@ -492,14 +571,15 @@ function renderRoutePicker() {
   search.addEventListener('input', render)
   drawer.replaceChildren(back, title, tripModeButton(), search, categories, routeGrid)
   render()
+  setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
 }
 
 function tripModeButton(): HTMLButtonElement {
   const button = document.createElement('button')
   button.className = 'trip-mode-button'
   button.textContent = '↗'
-  button.title = '直達導航'
-  button.setAttribute('aria-label', '直達導航：選擇出發位置與目的地')
+  button.title = '路線規劃'
+  button.setAttribute('aria-label', '路線規劃：選擇出發位置與目的地')
   button.addEventListener('click', () => {
     selectedFrom = undefined
     selectedTo = undefined
@@ -514,10 +594,11 @@ function tripModeButton(): HTMLButtonElement {
     routeLayer.clearLayers()
     nearbyLayer.clearLayers()
     drawer.replaceChildren(
-      drawerBack('取消直達查詢', cancelTripMode),
+      drawerBack('取消路線規劃', cancelTripMode),
       heading('點一下出發位置', '直接點地圖，系統會配對最近站牌。'),
     )
-    setStatus('直達導航 · 請點出發位置')
+    setStatus('路線規劃 · 請點出發位置')
+    setViewBack(cancelTripMode)
   })
   return button
 }
@@ -585,6 +666,7 @@ async function loadRoute(
   if (!returnToTrip) clearTripState()
   setStatus(`${routeName} · 正在讀取城市裡的路徑…`)
   drawer.replaceChildren(drawerBack('返回路線', renderRoutePicker), heading(routeName, '正在拼起路線與站牌…'))
+  setViewBack(backAction ?? renderRoutePicker)
   try {
     const params = new URLSearchParams({ city: activeCity.code, route: routeName })
     const response = await fetch(`/api/v1/map/route?${params}`)
@@ -662,6 +744,7 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
     list,
   )
+  setViewBack(routeBackAction ?? renderRoutePicker)
 }
 
 function drawVariant(variant: RouteMapVariant) {
@@ -707,7 +790,7 @@ function drawVariant(variant: RouteMapVariant) {
   change.textContent = routeReturnsToTrip
     ? '返回行程候選'
     : canReturnToVariantPicker ? '更換方向' : routeBackLabel
-  change.addEventListener('click', () => {
+  const goBack = () => {
     if (routeReturnsToTrip && (lastDirectRoutes.length || lastTransferPlans.length)) {
       interactionMode = 'trip-results'
       // 選中的路線畫在 routeLayer、車輛有自己的計時器,回候選清單時要一併收掉
@@ -729,12 +812,14 @@ function drawVariant(variant: RouteMapVariant) {
       setStatus(`${lastVariantChoices.routeName} · 選擇行駛方向`)
     } else if (routeBackAction) routeBackAction()
     else renderRoutePicker()
-  })
+  }
+  change.addEventListener('click', goBack)
   drawer.replaceChildren(
     heading(variant.routeName, variant.label),
     paragraph(variant.subRouteName),
     change,
   )
+  setViewBack(goBack)
   const params = new URLSearchParams({
     city: activeCity!.code,
     route: variant.routeName,
@@ -898,6 +983,7 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
     heading('附近站牌', '正在搜尋附近站牌'),
     loadingList,
   )
+  setViewBack(renderRoutePicker)
   nearbyLayer.clearLayers()
   lastNearbyOrigin = [latitude, longitude]
   const city = activeCity
@@ -963,6 +1049,7 @@ function renderNearbyPlaces() {
   setStatus(lastNearbyPlaces.length ? `找到 ${lastNearbyPlaces.length} 個附近站牌` : '附近沒有站牌')
   const [latitude, longitude] = lastNearbyOrigin
   history.replaceState(null, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
+  setViewBack(renderRoutePicker)
 }
 
 async function selectTripCoordinate(latitude: number, longitude: number) {
@@ -985,10 +1072,11 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
       nearbyLayer.clearLayers()
       drawTripEndpoints()
       drawer.replaceChildren(
-        drawerBack('取消直達查詢', cancelTripMode),
+        drawerBack('取消路線規劃', cancelTripMode),
         heading('再點一下目的地', `出發位置靠近「${nearest.name}」，現在直接點地圖上的目的地。`),
       )
       setStatus(`出發：${nearest.name} · 請點目的地`)
+      setViewBack(cancelTripMode)
     } else {
       if (selectedFrom?.placeId === nearest.placeId) throw new Error('出發位置和目的地配對到同一站，請選遠一點')
       selectedTo = nearest
@@ -1108,7 +1196,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
   interactionMode = 'trip-results'
   const list = document.createElement('div')
   list.className = 'direct-route-list'
-  if (!directRoutes.length) list.appendChild(paragraph('目前沒有找到直達車。下一版可以接一次轉乘搜尋。'))
+  if (!directRoutes.length) list.appendChild(paragraph('目前沒有找到直達車。'))
   directRoutes.forEach((route) => {
     const color = routeColor(route.routeName)
     const button = document.createElement('button')
@@ -1130,21 +1218,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     button.addEventListener('click', () => void loadRoute(route.routeName, route.variantKey, true, color))
     list.appendChild(button)
   })
-  const back = drawerBack('重新選目的地', () => {
-    selectedTo = undefined
-    toCoordinate = undefined
-    lastDirectRoutes = []
-    tripStage = 'to'
-    interactionMode = 'trip'
-    previewLayer.clearLayers()
-    nearbyLayer.clearLayers()
-    drawTripEndpoints()
-    drawer.replaceChildren(
-      drawerBack('取消直達查詢', cancelTripMode),
-      heading('重新選目的地', `保留出發站「${selectedFrom?.name ?? ''}」，請再點一次地圖。`),
-    )
-    setStatus('已保留出發位置 · 請重新點目的地')
-  })
+  const back = drawerBack('重新選目的地', resumeDestinationSelection)
   const reset = tripModeButton()
   drawer.replaceChildren(
     back,
@@ -1153,6 +1227,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     reset,
   )
   setStatus(directRoutes.length ? `找到 ${directRoutes.length} 個直達方向` : '沒有直達車')
+  setViewBack(resumeDestinationSelection)
 }
 
 function renderTransferPlans(plans: TransferPlan[]) {
@@ -1185,7 +1260,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     count.textContent = plan.estimatedTotalMinutes === null || plan.estimatedTotalMinutes === undefined
       ? `共 ${plan.totalStops} 站`
       : plan.connectionStatus === 'tight'
-        ? `近期班次偏趕`
+        ? `轉乘銜接較趕`
         : `約 ${plan.estimatedTotalMinutes} 分`
     title.appendChild(transfer)
     title.appendChild(count)
@@ -1222,6 +1297,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     tripModeButton(),
   )
   setStatus(plans.length ? `找到 ${plans.length} 個一次轉乘方案` : '沒有合理的一次轉乘方案')
+  setViewBack(resumeDestinationSelection)
 }
 
 function resumeDestinationSelection() {
@@ -1235,10 +1311,11 @@ function resumeDestinationSelection() {
   nearbyLayer.clearLayers()
   drawTripEndpoints()
   drawer.replaceChildren(
-    drawerBack('取消直達查詢', cancelTripMode),
+    drawerBack('取消路線規劃', cancelTripMode),
     heading('重新選目的地', `保留出發站「${selectedFrom?.name ?? ''}」，請再點一次地圖。`),
   )
   setStatus('已保留出發位置 · 請重新點目的地')
+  setViewBack(cancelTripMode)
 }
 
 async function previewTransferPlans(plans: TransferPlan[]) {
@@ -1492,6 +1569,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
     heading(place.name, '正在取得路線與到站時間'),
     loadingList,
   )
+  setViewBack(renderNearbyPlaces)
   setStatus(`正在讀取 ${place.name} 的路線…`)
   try {
     const response = await fetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/arrivals?city=${encodeURIComponent(activeCity.code)}`)

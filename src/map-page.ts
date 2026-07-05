@@ -6,6 +6,9 @@ export function renderMapPage(): string {
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#e8e2d6">
   <meta name="description" content="把公車路線直接畫在城市裡">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
   <title>公車地圖｜Mochi Bus</title>
   <link rel="stylesheet" href="/assets/map.css">
   <link rel="modulepreload" href="/assets/map.js">

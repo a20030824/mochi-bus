@@ -41,6 +41,16 @@ export type ScheduleEstimate = {
   headwayMinutes?: [number, number]
 }
 
+// 超過一小時的「還有 N 分」沒人心算得動(深夜查首班車會看到 200+ 分),直接給時刻;
+// 一小時內維持相對時間。班距制不適用(minutes 是班距估計,不是特定班次)。
+export function scheduleClockLabel(estimate: ScheduleEstimate, now: Date): string | null {
+  if (estimate.headwayMinutes || estimate.minutes <= 60) return null
+  const clock = new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(new Date(now.getTime() + estimate.minutes * 60_000))
+  return `${clock} ${estimate.departureBased ? '發車' : '到站'}`
+}
+
 // 即時 GPS 沒有預估時間時(尚未發車／資料中斷)的備援:算出時刻表上下一班還要幾分鐘。
 export function nextScheduledMinutes(schedules: ScheduleItem[], query: ScheduleQuery, now: Date): ScheduleEstimate | null {
   const parts = new Intl.DateTimeFormat('en-US', {

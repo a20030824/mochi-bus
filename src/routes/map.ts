@@ -4,7 +4,7 @@ import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
 import { matchingEtaItems, selectBestEta } from '../domain/map/eta'
 import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
-import { nextScheduledMinutes, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
+import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
 import {
   findNearbyStopPlaces,
@@ -70,6 +70,18 @@ map.get('/map', (c) => c.html(renderMapPage(), 200, {
 map.get('/api/v1/map/cities', (c) => c.json({ schemaVersion: 1, cities: mapCities }, 200, {
   'Cache-Control': 'public, max-age=86400',
 }))
+
+map.get('/api/v1/map/locate', (c) => {
+  // Cloudflare 依連線 IP 推估的粗略位置(縣市級),不經過瀏覽器定位、不會跳授權框;
+  // 誤差可達數公里,只夠拿來挑縣市,不能拿來找站牌。
+  const cf = (c.req.raw as Request & { cf?: { latitude?: string; longitude?: string } }).cf
+  const latitude = Number(cf?.latitude)
+  const longitude = Number(cf?.longitude)
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return c.json({ error: '這次的連線判斷不出位置' }, 404)
+  }
+  return c.json({ latitude, longitude }, 200, { 'Cache-Control': 'no-store' })
+})
 
 map.get('/api/v1/map/routes', async (c) => {
   try {
@@ -298,11 +310,12 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         etaLabel: source === 'realtime' || source === 'stale-realtime'
           ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0).replace('分鐘', '分')
           : source === 'schedule'
-            ? route.scheduleHeadway
-              ? `${route.scheduleHeadway[0]}–${route.scheduleHeadway[1]} 分一班`
-              : route.scheduleDepartureBased
-                ? `${Math.max(1, route.scheduleMinutes ?? 1)} 分後發車`
-                : `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`
+            ? route.scheduleClock
+              ?? (route.scheduleHeadway
+                ? `${route.scheduleHeadway[0]}–${route.scheduleHeadway[1]} 分一班`
+                : route.scheduleDepartureBased
+                  ? `${Math.max(1, route.scheduleMinutes ?? 1)} 分後發車`
+                  : `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`)
             : '暫無班次',
         stopStatus: realtime?.StopStatus ?? 0,
         source,
@@ -550,6 +563,7 @@ function scheduleFields(schedules: ScheduleItem[], query: ScheduleQuery, now: Da
     scheduleMinutes: estimate?.minutes ?? null,
     scheduleDepartureBased: estimate?.departureBased ?? false,
     scheduleHeadway: estimate?.headwayMinutes ?? null,
+    scheduleClock: estimate ? scheduleClockLabel(estimate, now) : null,
   }
 }
 

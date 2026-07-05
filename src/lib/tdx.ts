@@ -1,6 +1,6 @@
 import type { BusQuery, Direction, ResolvedBusQuery } from '../domain/bus-query'
 import { classifyRouteName, type RouteCategory } from '../domain/route-category'
-import { nextScheduledMinutes, type ScheduleItem } from '../domain/schedule'
+import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../domain/schedule'
 import { selectBestEta } from '../domain/map/eta'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 
@@ -248,9 +248,10 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
       ? await getSnapshotSchedule(env as TDXEnv & TransitBindings, query.city, query.routeName)
         ?? await getBusSchedule(env, query.city, query.routeName)
       : await getBusSchedule(env, query.city, query.routeName)
+    const now = new Date()
     const estimate = nextScheduledMinutes(schedules, {
       stopUid: query.stopUid, direction: query.direction, subRouteUid: query.subRouteUid,
-    }, new Date())
+    }, now)
     if (estimate === null) return result
     return {
       ...result,
@@ -259,9 +260,10 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
       // 發車時間估計是下限(車還要從起點開過來),標示成「發車」避免誤導成到站時間
       label: estimate.headwayMinutes
         ? `${estimate.headwayMinutes[0]}–${estimate.headwayMinutes[1]} 分一班`
-        : estimate.departureBased
-          ? `${Math.max(1, estimate.minutes)} 分後發車`
-          : formatETALabel(estimate.minutes, result.stopStatus),
+        : scheduleClockLabel(estimate, now)
+          ?? (estimate.departureBased
+            ? `${Math.max(1, estimate.minutes)} 分後發車`
+            : formatETALabel(estimate.minutes, result.stopStatus)),
       statusLabel: estimate.headwayMinutes ? '班距預估' : estimate.departureBased ? '時刻表發車預估' : '時刻表預估',
       source: 'schedule',
     }

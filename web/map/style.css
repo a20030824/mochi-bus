@@ -154,6 +154,18 @@ button { cursor: pointer; }
   font-weight: 750;
 }
 .selection-grid button:hover, .map-route-button:hover { border-color: #b85f49; color: #963f31; }
+.locate-button {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 10px;
+  border: 1px dashed #b8ad99;
+  border-radius: 3px;
+  background: transparent;
+  color: #4f685b;
+  font-weight: 750;
+}
+.locate-button:hover { border-color: #4f685b; background: #ebe5d9; }
+.locate-button:disabled { opacity: .6; cursor: wait; }
 .map-route-grid { max-height: 230px; overflow: auto; }
 .map-search {
   width: 100%;
