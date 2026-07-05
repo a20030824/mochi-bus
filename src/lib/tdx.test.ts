@@ -7,7 +7,7 @@ describe('TDX presentation', () => {
   })
 
   it('formats ordinary ETAs', () => {
-    expect(formatETALabel(7, 0)).toBe('7 分鐘')
+    expect(formatETALabel(7, 0)).toBe('7 分')
   })
 
   it('falls back to the TDX stop status', () => {

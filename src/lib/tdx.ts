@@ -575,7 +575,7 @@ export function toETAResult(item: BusETAItem, query: ResolvedBusQuery, now = new
 }
 
 export function formatETALabel(minutes: number | null, stopStatus: number): string {
-  if (minutes !== null) return minutes <= 1 ? '即將進站' : `${minutes} 分鐘`
+  if (minutes !== null) return minutes <= 1 ? '即將進站' : `${minutes} 分`
   return formatStopStatus(stopStatus)
 }
 

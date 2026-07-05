@@ -342,7 +342,7 @@ button { cursor: pointer; }
   font-size: 13px;
   font-weight: 800;
 }
-.city-marker { border-color: #4f685b; color: #3f594c; }
+.city-marker { border-color: #4f685b; color: #3f594c; font-size: 12px; }
 .region-marker:hover, .city-marker:hover { transform: scale(1.07); background: #b85f49; color: white; }
 
 .leaflet-tooltip {

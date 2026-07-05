@@ -18,6 +18,7 @@ type MapCity = {
   name: string
   region: RegionCode
   center: [number, number]
+  labelOffset?: [number, number]
 }
 
 type RouteItem = {
@@ -128,7 +129,7 @@ const regions: Array<{
   zoom: number
 }> = [
   { code: 'north', name: '北部', center: [24.98, 121.25], zoom: 8 },
-  { code: 'central', name: '中部', center: [23.95, 120.72], zoom: 8 },
+  { code: 'central', name: '中部', center: [23.95, 120.62], zoom: 8 },
   { code: 'south', name: '南部', center: [22.95, 120.35], zoom: 8 },
   { code: 'east', name: '東部', center: [23.65, 121.35], zoom: 8 },
   { code: 'islands', name: '離島', center: [24.1, 119.25], zoom: 7 },
@@ -423,7 +424,7 @@ async function jumpToNearestCity(button: HTMLButtonElement) {
     // 離最近縣市中心太遠,代表人大概不在台灣(或 IP 出口在國外),硬跳只會誤導。
     if (coarseKilometers(nearest.center, origin) > 150) throw new Error('看起來你不在台灣附近，直接手動選吧')
     await chooseCity(nearest)
-    setStatus(`依網路位置猜你在${nearest.name}，猜錯就按「返回縣市」重選。`)
+    setStatus(`猜你在${nearest.name}，猜錯按「返回縣市」重選。`)
   } catch (error) {
     setStatus(error instanceof Error && error.message ? error.message : '定位失敗，直接手動選吧', true)
     button.disabled = false
@@ -436,6 +437,16 @@ function coarseKilometers(a: [number, number], b: [number, number]): number {
   const kmLat = (a[0] - b[0]) * 110.6
   const kmLon = (a[1] - b[1]) * 111.3 * Math.cos(((a[0] + b[0]) / 2) * Math.PI / 180)
   return Math.sqrt(kmLat * kmLat + kmLon * kmLon)
+}
+
+const CITY_ICON_SIZE: [number, number] = [60, 30]
+
+// 幾組「市被縣包住」的縣市中心點物理距離很近(新竹市／縣、嘉義市／縣、雙北),
+// 區域總覽的縮放層級下按鈕會疊在一起;用 labelOffset 只挪動視覺位置,
+// 實際點擊/地理定位仍用 city.center,不影響選中的城市。
+function cityIconAnchor(city: MapCity): [number, number] {
+  const [dx, dy] = city.labelOffset ?? [0, 0]
+  return [CITY_ICON_SIZE[0] / 2 - dx, CITY_ICON_SIZE[1] / 2 - dy]
 }
 
 function renderRegionMarkers() {
@@ -469,8 +480,8 @@ function showRegion(regionCode: RegionCode) {
       icon: L.divIcon({
         className: 'city-marker-wrap',
         html: `<span class="city-marker">${city.name}</span>`,
-        iconSize: [68, 34],
-        iconAnchor: [34, 17],
+        iconSize: CITY_ICON_SIZE,
+        iconAnchor: cityIconAnchor(city),
       }),
       title: city.name,
     }).on('click', () => void chooseCity(city)).addTo(selectionLayer)

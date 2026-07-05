@@ -337,7 +337,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         ...route,
         estimateSeconds,
         etaLabel: source === 'realtime' || source === 'stale-realtime'
-          ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0).replace('分鐘', '分')
+          ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0)
           : source === 'schedule'
             ? route.scheduleClock
               ?? (route.scheduleHeadway
