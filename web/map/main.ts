@@ -574,7 +574,6 @@ function renderRoutePicker() {
     const visible = routes
       .filter((route) => category === '全部' || route.category === category)
       .filter((route) => !query || route.routeName.toLowerCase().includes(query))
-      .slice(0, 100)
     routeGrid.replaceChildren(...visible.map((route) => {
       const button = document.createElement('button')
       button.className = 'map-route-button'
