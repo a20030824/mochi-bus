@@ -190,6 +190,9 @@ const map = L.map(mapNode, {
 }).setView([23.75, 120.9], 7)
 
 map.createPane('routePreviewPane').style.zIndex = '420'
+// 預覽小站點獨立一層:同 pane 內只看插入順序,多條建議路線輪流蓋掉
+// 彼此的小點;墊在預覽線之上、選定路線與互動圓點之下才穩。
+map.createPane('previewDotPane').style.zIndex = '425'
 map.createPane('routePane').style.zIndex = '440'
 map.createPane('stopPane').style.zIndex = '480'
 map.createPane('networkPane').style.zIndex = '410'
@@ -288,8 +291,8 @@ function bindSelectableLine(
 }
 
 // 預覽淡線也標出小站點(跟全路網的小圓點同款),看得出停靠密度與站距。
-// 放在 routePreviewPane(而非 stopPane):小點屬於預覽層,必須墊在
-// 附近站牌等互動大圓點(stopPane)之下,不能蓋住它們。
+// 放在 previewDotPane:壓在預覽線之上(不會被建議路線的粗段蓋掉),
+// 但仍墊在附近站牌等互動大圓點(stopPane)之下,不能蓋住它們。
 // 尺寸隨 zoom 走但始終小於 stopPane 的互動圓點,放大才不會縮成針尖。
 const previewStopDots = new Set<L.CircleMarker>()
 
@@ -307,10 +310,10 @@ function addPreviewStopDots(
 ): void {
   const { radius, weight } = previewDotStyleForZoom(map.getZoom())
   L.geoJSON(stops, {
-    pane: 'routePreviewPane',
+    pane: 'previewDotPane',
     pointToLayer: (_feature, latlng) => {
       const dot = L.circleMarker(latlng, {
-        pane: 'routePreviewPane', radius, weight, color: '#fffaf0', fillColor: color, fillOpacity: .6,
+        pane: 'previewDotPane', radius, weight, color: '#fffaf0', fillColor: color, fillOpacity: .6,
         interactive: false,
       })
       previewStopDots.add(dot)
@@ -603,7 +606,7 @@ function tripModeButton(): HTMLButtonElement {
     lastTransferPlans = []
     tripStage = 'from'
     interactionMode = 'trip'
-    setNetworkVisible(false)
+    // 全路網開著就留著:小站點正好當選點的瞄準參考,等終點選完才收
     previewLayer.clearLayers()
     routeLayer.clearLayers()
     nearbyLayer.clearLayers()
@@ -949,6 +952,12 @@ function drawCityNetwork(network: CityNetwork) {
     })
       .on('click', (event) => {
         L.DomEvent.stopPropagation(event)
+        // 路線規劃進行中,點到背景線只是瞄準地圖,當一般選點處理
+        if (tripStage !== 'idle') {
+          const { latlng } = event as L.LeafletMouseEvent
+          void selectTripCoordinate(latlng.lat, latlng.lng)
+          return
+        }
         void loadRoute(route.routeName, route.variantKey, false, color)
       })
       .addTo(networkLayer)
@@ -963,6 +972,12 @@ function drawCityNetwork(network: CityNetwork) {
     })
       .on('click', (event) => {
         L.DomEvent.stopPropagation(event)
+        // 路線規劃進行中,點小站點就是在指定起終點;
+        // 不能走 findNearbyPlaces,那條路會把規劃狀態整個清掉
+        if (tripStage !== 'idle') {
+          void selectTripCoordinate(place.latitude, place.longitude)
+          return
+        }
         void findNearbyPlaces(place.latitude, place.longitude, true)
       })
       .addTo(networkLayer)
@@ -1106,6 +1121,8 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
       toCoordinate = [latitude, longitude]
       tripStage = 'idle'
       interactionMode = 'trip-results'
+      // 起終點都定了,背景路網功成身退,讓建議路線乾淨登場
+      setNetworkVisible(false)
       nearbyLayer.clearLayers()
       drawTripEndpoints()
       await loadDirectRoutes()
