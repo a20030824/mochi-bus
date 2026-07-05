@@ -227,6 +227,9 @@ button { cursor: pointer; }
 .variant-button span { color: #67685f; font-size: 12px; }
 
 .nearby-list, .place-route-list, .direct-route-list { display: grid; gap: 7px; }
+.place-search-results { display: grid; gap: 7px; }
+.place-search-results:not(:empty) { margin-bottom: 10px; }
+.place-search .map-search { margin-bottom: 10px; }
 .nearby-place-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
 .nearby-place-button, .place-route-button {
   width: 100%;
@@ -293,6 +296,7 @@ button { cursor: pointer; }
 .direct-route-button > span > span, .direct-route-button small { color: #67685f; font-size: 12px; }
 .direct-route-button:hover { background: #f5efe4; }
 .reset-trip-button { width: 100%; margin-top: 10px; }
+.change-origin-button { width: 100%; margin-top: 10px; }
 
 .transfer-plan-list { display: grid; gap: 10px; }
 .transfer-plan {

@@ -281,6 +281,70 @@ export async function findNearbyStopPlaces(
     .sort((a, b) => a.distanceMeters - b.distanceMeters)
 }
 
+// 必須跟 scripts/sync-chiayi-snapshot.mjs 的 normalizeName 完全一致,
+// 否則查詢字串對不上 stops.normalized_name 的內容。
+function normalizeStopName(value: string): string {
+  return value.normalize('NFKC').replace(/[\s()（）]/g, '').toLowerCase()
+}
+
+type SearchPlaceRow = {
+  place_id: string
+  place_name: string
+  latitude: number
+  longitude: number
+}
+
+export async function searchStopPlaces(
+  env: TransitBindings,
+  city: string,
+  query: string,
+  limit = 10,
+) {
+  const version = await getActiveVersion(env, city)
+  if (!version) return []
+  const normalized = normalizeStopName(query)
+  if (!normalized) return []
+
+  // 先做前綴比對:範圍條件走 stops_name_idx(version, city_code, normalized_name),
+  // 不用 LIKE 是因為 ESCAPE 子句會關掉 SQLite 的 LIKE 索引最佳化。
+  const prefix = await env.TRANSIT_DB.prepare(`
+    SELECT s.place_id, p.place_name, p.latitude, p.longitude
+    FROM stops s
+    JOIN stop_places p ON p.version = s.version AND p.place_id = s.place_id
+    WHERE s.version = ? AND s.city_code = ?
+      AND s.normalized_name >= ? AND s.normalized_name < ?
+    GROUP BY s.place_id
+    ORDER BY p.place_name
+    LIMIT ?
+  `).bind(version, city, normalized, `${normalized}￿`, limit).all<SearchPlaceRow>()
+
+  const seen = new Set(prefix.results.map((row) => row.place_id))
+  let rows = prefix.results
+  // 前綴不夠才補子字串(「北車」要找到「台北車站」):這一段掃該縣市的 stops,
+  // 沒索引可用,但有 LIMIT 且回應有 edge 快取,量級可接受。
+  if (rows.length < limit) {
+    const escaped = normalized.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
+    const substring = await env.TRANSIT_DB.prepare(`
+      SELECT s.place_id, p.place_name, p.latitude, p.longitude
+      FROM stops s
+      JOIN stop_places p ON p.version = s.version AND p.place_id = s.place_id
+      WHERE s.version = ? AND s.city_code = ?
+        AND s.normalized_name LIKE ? ESCAPE '\\'
+      GROUP BY s.place_id
+      ORDER BY p.place_name
+      LIMIT ?
+    `).bind(version, city, `%${escaped}%`, limit).all<SearchPlaceRow>()
+    rows = [...rows, ...substring.results.filter((row) => !seen.has(row.place_id))].slice(0, limit)
+  }
+
+  return rows.map((row) => ({
+    placeId: row.place_id,
+    name: row.place_name,
+    latitude: row.latitude,
+    longitude: row.longitude,
+  }))
+}
+
 export async function getStopPlace(env: TransitBindings, city: string, placeId: string) {
   const version = await getActiveVersion(env, city)
   if (!version) return null

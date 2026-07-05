@@ -208,7 +208,7 @@ self.addEventListener('activate', event => event.waitUntil(self.clients.claim())
 self.addEventListener('fetch', event => {
   if (event.request.mode !== 'navigate') return;
   event.respondWith(fetch(event.request).catch(() => new Response(
-    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font-family:system-ui;padding:32px;background:#f7f2e8;color:#29251f}</style><h1>目前沒有網路</h1><p>ETA 必須連線取得，請稍後再試。</p>',
+    '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font-family:system-ui;padding:32px;background:#f7f2e8;color:#29251f}</style><h1>目前沒有網路</h1><p>到站時間要連線才拿得到，等訊號回來再試一次。</p>',
     { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
   )));
 });`, 200, {

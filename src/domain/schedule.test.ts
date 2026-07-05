@@ -57,15 +57,33 @@ describe('nextScheduledMinutes', () => {
     expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15)?.minutes).toBe(20)
   })
 
-  it('ignores service days that do not run today', () => {
+  it('rolls over to tomorrow\'s service day when today does not run', () => {
+    // 週六 15:00 查一條只跑週日的路線:明天 15:20 = 1460 分後
     const schedules: ScheduleItem[] = [{
       Direction: 0,
       Timetables: [{ ServiceDay: { Sunday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '15:20' }] }],
     }]
-    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15)).toBeNull()
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15))
+      .toEqual({ minutes: 1460, departureBased: false, nextDay: true })
   })
 
-  it('ignores stop times that already passed', () => {
+  it('falls back to tomorrow\'s first bus after today\'s last one passed', () => {
+    // 今天末班 14:00 已過,明天(週日)首班 06:10 = 910 分後
+    const schedules: ScheduleItem[] = [{
+      Direction: 0,
+      Timetables: [{
+        ServiceDay: { Saturday: 1, Sunday: 1 },
+        StopTimes: [
+          { StopUID: 'CYI304410', ArrivalTime: '06:10' },
+          { StopUID: 'CYI304410', ArrivalTime: '14:00' },
+        ],
+      }],
+    }]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15))
+      .toEqual({ minutes: 910, departureBased: false, nextDay: true })
+  })
+
+  it('returns null when neither today nor tomorrow has service', () => {
     const schedules: ScheduleItem[] = [{
       Direction: 0,
       Timetables: [{ ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '14:00' }] }],
@@ -120,14 +138,16 @@ describe('nextScheduledMinutes', () => {
       .toEqual({ minutes: 60, departureBased: true })
   })
 
-  it('ignores frequency windows on other service days', () => {
+  it('waits for tomorrow\'s frequency window when today has none', () => {
+    // 週六 15:00,班距時段只在週日 05:00 開始 = 840 分後
     const schedules: ScheduleItem[] = [{
       Direction: 0,
       Frequencys: [
         { StartTime: '05:00', EndTime: '23:00', MinHeadwayMins: 10, MaxHeadwayMins: 15, ServiceDay: { Sunday: 1 } },
       ],
     }]
-    expect(nextScheduledMinutes(schedules, { stopUid: 'TPE99', direction: 0 }, saturdayAt15)).toBeNull()
+    expect(nextScheduledMinutes(schedules, { stopUid: 'TPE99', direction: 0 }, saturdayAt15))
+      .toEqual({ minutes: 840, departureBased: true, nextDay: true })
   })
 
   it('prefers the stop\'s own time over the departure fallback', () => {
@@ -160,5 +180,13 @@ describe('scheduleClockLabel', () => {
 
   it('never converts headway estimates (minutes is a headway, not a departure)', () => {
     expect(scheduleClockLabel({ minutes: 90, departureBased: true, headwayMinutes: [60, 90] }, saturdayAt15)).toBeNull()
+  })
+
+  it('labels next-day service with 明日 regardless of how close it is', () => {
+    // 週六 15:00 + 1460 分 = 週日 15:20
+    expect(scheduleClockLabel({ minutes: 1460, departureBased: false, nextDay: true }, saturdayAt15)).toBe('明日 15:20 到站')
+    expect(scheduleClockLabel({ minutes: 910, departureBased: true, nextDay: true }, saturdayAt15)).toBe('明日 06:10 發車')
+    // 快午夜時明天首班可能不到一小時,一樣給「明日 + 時刻」,不給相對分鐘
+    expect(scheduleClockLabel({ minutes: 40, departureBased: true, nextDay: true }, saturdayAt15)).not.toBeNull()
   })
 })

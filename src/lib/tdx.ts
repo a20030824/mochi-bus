@@ -265,7 +265,11 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
           ?? (estimate.departureBased
             ? `${Math.max(1, estimate.minutes)} 分後發車`
             : formatETALabel(estimate.minutes, result.stopStatus)),
-      statusLabel: estimate.headwayMinutes ? '班距預估' : estimate.departureBased ? '時刻表發車預估' : '時刻表預估',
+      statusLabel: estimate.headwayMinutes
+        ? '班距預估'
+        : estimate.nextDay
+          ? '今日已收班'
+          : estimate.departureBased ? '時刻表發車預估' : '時刻表預估',
       source: 'schedule',
     }
   } catch (error) {

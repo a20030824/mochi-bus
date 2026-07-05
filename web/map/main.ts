@@ -1,4 +1,6 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
+import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
+import { createViewBackController } from '../../src/domain/map/view-back'
 import { matchStopsToShape } from '../../src/domain/map/shape-matcher'
 import {
   getActiveCity,
@@ -46,6 +48,8 @@ type NearbyPlace = {
   longitude: number
   distanceMeters: number
 }
+
+type SearchPlace = Omit<NearbyPlace, 'distanceMeters'>
 
 type PlaceRoute = {
   routeUid: string
@@ -146,40 +150,19 @@ document.getElementById('map-app')?.appendChild(networkButton)
 // 滑鼠本身夠精準,放大命中範圍反而讓 hover 判定跟不上游標移動(看起來卡住不會變回原狀)。
 const hoverCapable = window.matchMedia('(hover: hover)').matches
 
-// 手機的返回鍵/返回手勢應該退回上一層畫面,不是直接離開整個地圖。
-// 做法:只維護「一個」history 哨兵——離開全台總覽時 push 一筆,
-// popstate(使用者按返回)時執行目前畫面的返回動作,退完還沒到根層就再補推一筆。
-// 各畫面照常用 replaceState 更新網址;哨兵只負責把「返回」這個動作攔下來。
-let viewBackAction: (() => void) | undefined
-let historySentinel = false
-let skipNextPop = false
+// 手機返回鍵的單一哨兵邏輯抽在 view-back.ts(有測試);這裡只注入 history 操作。
+const viewBack = createViewBackController({
+  push: () => history.pushState({ mochi: true }, '', location.href),
+  back: () => history.back(),
+  // 被吃掉的哨兵底下那筆網址可能還停在舊畫面(例如 deep link),校正回根層網址。
+  onRootReturn: () => history.replaceState(null, '', '/map'),
+})
 
 function setViewBack(back?: () => void) {
-  viewBackAction = back
-  if (back && !historySentinel) {
-    history.pushState({ mochi: true }, '', location.href)
-    historySentinel = true
-  } else if (!back && historySentinel) {
-    // 經 UI 按鈕回到根層:把哨兵吃掉,下一次瀏覽器返回才會真的離開地圖。
-    historySentinel = false
-    skipNextPop = true
-    history.back()
-  }
+  viewBack.set(back)
 }
 
-window.addEventListener('popstate', () => {
-  if (skipNextPop) {
-    skipNextPop = false
-    // 被吃掉的哨兵底下那筆網址可能還停在舊畫面(例如 deep link),校正回根層網址。
-    history.replaceState(null, '', '/map')
-    return
-  }
-  if (!historySentinel) return
-  historySentinel = false
-  const back = viewBackAction
-  viewBackAction = undefined
-  back?.()
-})
+window.addEventListener('popstate', () => viewBack.handlePop())
 
 // 互動圖層一律用 SVG:canvas 會以整張地圖大小攔截點擊,
 // 疊在上層的 pane 會擋住下層線條的 click(候選路線點不到、誤觸地圖點擊)。
@@ -238,7 +221,6 @@ let activeRouteColor = '#b85f49'
 let previewRequest = 0
 let selectedTransferIndex = 0
 let routeBackAction: (() => void) | undefined
-let routeBackLabel = '更換路線'
 // 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
 let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
 let variantPickerUsed = false
@@ -580,10 +562,12 @@ function renderRoutePicker() {
   const title = heading(activeCity.name, '不用設定起終點，直接看一條公車。')
   const search = document.createElement('input')
   search.className = 'map-search'
-  search.placeholder = '快速篩選路線'
-  search.setAttribute('aria-label', '快速篩選路線')
+  search.placeholder = '篩選路線，或搜尋站牌名稱'
+  search.setAttribute('aria-label', '篩選路線，或搜尋站牌名稱')
   const categories = document.createElement('div')
   categories.className = 'map-categories'
+  const stopResults = document.createElement('div')
+  stopResults.className = 'place-search-results'
   const routeGrid = document.createElement('div')
   routeGrid.className = 'map-route-grid'
 
@@ -614,10 +598,99 @@ function renderRoutePicker() {
       return button
     }))
   }
-  search.addEventListener('input', render)
-  drawer.replaceChildren(back, title, tripModeButton(), search, categories, routeGrid)
+  // 同一個輸入框兼作站牌搜尋:2 個字以上就順便查站牌,結果排在路線格之上。
+  let stopSearchTimer: number | undefined
+  const queueStopSearch = () => {
+    window.clearTimeout(stopSearchTimer)
+    const query = search.value.trim()
+    if (query.length < 2) {
+      stopResults.replaceChildren()
+      return
+    }
+    stopSearchTimer = window.setTimeout(() => {
+      void (async () => {
+        const places = await searchPlaces(query)
+        if (search.value.trim() !== query) return
+        stopResults.replaceChildren(...places.slice(0, 6).map((place) => searchResultButton(place, openSearchedPlace)))
+      })()
+    }, 300)
+  }
+  search.addEventListener('input', () => {
+    render()
+    queueStopSearch()
+  })
+  drawer.replaceChildren(back, title, tripModeButton(), search, categories, stopResults, routeGrid)
   render()
   setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
+}
+
+async function searchPlaces(query: string): Promise<SearchPlace[]> {
+  if (!activeCity) return []
+  const params = new URLSearchParams({ city: activeCity.code, q: query })
+  const response = await fetch(`/api/v1/map/search?${params}`)
+  if (!response.ok) return []
+  const data = await response.json() as { places?: SearchPlace[] }
+  return data.places ?? []
+}
+
+function searchResultButton(place: SearchPlace, onPick: (place: SearchPlace) => void): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.className = 'nearby-place-button'
+  const name = document.createElement('strong')
+  name.textContent = place.name
+  const kind = document.createElement('span')
+  kind.textContent = '站牌'
+  button.appendChild(name)
+  button.appendChild(kind)
+  button.addEventListener('click', () => onPick(place))
+  return button
+}
+
+// 站牌名稱搜尋框:輸入 2 個字以上就打 /api/v1/map/search,
+// 讓不熟地圖的人(或外地人)不用在地圖上大海撈針。
+function placeSearchBox(placeholder: string, onPick: (place: SearchPlace) => void): HTMLElement {
+  const wrap = document.createElement('div')
+  wrap.className = 'place-search'
+  const input = document.createElement('input')
+  input.className = 'map-search'
+  input.placeholder = placeholder
+  input.setAttribute('aria-label', placeholder)
+  const results = document.createElement('div')
+  results.className = 'place-search-results'
+  let timer: number | undefined
+  input.addEventListener('input', () => {
+    window.clearTimeout(timer)
+    const query = input.value.trim()
+    if (query.length < 2) {
+      results.replaceChildren()
+      return
+    }
+    timer = window.setTimeout(() => {
+      void (async () => {
+        const places = await searchPlaces(query)
+        // 回來時使用者可能又改了字,只渲染還是最新查詢的結果
+        if (input.value.trim() !== query) return
+        if (!places.length) {
+          results.replaceChildren(paragraph('找不到這個站牌，換個關鍵字試試。'))
+          return
+        }
+        results.replaceChildren(...places.slice(0, 6).map((place) => searchResultButton(place, onPick)))
+      })()
+    }, 300)
+  })
+  wrap.appendChild(input)
+  wrap.appendChild(results)
+  return wrap
+}
+
+// 搜尋選中的站牌直接開站牌路線視圖(跟 deep link 進站牌同一條路)。
+function openSearchedPlace(place: SearchPlace) {
+  map.setView([place.latitude, place.longitude], 16)
+  const nearbyPlace: NearbyPlace = { ...place, distanceMeters: 0 }
+  lastNearbyOrigin = [place.latitude, place.longitude]
+  lastNearbyPlaces = [nearbyPlace]
+  interactionMode = 'nearby'
+  void showPlaceRoutes(nearbyPlace)
 }
 
 function tripModeButton(): HTMLButtonElement {
@@ -641,7 +714,8 @@ function tripModeButton(): HTMLButtonElement {
     nearbyLayer.clearLayers()
     drawer.replaceChildren(
       drawerBack('取消路線規劃', cancelTripMode),
-      heading('點一下出發位置', '直接點地圖，系統會配對最近站牌。'),
+      heading('點一下出發位置', '直接點地圖配對最近站牌，或輸入站牌名稱。'),
+      placeSearchBox('搜尋出發站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
     )
     setStatus('路線規劃 · 請點出發位置')
     setViewBack(cancelTripMode)
@@ -697,6 +771,23 @@ function returnToTripResults() {
   drawTripEndpoints()
 }
 
+// 把 route-back.ts 的純決策目標對應回實際的導航動作。
+function backActionFor(target: RouteBackTarget): () => void {
+  if (target === 'trip-results') return returnToTripResults
+  if (target === 'variant-picker') {
+    return () => {
+      if (lastVariantChoices) {
+        renderVariantPicker(lastVariantChoices.routeName, lastVariantChoices.variants)
+        setStatus(`${lastVariantChoices.routeName} · 選擇行駛方向`)
+      } else {
+        renderRoutePicker()
+      }
+    }
+  }
+  if (target === 'stop-view') return () => (routeBackAction ?? renderRoutePicker)()
+  return renderRoutePicker
+}
+
 function unifiedStopMarker(
   position: L.LatLngExpression,
   prominent = false,
@@ -734,17 +825,16 @@ async function loadRoute(
   routeReturnsToTrip = returnToTrip
   activeRouteColor = color
   routeBackAction = backAction
-  routeBackLabel = backAction ? '返回站點' : '更換路線'
   previewRequest += 1
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
   if (!returnToTrip && !hasTripResults()) clearTripState()
   // 載入中(和載入失敗時)的返回也要指對地方:從行程候選進來的,
   // 退路是候選清單;指到 renderRoutePicker 會把整趟規劃清掉。
-  const loadingBack = returnToTrip ? returnToTripResults : backAction ?? renderRoutePicker
-  const loadingLabel = returnToTrip ? '返回行程候選' : backAction ? '返回站點' : '返回路線'
+  const loading = routeLoadingBack({ returnToTrip, hasStopBackAction: Boolean(backAction) })
+  const loadingBack = backActionFor(loading.target)
   setStatus(`${routeName} · 正在讀取城市裡的路徑…`)
-  drawer.replaceChildren(drawerBack(loadingLabel, loadingBack), heading(routeName, '正在拼起路線與站牌…'))
+  drawer.replaceChildren(drawerBack(loading.label, loadingBack), heading(routeName, '正在拼起路線與站牌…'))
   setViewBack(loadingBack)
   try {
     const params = new URLSearchParams({ city: activeCity.code, route: routeName })
@@ -819,10 +909,10 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     return button
   }))
   // 行程候選帶著過期的 variantKey 進來時會落到這裡,退路一樣要回候選清單
-  const variantBack = routeReturnsToTrip ? returnToTripResults : routeBackAction ?? renderRoutePicker
-  const variantBackLabel = routeReturnsToTrip ? '返回行程候選' : routeBackAction ? '返回站點' : '返回路線'
+  const decision = routeLoadingBack({ returnToTrip: routeReturnsToTrip, hasStopBackAction: Boolean(routeBackAction) })
+  const variantBack = backActionFor(decision.target)
   drawer.replaceChildren(
-    drawerBack(variantBackLabel, variantBack),
+    drawerBack(decision.label, variantBack),
     heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
     list,
   )
@@ -869,19 +959,15 @@ function drawVariant(variant: RouteMapVariant) {
     && (lastVariantChoices?.variants.length ?? 0) > 1
   const change = document.createElement('button')
   change.className = 'quiet-button'
-  change.textContent = routeReturnsToTrip
-    ? '返回行程候選'
-    : canReturnToVariantPicker ? '更換方向' : routeBackLabel
-  const goBack = () => {
-    if (routeReturnsToTrip && hasTripResults()) {
-      returnToTripResults()
-    } else if (canReturnToVariantPicker && lastVariantChoices) {
-      // 從支線選擇進來的,退回支線選擇(一層);直接跳路線列表會一次退兩層。
-      renderVariantPicker(lastVariantChoices.routeName, lastVariantChoices.variants)
-      setStatus(`${lastVariantChoices.routeName} · 選擇行駛方向`)
-    } else if (routeBackAction) routeBackAction()
-    else renderRoutePicker()
-  }
+  const backContext = () => ({
+    returnToTrip: routeReturnsToTrip,
+    hasTripResults: hasTripResults(),
+    canReturnToVariantPicker,
+    hasStopBackAction: Boolean(routeBackAction),
+  })
+  change.textContent = routeViewBack(backContext()).label
+  // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
+  const goBack = () => backActionFor(routeViewBack(backContext()).target)()
   change.addEventListener('click', goBack)
   drawer.replaceChildren(
     heading(variant.routeName, variant.label),
@@ -1160,17 +1246,27 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
     const nearest = data.places?.[0]
     if (!response.ok || !nearest) throw new Error(data.error ?? '這附近沒有站牌')
     if (tripStage === 'from') {
+      // 「重選出發位置」會保留已選好的目的地:換完起點直接重查,不用重選終點。
+      if (selectedTo?.placeId === nearest.placeId) throw new Error('出發位置和目的地配對到同一站，請選遠一點')
       selectedFrom = nearest
-      selectedTo = undefined
       fromCoordinate = [latitude, longitude]
-      toCoordinate = undefined
+      if (selectedTo) {
+        tripStage = 'idle'
+        interactionMode = 'trip-results'
+        setNetworkVisible(false)
+        nearbyLayer.clearLayers()
+        drawTripEndpoints()
+        await loadDirectRoutes()
+        return
+      }
       tripStage = 'to'
       interactionMode = 'trip'
       nearbyLayer.clearLayers()
       drawTripEndpoints()
       drawer.replaceChildren(
         drawerBack('取消路線規劃', cancelTripMode),
-        heading('再點一下目的地', `出發位置靠近「${nearest.name}」，現在直接點地圖上的目的地。`),
+        heading('再點一下目的地', `出發位置靠近「${nearest.name}」，點地圖上的目的地或輸入站牌名稱。`),
+        placeSearchBox('搜尋目的地站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
       )
       setStatus(`出發：${nearest.name} · 請點目的地`)
       setViewBack(cancelTripMode)
@@ -1337,6 +1433,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     back,
     heading(`${selectedFrom.name} → ${selectedTo.name}`, directRoutes.length ? `${directRoutes.length} 個直達方向，淡色線為候選路線。` : '沒有直達路線'),
     list,
+    changeOriginButton(),
     reset,
   )
   setStatus(directRoutes.length ? `找到 ${directRoutes.length} 個直達方向` : '沒有直達車')
@@ -1407,10 +1504,19 @@ function renderTransferPlans(plans: TransferPlan[]) {
     drawerBack('重新選目的地', resumeDestinationSelection),
     heading(`${selectedFrom.name} → ${selectedTo.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
     list,
+    changeOriginButton(),
     tripModeButton(),
   )
   setStatus(plans.length ? `找到 ${plans.length} 個一次轉乘方案` : '沒有合理的一次轉乘方案')
   setViewBack(resumeDestinationSelection)
+}
+
+function changeOriginButton(): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.className = 'quiet-button change-origin-button'
+  button.textContent = '重選出發位置'
+  button.addEventListener('click', resumeOriginSelection)
+  return button
 }
 
 function resumeDestinationSelection() {
@@ -1425,9 +1531,31 @@ function resumeDestinationSelection() {
   drawTripEndpoints()
   drawer.replaceChildren(
     drawerBack('取消路線規劃', cancelTripMode),
-    heading('重新選目的地', `保留出發站「${selectedFrom?.name ?? ''}」，請再點一次地圖。`),
+    heading('重新選目的地', `保留出發站「${selectedFrom?.name ?? ''}」，點地圖或輸入站牌名稱。`),
+    placeSearchBox('搜尋目的地站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
   )
   setStatus('已保留出發位置 · 請重新點目的地')
+  setViewBack(cancelTripMode)
+}
+
+// 對照 resumeDestinationSelection:保留目的地,只重選出發位置。
+// selectTripCoordinate 的 from 分支看到 selectedTo 還在,選完就直接重查。
+function resumeOriginSelection() {
+  selectedFrom = undefined
+  fromCoordinate = undefined
+  lastDirectRoutes = []
+  lastTransferPlans = []
+  tripStage = 'from'
+  interactionMode = 'trip'
+  previewLayer.clearLayers()
+  nearbyLayer.clearLayers()
+  drawTripEndpoints()
+  drawer.replaceChildren(
+    drawerBack('取消路線規劃', cancelTripMode),
+    heading('重選出發位置', `保留目的地「${selectedTo?.name ?? ''}」，點地圖或輸入站牌名稱。`),
+    placeSearchBox('搜尋出發站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
+  )
+  setStatus('已保留目的地 · 請重新點出發位置')
   setViewBack(cancelTripMode)
 }
 
@@ -1657,8 +1785,19 @@ function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLBu
 
   control.addEventListener('click', () => {
     if (!activeCity) return
+    // 封面只留一個地圖站點:加入時會移除其他站點的地圖收藏,
+    // 這件事必須講出來,不能讓使用者之後才發現收藏「憑空消失」。
+    const replaced = readBoards().find((board) =>
+      board.placeId && !(board.city === activeCity!.code && board.placeId === place.placeId))
     selected = toggleFavoriteDirection(activeCity.code, place, { ...bus, city: activeCity.code })
     render()
+    if (selected) {
+      setStatus(replaced
+        ? `封面改為顯示「${place.name}」，原本的「${replaced.title}」已移除`
+        : `已將「${place.name}」的這個方向加入首頁`)
+    } else {
+      setStatus('已從首頁移除這個方向')
+    }
   })
   render()
   return control
@@ -1740,7 +1879,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
     }
     drawer.replaceChildren(
       drawerBack('附近站牌', renderNearbyPlaces),
-      heading(place.name, `${Math.round(place.distanceMeters)} 公尺 · ${data.routes.length} 個行車方向`),
+      heading(place.name, `${place.distanceMeters > 0 ? `${Math.round(place.distanceMeters)} 公尺 · ` : ''}${data.routes.length} 個行車方向`),
       list,
     )
     await previewPlaceRoutes(sortedRoutes, place)

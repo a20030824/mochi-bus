@@ -56,12 +56,13 @@ export function newBoardId(): string {
   return crypto.randomUUID?.() || String(Date.now())
 }
 
-export function migrateBoards(fallback?: FavoriteBoard): FavoriteBoard[] {
+export function migrateBoards(): FavoriteBoard[] {
   // v2 key 存在時(包含空陣列)代表使用者動過資料,不能再次匯入舊資料。
   if (localStorage.getItem(BOARDS_KEY) !== null) return readBoards()
   const now = new Date().toISOString()
-  const migrated = migrateLegacyPresets(readJSON(LEGACY_PRESETS_KEY), now)
-  const boards = migrated.length ? migrated : fallback ? [fallback] : []
+  // 只持久化真正屬於使用者的資料(舊版轉換結果,可能是空的);
+  // 封面的示範站牌由頁面自己顯示,不能寫進 localStorage 假裝是使用者建的。
+  const boards = migrateLegacyPresets(readJSON(LEGACY_PRESETS_KEY), now)
   writeBoards(boards)
   if (boards.length) {
     const legacyActive = localStorage.getItem(LEGACY_ACTIVE_KEY)

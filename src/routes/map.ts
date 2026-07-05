@@ -18,6 +18,7 @@ import {
   getStopPlace,
   getStopPlaceBundle,
   getStopPlaceRoutes,
+  searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
 import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, type BusETAItem, type TDXEnv } from '../lib/tdx'
@@ -32,6 +33,14 @@ const LAST_REALTIME_SECONDS = 120
 
 function arrivalCacheKey(kind: 'cooldown' | 'last', city: string, routeName = ''): Request {
   return new Request(`https://mochi-cache.invalid/arrivals/${kind}/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`)
+}
+
+function routeEtaUrl(city: string, routeName: string): URL {
+  const url = new URL(
+    `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+  )
+  url.searchParams.set('$format', 'JSON')
+  return url
 }
 
 function edgeCache(): Cache {
@@ -200,6 +209,22 @@ type VehicleItem = {
   UpdateTime?: string
 }
 
+map.get('/api/v1/map/search', async (c) => {
+  try {
+    const city = c.req.query('city')?.trim()
+    const query = c.req.query('q')?.trim()
+    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
+    if (!query || query.length > 40) throw new QueryValidationError('請輸入站牌名稱')
+    const places = await searchStopPlaces(c.env, city, query)
+    return c.json({ schemaVersion: 1, city, query, places }, 200, {
+      'Cache-Control': 'public, max-age=3600',
+    })
+  } catch (error) {
+    const message = error instanceof QueryValidationError ? error.message : '站牌搜尋失敗'
+    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+  }
+})
+
 map.get('/api/v1/map/nearby', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
@@ -281,12 +306,8 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         }
         continue
       }
-      const etaUrl = new URL(
-        `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
-      )
-      etaUrl.searchParams.set('$format', 'JSON')
       try {
-        const items = await fetchTDXJson<BusETAItem[]>(c.env, etaUrl, 15)
+        const items = await fetchTDXJson<BusETAItem[]>(c.env, routeEtaUrl(city, routeName), 15)
         etaItems.push(...items)
         await writeLastRealtime(city, routeName, items)
         realtimeQueries += 1
@@ -407,18 +428,23 @@ map.post('/api/v1/map/journey-eta', async (c) => {
     if (!legs.length || legs.length > 12) throw new QueryValidationError('ETA 查詢項目格式錯誤')
 
     const refs = await getJourneyLegStopRefs(c.env, city, legs)
-    const url = new URL(`https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}`)
-    url.searchParams.set('$format', 'JSON')
-    let etaItems: BusETAItem[] = []
-    try {
-      etaItems = await fetchTDXJson<BusETAItem[]>(c.env, url, 8)
-    } catch (error) {
-      console.error(JSON.stringify({
-        message: 'journey_eta_upstream_failed',
-        city,
-        error: error instanceof Error ? error.message : String(error),
-      }))
-    }
+    // 逐路線查 ETA(legs ≤ 12,去重後更少),與站牌到站查詢共用同一份快取。
+    // 不抓整縣市:雙北的全城 ETA 一包可達數十 MB,快取只有幾秒,
+    // 每次規劃都重抓一次,還會把 isolate 記憶體快取撐爆。
+    const routeNames = [...new Set(refs.map((ref) => ref.routeName))]
+    const etaItems = (await Promise.all(routeNames.map(async (routeName) => {
+      try {
+        return await fetchTDXJson<BusETAItem[]>(c.env, routeEtaUrl(city, routeName), 15)
+      } catch (error) {
+        console.error(JSON.stringify({
+          message: 'journey_eta_upstream_failed',
+          city,
+          routeName,
+          error: error instanceof Error ? error.message : String(error),
+        }))
+        return [] as BusETAItem[]
+      }
+    }))).flat()
     const realtimeEstimates = new Map<string, JourneyEstimate>(refs.map((ref) => {
       const item = etaItems.find((candidate) =>
         candidate.RouteUID === ref.routeUid
@@ -489,9 +515,12 @@ function getScheduledEstimates(
   const result = new Map<string, JourneyEstimate>()
 
   refs.forEach((ref) => {
-    const estimate = nextScheduledMinutes(schedules, {
+    const scheduled = nextScheduledMinutes(schedules, {
       stopUid: ref.stopUid, direction: ref.direction, subRouteUid: ref.patternId.split(':')[0],
     }, now)
+    // 明天才有車的班次對「現在出發」的行程排序沒有意義(會顯示成幾百分鐘到站),
+    // 當作沒有估計,讓候選清單退回站數排序。
+    const estimate = scheduled?.nextDay ? null : scheduled
     result.set(ref.key, {
       key: ref.key,
       routeName: ref.routeName,
