@@ -292,12 +292,17 @@ export function renderSetupPage(cities: ReadonlyArray<readonly [string, string]>
               <div><b>7 分</b><span>即時 GPS 回報的到站時間，最可信的一種。</span></div>
               <div><b>約 7 分</b><span>沒有即時訊號，依時刻表推估。</span></div>
               <div><b>5–10 分一班</b><span>班距制路線（雙北常見）：官方只公布多久一班，不公布每一班的時刻。</span></div>
-              <div><b>7 分後發車</b><span>這一站沒有自己的時刻，以起點發車時間當下限——車還要開過來。</span></div>
+              <div><b>7 分後發車</b><span>這一站沒有自己的時刻，以起點發車時間當下限，車還要開過來。</span></div>
               <div><b>稍早</b><span>資料源暫時忙線，先給你幾分鐘內的最後一筆即時資料，總比空白好。</span></div>
               <div><b>明日 06:10 發車</b><span>今天收班了。超過一小時的等待一律給時刻，沒有人想心算 131 分。</span></div>
             </div>
-            <p class="glossary-tip">地圖上，點任何一個站牌會同時畫出所有經過它的路線——一眼看出這一站能把你帶去哪裡。▦ 攤開整座城市的路網，↗ 規劃一段行程；同一條路線，在任何畫面永遠是同一個顏色。</p>
-            <p class="glossary-tip">這些小字只有一個用意：誠實標示每筆資料的可信度——寧可給推估，也不給空白。這裡沒有帳號、沒有廣告、沒有追蹤，你的常用站牌只存在這台裝置。</p>
+            <p class="glossary-tip">地圖上，點任何一個站牌會同時畫出所有經過它的路線，一眼看出這一站能把你帶去哪裡。</p>
+            <p class="glossary-tip">▦ 攤開整座城市的路網</p>
+            <p class="glossary-tip">↗ 規劃一段行程</p>
+            <p class="glossary-tip">這些小字只有一個用意：誠實標示每筆資料的可信度，寧可給推估，也不給空白。</p>
+            <p class="glossary-tip">常用站牌與設定只保存在這台裝置。</p>
+            <p class="glossary-tip">支援加入主畫面（PWA），下次就像 App 一樣直接打開。</p>
+            <p class="glossary-tip">如果 Mochi Bus 有幫到你，歡迎使用自己的 TDX API，把共用額度留給下一位需要的人。</p>
             <p class="glossary-thanks">公車資料來自交通部 TDX，底圖是 OpenStreetMap 貢獻者的作品，由 Cloudflare Workers 送到你手上。謝謝他們。</p>
           </details>
         </div>
