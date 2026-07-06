@@ -21,6 +21,7 @@ import {
 } from '../lib/tdx'
 import { appIcon, renderAmbiguousPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
 import { getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
+import { mapCities } from '../config/map-cities'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
 const bus = new Hono<Env>()
@@ -205,6 +206,33 @@ const shortcutHandler = async (c: Context<Env>) => {
 bus.get('/shortcut', shortcutHandler)
 bus.get('/bus/text', shortcutHandler)
 bus.get('/text', shortcutHandler)
+
+bus.get('/robots.txt', (c) => c.text([
+  'User-agent: *',
+  // API 是無限的查詢參數空間,別讓爬蟲在裡面亂逛
+  'Disallow: /api/',
+  `Sitemap: ${new URL('/sitemap.xml', c.req.url)}`,
+  '',
+].join('\n'), 200, { 'Cache-Control': 'public, max-age=86400' }))
+
+bus.get('/sitemap.xml', (c) => {
+  const origin = new URL(c.req.url).origin
+  // 只列有意義的固定進入點:首頁、地圖、setup 與 22 個縣市深連結;
+  // 路線/站牌是 client-side render,爬蟲拿到空殼,列了也沒用。
+  const urls = [
+    '/',
+    '/map',
+    '/setup',
+    ...mapCities.map((city) => `/map?city=${city.code}`),
+  ]
+  const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${
+    urls.map((path) => `  <url><loc>${origin}${path.replaceAll('&', '&amp;')}</loc></url>`).join('\n')
+  }\n</urlset>`
+  return c.body(body, 200, {
+    'Content-Type': 'application/xml; charset=utf-8',
+    'Cache-Control': 'public, max-age=86400',
+  })
+})
 
 bus.get('/manifest.webmanifest', (c) => c.json({
   name: 'Mochi Bus',

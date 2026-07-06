@@ -86,11 +86,22 @@ async function writeLastRealtime(city: string, routeName: string, items: BusETAI
   }))
 }
 
-map.get('/map', (c) => c.html(renderMapPage(), 200, {
-  'Cache-Control': 'no-cache',
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-}))
+map.get('/map', (c) => {
+  // 深連結的標題直接從 query 組(路線名就在網址裡,不用查庫);
+  // place 深連結要查 DB 才有名字,不值得為標題多一次往返,維持通用標題。
+  const routeName = c.req.query('route')?.trim()
+  const cityName = mapCities.find((city) => city.code === c.req.query('city')?.trim())?.name
+  const meta = routeName && routeName.length <= 40
+    ? { title: `${routeName} 公車路線圖｜Mochi Bus`, description: `${routeName} 的路線走向、站牌與即時到站` }
+    : cityName
+      ? { title: `${cityName}公車地圖｜Mochi Bus`, description: `${cityName}的公車路網、附近站牌與路線規劃` }
+      : {}
+  return c.html(renderMapPage(meta), 200, {
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+  })
+})
 
 map.get('/api/v1/map/cities', (c) => c.json({ schemaVersion: 1, cities: mapCities }, 200, {
   'Cache-Control': 'public, max-age=86400',

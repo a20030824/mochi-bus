@@ -397,6 +397,7 @@ function showTaiwan() {
     locateCityButton(),
   )
   history.replaceState(null, '', '/map')
+  setDocumentTitle()
   setViewBack(undefined)
 }
 
@@ -516,6 +517,7 @@ async function chooseCity(city: MapCity) {
   lastDirectRoutes = []
   lastTransferPlans = []
   map.setView(city.center, 11)
+  setDocumentTitle(`${city.name}公車地圖`)
   setStatus(`${city.name} · 正在整理路線…`)
   drawer.replaceChildren(drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…'))
   setViewBack(() => showRegion(city.region))
@@ -1004,6 +1006,7 @@ function drawVariant(variant: RouteMapVariant) {
     variant: variant.variantKey,
   })
   history.replaceState(null, '', `/map?${params}`)
+  setDocumentTitle(`${variant.routeName} 公車路線圖`)
   startVehicleRefresh(variant)
 }
 
@@ -1249,6 +1252,7 @@ function renderNearbyPlaces() {
   setStatus(lastNearbyPlaces.length ? `找到 ${lastNearbyPlaces.length} 個附近站牌` : '附近沒有站牌')
   const [latitude, longitude] = lastNearbyOrigin
   history.replaceState(null, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
+  setDocumentTitle(`${activeCity.name}公車地圖`)
   setViewBack(nearbyBack)
 }
 
@@ -1907,6 +1911,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
     drawTripEndpoints()
     map.panTo([place.latitude, place.longitude])
     history.replaceState(null, '', `/map?city=${activeCity.code}&place=${encodeURIComponent(place.placeId)}`)
+    setDocumentTitle(`${place.name} 到站時間`)
     setStatus(`${place.name} · ${data.routes.length} 個行車方向`)
   } catch (error) {
     setStatus(error instanceof Error && error.message ? error.message : '站牌路線讀取失敗', true)
@@ -1955,6 +1960,11 @@ function buttonGrid(items: Array<{ label: string; onClick: () => void }>): HTMLE
 function setStatus(text: string, error = false) {
   statusNode.textContent = text
   statusNode.classList.toggle('error', error)
+}
+
+// 跟著畫面更新分頁標題:多分頁與瀏覽紀錄裡才認得出「哪一條路線、哪一站」。
+function setDocumentTitle(prefix?: string) {
+  document.title = prefix ? `${prefix}｜Mochi Bus` : '公車地圖｜Mochi Bus'
 }
 
 function requiredElement<T extends HTMLElement = HTMLElement>(id: string): T {
