@@ -66,13 +66,19 @@ export function nextScheduledMinutes(schedules: ScheduleItem[], query: ScheduleQ
   const nowMinutes = hour * 60 + minute
 
   // 同方向可能有多條支線停同一站,必須看過全部符合的項目取最近一班,
-  // 不能只取第一個符合的 schedule。
+  // 不能只取第一個符合的 schedule。缺 SubRouteUID 的班表項當作無法分辨、不排除
+  // (跟 sync 端打包 place bundle 的規則一致,不然打包進來的資料會在這裡被丟掉)。
   const exactMatches = schedules.filter((item) =>
-    (!query.subRouteUid || item.SubRouteUID === query.subRouteUid) && item.Direction === query.direction,
+    (!query.subRouteUid || !item.SubRouteUID || item.SubRouteUID === query.subRouteUid)
+    && item.Direction === query.direction,
   )
+  // 支線對不上時借同方向其他支線的班表:雙北的 Schedule 常缺支線或缺方向
+  // (262 的返程班表只掛在其中一條支線上)。站別時刻要求本站有出現;
+  // 班距(Frequencys)是路線層級的資訊,沒有站別可比,同方向就直接借。
   const matched = exactMatches.length ? exactMatches : schedules.filter((item) =>
     item.Direction === query.direction
-    && item.Timetables?.some((timetable) => timetable.StopTimes?.some((stop) => stop.StopUID === query.stopUid)))
+    && (Boolean(item.Frequencys?.length)
+      || item.Timetables?.some((timetable) => timetable.StopTimes?.some((stop) => stop.StopUID === query.stopUid))))
 
   const today = serviceDayEstimate(matched, query, weekday, nowMinutes)
   if (today) return today

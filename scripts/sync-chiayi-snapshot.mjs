@@ -197,9 +197,13 @@ for (const item of patternStops) {
   if (seenPlaceRoutes.has(identity)) continue
   seenPlaceRoutes.add(identity)
   const routeSchedules = schedulesByRouteUid.get(pattern.routeUid) ?? []
-  const matchingSchedules = routeSchedules.filter((schedule) =>
-    schedule.Direction === pattern.direction
-    && (!pattern.subrouteUid || !schedule.SubRouteUID || schedule.SubRouteUID === pattern.subrouteUid))
+  const sameDirection = routeSchedules.filter((schedule) => schedule.Direction === pattern.direction)
+  const exactSchedules = sameDirection.filter((schedule) =>
+    !pattern.subrouteUid || !schedule.SubRouteUID || schedule.SubRouteUID === pattern.subrouteUid)
+  // 雙北的 Schedule 常只掛在代表支線(或缺方向):262 有 8 個支線×方向組合,
+  // 班表卻只覆蓋其中 4 個。自己的班表拿不到就借同路線同方向其他支線的當估計,
+  // 顯示端本來就標成「預估」;不借的話這些站會整排「暫無班次」,明明是高頻車。
+  const matchingSchedules = exactSchedules.length ? exactSchedules : sameDirection
   const schedules = matchingSchedules.map((schedule) => ({
     SubRouteUID: schedule.SubRouteUID,
     Direction: schedule.Direction,
@@ -381,7 +385,8 @@ async function createR2Client() {
 function hashContent(payloads) {
   // 快照產出格式的版本:bundle/network 的結構有改就 +1,
   // 讓所有城市自動重匯,不會被「內容未變更」跳過而留著舊格式。
-  const SNAPSHOT_FORMAT = 3
+  // 4:place bundle 的班表比對加入「借同方向其他支線」的 fallback。
+  const SNAPSHOT_FORMAT = 4
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])

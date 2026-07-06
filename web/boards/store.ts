@@ -18,6 +18,7 @@ const ACTIVE_BOARD_KEY = 'mochi.bus.activeBoard.v2'
 const ACTIVE_CITY_KEY = 'mochi.bus.activeCity.v1'
 const LEGACY_PRESETS_KEY = 'mochi.bus.presets.v1'
 const LEGACY_ACTIVE_KEY = 'mochi.bus.activePreset.v1'
+const TDX_AUTH_KEY = 'mochi.bus.tdxAuth.v1'
 
 export function readBoards(): FavoriteBoard[] {
   const value = readJSON(BOARDS_KEY)
@@ -128,9 +129,33 @@ export function toggleFavoriteDirection(city: string, place: FavoritePlace, bus:
   return selected
 }
 
-// 清掉這個站台的所有本機資料(常用站牌、封面指定、縣市記憶與舊版資料)。
+// 使用者自備的 TDX 憑證(setup 頁的進階設定)。
+// secret 只存在使用者自己這台裝置的 localStorage,伺服器端不保管;
+// 即時查詢時由瀏覽器帶 header 過去、伺服器用完即丟。
+export type TdxAuth = { clientId: string; clientSecret: string }
+
+export function getTdxAuth(): TdxAuth | null {
+  const value = readJSON(TDX_AUTH_KEY) as TdxAuth | null
+  return value && typeof value.clientId === 'string' && typeof value.clientSecret === 'string' ? value : null
+}
+
+export function setTdxAuth(auth: TdxAuth): void {
+  localStorage.setItem(TDX_AUTH_KEY, JSON.stringify(auth))
+}
+
+export function clearTdxAuth(): void {
+  localStorage.removeItem(TDX_AUTH_KEY)
+}
+
+// 會落到 TDX 即時查詢的 API 呼叫帶上這組 header;沒設定憑證就是空物件,行為不變。
+export function tdxHeaders(): Record<string, string> {
+  const auth = getTdxAuth()
+  return auth ? { 'x-tdx-client-id': auth.clientId, 'x-tdx-client-secret': auth.clientSecret } : {}
+}
+
+// 清掉這個站台的所有本機資料(常用站牌、封面指定、縣市記憶、TDX 憑證與舊版資料)。
 export function clearLocalData(): void {
-  for (const key of [BOARDS_KEY, ACTIVE_BOARD_KEY, ACTIVE_CITY_KEY, LEGACY_PRESETS_KEY, LEGACY_ACTIVE_KEY]) {
+  for (const key of [BOARDS_KEY, ACTIVE_BOARD_KEY, ACTIVE_CITY_KEY, TDX_AUTH_KEY, LEGACY_PRESETS_KEY, LEGACY_ACTIVE_KEY]) {
     localStorage.removeItem(key)
   }
 }

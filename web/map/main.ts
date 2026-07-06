@@ -7,6 +7,7 @@ import {
   isFavoriteDirection,
   readBoards,
   setActiveCity,
+  tdxHeaders,
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
@@ -520,7 +521,7 @@ async function chooseCity(city: MapCity) {
   setViewBack(() => showRegion(city.region))
 
   try {
-    const response = await fetch(`/api/v1/map/routes?city=${encodeURIComponent(city.code)}`)
+    const response = await tdxFetch(`/api/v1/map/routes?city=${encodeURIComponent(city.code)}`)
     const data = await response.json() as { routes?: RouteItem[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
     routes = data.routes
@@ -555,7 +556,7 @@ function renderRoutePicker() {
     const cityCode = activeCity.code
     void (async () => {
       try {
-        const response = await fetch(`/api/v1/map/routes?city=${encodeURIComponent(cityCode)}`)
+        const response = await tdxFetch(`/api/v1/map/routes?city=${encodeURIComponent(cityCode)}`)
         const data = await response.json() as { routes?: RouteItem[]; error?: string }
         if (!response.ok || !data.routes) throw new Error(data.error)
         routes = data.routes
@@ -633,6 +634,15 @@ function renderRoutePicker() {
   drawer.replaceChildren(back, title, tripModeButton(), search, categories, stopResults, routeGrid)
   render()
   setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
+}
+
+// 會落到 TDX 即時查詢的端點(到站、車輛、行程 ETA、路線的 TDX fallback)
+// 帶上使用者自備的憑證;純快照端點(D1/R2)用一般 fetch 就好。
+function tdxFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    headers: { ...(init?.headers as Record<string, string> | undefined), ...tdxHeaders() },
+  })
 }
 
 async function searchPlaces(query: string): Promise<SearchPlace[]> {
@@ -849,7 +859,7 @@ async function loadRoute(
   setViewBack(loadingBack)
   try {
     const params = new URLSearchParams({ city: activeCity.code, route: routeName })
-    const response = await fetch(`/api/v1/map/route?${params}`)
+    const response = await tdxFetch(`/api/v1/map/route?${params}`)
     const data = await response.json() as { variants?: RouteMapVariant[]; error?: string }
     if (!response.ok || !data.variants?.length) throw new Error(data.error)
     const preferred = data.variants.find((variant) => variant.variantKey === preferredVariant)
@@ -1030,7 +1040,7 @@ function startVehicleRefresh(variant: RouteMapVariant) {
       direction: String(variant.direction),
     })
     try {
-      const response = await fetch(`/api/v1/map/vehicles?${params}`, { cache: 'no-store' })
+      const response = await tdxFetch(`/api/v1/map/vehicles?${params}`, { cache: 'no-store' })
       const data = await response.json() as { vehicles?: VehiclePosition[] }
       if (!response.ok || !data.vehicles) return
       vehicleLayer.clearLayers()
@@ -1348,7 +1358,7 @@ async function loadDirectRoutes() {
 async function fetchJourneyEta(legs: Array<{ key: string; patternId: string; sequence: number }>) {
   if (!activeCity || !legs.length) return new Map<string, number | null>()
   try {
-    const response = await fetch('/api/v1/map/journey-eta', {
+    const response = await tdxFetch('/api/v1/map/journey-eta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ city: activeCity.code, legs }),
@@ -1583,7 +1593,7 @@ async function previewTransferPlans(plans: TransferPlan[]) {
   ]
   const previews = await Promise.all(legs.map(async (leg) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: leg.routeName })
-    const response = await fetch(`/api/v1/map/route?${params}`)
+    const response = await tdxFetch(`/api/v1/map/route?${params}`)
     if (!response.ok) return null
     const data = await response.json() as { variants?: RouteMapVariant[] }
     const variant = data.variants?.find((item) => item.variantKey === leg.variantKey)
@@ -1616,7 +1626,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[]) {
   previewLayer.clearLayers()
   const previews = await Promise.all(directRoutes.slice(0, 8).map(async (route) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
-    const response = await fetch(`/api/v1/map/route?${params}`)
+    const response = await tdxFetch(`/api/v1/map/route?${params}`)
     if (!response.ok) return null
     const data = await response.json() as { variants?: RouteMapVariant[] }
     const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
@@ -1646,7 +1656,7 @@ async function previewPlaceRoutes(placeRoutes: PlaceRoute[], place: NearbyPlace)
   previewLayer.clearLayers()
   const previews = await Promise.all(placeRoutes.slice(0, 8).map(async (route) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
-    const response = await fetch(`/api/v1/map/route?${params}`)
+    const response = await tdxFetch(`/api/v1/map/route?${params}`)
     if (!response.ok) return null
     const data = await response.json() as { variants?: RouteMapVariant[] }
     const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
@@ -1835,7 +1845,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
   setViewBack(renderNearbyPlaces)
   setStatus(`正在讀取 ${place.name} 的路線…`)
   try {
-    const response = await fetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/arrivals?city=${encodeURIComponent(activeCity.code)}`)
+    const response = await tdxFetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/arrivals?city=${encodeURIComponent(activeCity.code)}`)
     const data = await response.json() as { routes?: PlaceRoute[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
     if (placeRequest !== previewRequest) return

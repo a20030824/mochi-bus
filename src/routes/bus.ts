@@ -15,6 +15,8 @@ import {
   getStopRouteSuggestions,
   QueryResolutionError,
   resolveBusQuery,
+  verifyTDXCredentials,
+  withUserTDX,
   type TDXEnv,
 } from '../lib/tdx'
 import { appIcon, renderAmbiguousPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
@@ -22,6 +24,10 @@ import { getSnapshotRouteVariants, type TransitBindings } from '../infrastructur
 
 type Env = { Bindings: TDXEnv & TransitBindings }
 const bus = new Hono<Env>()
+
+// API 請求可帶使用者自備的 TDX 憑證(setup 頁進階設定),即時查詢改用他的額度。
+const tdxEnv = (c: Context<Env>) =>
+  withUserTDX(c.env, c.req.header('x-tdx-client-id'), c.req.header('x-tdx-client-secret'))
 
 bus.get('/', async (c) => renderETA(c, defaultBusQuery, true))
 
@@ -102,11 +108,12 @@ async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQue
 
 bus.get('/api/v1/eta', async (c) => {
   try {
+    const env = tdxEnv(c)
     const query = parseRequestQuery(c)
     const resolved = query.stopUid && query.stopName
       ? query as BusQuery & { stopUid: string; stopName: string }
-      : await resolveBusQuery(c.env, query)
-    const result = await getCommuteETA(c.env, resolved)
+      : await resolveBusQuery(env, query)
+    const result = await getCommuteETA(env, resolved)
     return c.json(result, 200, noStoreHeaders)
   } catch (error) {
     return jsonError(c, error)
@@ -121,7 +128,7 @@ bus.get('/api/v1/stops', async (c) => {
     if (!routeName) throw new QueryValidationError('請輸入公車路線')
     if (routeName.length > 40) throw new QueryValidationError('公車路線過長')
 
-    const groups = await getRouteStopGroups(c.env, city, routeName)
+    const groups = await getRouteStopGroups(tdxEnv(c), city, routeName)
     return c.json({ city, routeName, groups }, 200, {
       'Cache-Control': 'public, max-age=300',
     })
@@ -134,7 +141,7 @@ bus.get('/api/v1/routes', async (c) => {
   try {
     const city = c.req.query('city')?.trim() || defaultBusQuery.city
     if (!supportedCityCodes.has(city)) throw new QueryValidationError(`不支援的縣市：${city}`)
-    const routes = await getRouteCatalog(c.env, city)
+    const routes = await getRouteCatalog(tdxEnv(c), city)
     // TDX 原始目錄已在 edge 快取；API schema 不交給瀏覽器長快取，避免舊欄位卡住 UI。
     return c.json({ schemaVersion: 2, city, routes }, 200, noStoreHeaders)
   } catch (error) {
@@ -149,10 +156,26 @@ bus.get('/api/v1/stop-routes', async (c) => {
     const stopUid = c.req.query('stopUid')?.trim()
     if (!supportedCityCodes.has(city)) throw new QueryValidationError(`不支援的縣市：${city}`)
     if (!stopName) throw new QueryValidationError('缺少站牌名稱')
-    const buses = await getStopRouteSuggestions(c.env, city, stopName, stopUid)
+    const buses = await getStopRouteSuggestions(tdxEnv(c), city, stopName, stopUid)
     return c.json({ city, stopName, buses }, 200, noStoreHeaders)
   } catch (error) {
     return jsonError(c, error)
+  }
+})
+
+// setup 頁「儲存並測試」:驗證使用者自備的 TDX 憑證換不換得到 token。
+// 憑證只從 header 進來、用完即丟;絕不寫進任何儲存或 log。
+bus.get('/api/v1/tdx/verify', async (c) => {
+  const clientId = c.req.header('x-tdx-client-id')?.trim()
+  const clientSecret = c.req.header('x-tdx-client-secret')?.trim()
+  if (!clientId || !clientSecret) {
+    return c.json({ error: 'Client ID 與 Client Secret 都要填' }, 400, noStoreHeaders)
+  }
+  try {
+    await verifyTDXCredentials(clientId, clientSecret)
+    return c.json({ ok: true }, 200, noStoreHeaders)
+  } catch {
+    return c.json({ error: '這組憑證換不到 token，檢查一下是不是貼錯了' }, 401, noStoreHeaders)
   }
 })
 

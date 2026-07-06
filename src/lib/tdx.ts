@@ -8,6 +8,10 @@ import { memoryCacheGet, memoryCacheSet } from './memory-cache'
 export type TDXEnv = {
   TDX_CLIENT_ID: string
   TDX_CLIENT_SECRET: string
+  // 使用者自備的 TDX 憑證(setup 頁的進階設定):有值時即時查詢優先用它的額度,
+  // 換不到 token 就靜默退回共用憑證。只掛在請求衍生的 env 物件上,絕不落地、絕不進 log。
+  TDX_USER_CLIENT_ID?: string
+  TDX_USER_CLIENT_SECRET?: string
 }
 
 type LocalizedName = {
@@ -137,31 +141,56 @@ export class QueryResolutionError extends Error {
 }
 
 type TokenCache = { value: string; expiresAt: number }
-let tokenCache: TokenCache | undefined
-let pendingToken: Promise<string> | undefined
+// 以 client_id 為 key:共用憑證與各使用者憑證的 token 各自快取、互不覆蓋。
+const tokenCache = new Map<string, TokenCache>()
+const pendingTokens = new Map<string, Promise<string>>()
 
 const ETA_CACHE_SECONDS = 8
 const STATIC_CACHE_SECONDS = 60 * 60
 const STALE_AFTER_MS = 3 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 6000
+// 使用者憑證換到的 token 最多在伺服器記憶體留這麼久(用完即丟原則的折衷:
+// 每個請求都重打 token 端點會撞它自己的頻率限制);共用憑證照 TDX 給的效期用滿。
+const USER_TOKEN_MAX_SECONDS = 600
+// 失效的使用者憑證短暫停用,避免每個請求都去撞 token 端點。
+const INVALID_USER_KEY_SECONDS = 120
 
 export async function getTDXToken(env: TDXEnv): Promise<string> {
-  if (tokenCache && tokenCache.expiresAt > Date.now()) return tokenCache.value
-  if (pendingToken) return pendingToken
+  const userId = env.TDX_USER_CLIENT_ID
+  const userSecret = env.TDX_USER_CLIENT_SECRET
+  if (userId && userSecret && !memoryCacheGet<boolean>(`tdx/token-invalid/${userId}`)) {
+    try {
+      return await tokenFor(userId, userSecret, USER_TOKEN_MAX_SECONDS)
+    } catch (error) {
+      // 憑證在儲存時驗證過,執行期失效屬少見情況:記錄(絕不含憑證本身)、
+      // 冷卻後退回共用憑證,讓服務不中斷。
+      memoryCacheSet(`tdx/token-invalid/${userId}`, true, INVALID_USER_KEY_SECONDS)
+      console.error('tdx_user_token_failed', error instanceof Error ? error.message : String(error))
+    }
+  }
+  return tokenFor(env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET)
+}
 
-  pendingToken = fetchTDXToken(env)
+async function tokenFor(clientId: string, clientSecret: string, maxSeconds?: number): Promise<string> {
+  const cached = tokenCache.get(clientId)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+  const pending = pendingTokens.get(clientId)
+  if (pending) return pending
+
+  const promise = fetchTDXToken(clientId, clientSecret, maxSeconds)
+  pendingTokens.set(clientId, promise)
   try {
-    return await pendingToken
+    return await promise
   } finally {
-    pendingToken = undefined
+    pendingTokens.delete(clientId)
   }
 }
 
-async function fetchTDXToken(env: TDXEnv): Promise<string> {
+async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds?: number): Promise<string> {
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
-    client_id: env.TDX_CLIENT_ID,
-    client_secret: env.TDX_CLIENT_SECRET,
+    client_id: clientId,
+    client_secret: clientSecret,
   })
   const response = await fetch(
     'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token',
@@ -177,12 +206,33 @@ async function fetchTDXToken(env: TDXEnv): Promise<string> {
   const data = await response.json() as { access_token?: string; expires_in?: number }
   if (!data.access_token) throw new Error('TDX token response is missing access_token')
 
-  const expiresIn = Math.max(60, data.expires_in ?? 3600)
-  tokenCache = {
+  const expiresIn = Math.max(60, Math.min(data.expires_in ?? 3600, maxSeconds ?? Number.POSITIVE_INFINITY))
+  tokenCache.set(clientId, {
     value: data.access_token,
     expiresAt: Date.now() + Math.max(30, expiresIn - 60) * 1000,
+  })
+  // 到期的 token 沒人主動清,量大時掃一輪,別讓 Map 無上限成長。
+  if (tokenCache.size > 100) {
+    const now = Date.now()
+    for (const [key, entry] of tokenCache) {
+      if (entry.expiresAt <= now) tokenCache.delete(key)
+    }
   }
   return data.access_token
+}
+
+// setup 頁「儲存並測試」用:直接打 token 端點驗證這組憑證換不換得到 token。
+export async function verifyTDXCredentials(clientId: string, clientSecret: string): Promise<void> {
+  await fetchTDXToken(clientId, clientSecret, 60)
+}
+
+// 把瀏覽器自帶的 TDX 憑證掛上 env(進階設定)。只對 fetch 發出的 API 請求有意義:
+// 頁面導覽帶不了自訂 header,SSR 一律走共用憑證。
+export function withUserTDX<E extends TDXEnv>(env: E, clientId?: string, clientSecret?: string): E {
+  const id = clientId?.trim()
+  const secret = clientSecret?.trim()
+  if (!id || !secret || id.length > 120 || secret.length > 240) return env
+  return { ...env, TDX_USER_CLIENT_ID: id, TDX_USER_CLIENT_SECRET: secret }
 }
 
 export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<ResolvedBusQuery> {

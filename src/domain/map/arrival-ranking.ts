@@ -3,10 +3,13 @@ export function selectRealtimeCandidates<T extends { scheduleMinutes: number | n
   limit = 3,
   withinMinutes = 30,
 ): T[] {
-  return routes
+  const scheduled = routes
     .filter((route) => route.scheduleMinutes !== null && route.scheduleMinutes <= withinMinutes)
     .sort((a, b) => (a.scheduleMinutes ?? Number.POSITIVE_INFINITY) - (b.scheduleMinutes ?? Number.POSITIVE_INFINITY))
-    .slice(0, limit)
+  // 沒有班表估計 ≠ 沒在跑:雙北的班表常缺支線或缺方向,高頻車反而估不出時間。
+  // 名額沒用滿就分給這些未知路線去查即時,不然它們會被釘死在「暫無班次」。
+  const unknown = routes.filter((route) => route.scheduleMinutes === null)
+  return [...scheduled, ...unknown].slice(0, limit)
 }
 
 export function includeFocusedCandidate<T>(candidates: T[], focused: T | undefined, limit = 3): T[] {

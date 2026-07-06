@@ -91,6 +91,27 @@ describe('nextScheduledMinutes', () => {
     expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0 }, saturdayAt15)).toBeNull()
   })
 
+  it('borrows a sibling subroute\'s headway when the pattern has no own schedule (Taipei-style gaps)', () => {
+    // 262 型:這個方向的班表只掛在另一條支線上,而且是班距制(沒有站別時刻)
+    const schedules: ScheduleItem[] = [{
+      SubRouteUID: 'TPE161157',
+      Direction: 1,
+      Frequencys: [
+        { StartTime: '05:00', EndTime: '22:30', MinHeadwayMins: 8, MaxHeadwayMins: 15, ServiceDay: { Saturday: 1 } },
+      ],
+    }]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'TPE99', direction: 1, subRouteUid: 'TPE108570' }, saturdayAt15))
+      .toEqual({ minutes: 15, departureBased: true, headwayMinutes: [8, 15] })
+  })
+
+  it('treats schedule items without SubRouteUID as compatible with any subroute query', () => {
+    const schedules: ScheduleItem[] = [{
+      Direction: 0,
+      Timetables: [{ ServiceDay: { Saturday: 1 }, StopTimes: [{ StopUID: 'CYI304410', ArrivalTime: '15:20' }] }],
+    }]
+    expect(nextScheduledMinutes(schedules, { stopUid: 'CYI304410', direction: 0, subRouteUid: 'CYI071401' }, saturdayAt15)?.minutes).toBe(20)
+  })
+
   it('falls back to matching by stopUid when no subroute schedule matches', () => {
     const schedules: ScheduleItem[] = [{
       SubRouteUID: 'OTHER',
