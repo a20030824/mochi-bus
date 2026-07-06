@@ -5,7 +5,7 @@
 
 🚌 **線上試用:[bus.moc96336.com](https://bus.moc96336.com/)**
 
-[![點地圖上的站牌,攤開所有經過的路線與到站時間](docs/image/hero-map.webp)](https://bus.moc96336.com/map)
+[![點地圖上的站牌,攤開所有經過的路線與到站時間](docs/image/hero-map.png)](https://bus.moc96336.com/map)
 
 ---
 
