@@ -3,6 +3,10 @@
 > Understand the network first, then catch the bus.  
 >先看懂城市的公車網路，再決定怎麼搭車。
 
+🚌 **線上試用:[bus.moc96336.com](https://bus.moc96336.com/)**
+
+[![點地圖上的站牌,攤開所有經過的路線與到站時間](docs/image/hero-map.webp)](https://bus.moc96336.com/map)
+
 ---
 
 台灣公車工具,兩個入口:
@@ -16,7 +20,9 @@
 
 ## 本機啟動
 
-建立 `.dev.vars`(向 [TDX](https://tdx.transportdata.tw/) 申請會員取得):
+前置需求:**Node 20+** 和一組免費的 [TDX](https://tdx.transportdata.tw/) 會員憑證(註冊即發)。不需要 Cloudflare 帳號——`wrangler dev` 在本機模擬整個 Workers 環境(含 D1/R2)。
+
+建立 `.dev.vars`:
 
 ```dotenv
 TDX_CLIENT_ID="你的 Client ID"
@@ -25,12 +31,10 @@ TDX_CLIENT_SECRET="你的 Client Secret"
 
 ```sh
 npm install
-npx wrangler d1 migrations apply mochi-transit   # 建立快照資料表
-npm run snapshot:city -- Chiayi                  # 匯入至少一個縣市(可換)
 npm run dev
 ```
 
-沒匯快照也能跑:地圖會退回即時查 TDX,只是少了全路網、附近站牌與路線規劃。
+這樣就能跑:地圖直接即時查 TDX,封面看板功能完整。全路網、附近站牌與路線規劃需要路網快照——快照同步腳本目前寫入的是**雲端** D1/R2,所以這些功能要部署自己的一套才有(見下方)。
 
 ## 頁面
 
@@ -83,7 +87,16 @@ TDX 回應與資料庫版本查詢走兩層快取:模組層記憶體(isolate 內
 
 常用站牌保存在瀏覽器 localStorage(`mochi.bus.boards.v2` / `mochi.bus.activeBoard.v2`),只保存路線、方向與 UID,不保存 ETA。舊的 `mochi.bus.presets.v1` 首次開啟時自動轉換。
 
-## 驗證與部署
+## 驗證與部署自己的一套
+
+需要一個 Cloudflare 帳號(免費方案即可)。先建立 D1 與 R2,把 `wrangler.jsonc` 裡的 `database_id` 換成自己的:
+
+```sh
+npx wrangler d1 create mochi-transit
+npx wrangler r2 bucket create mochi-transit-shapes
+```
+
+接著驗證、設定憑證、部署:
 
 ```sh
 npm run check        # vitest + tsc + vite build + wrangler dry-run
@@ -91,7 +104,10 @@ npx wrangler secret put TDX_CLIENT_ID
 npx wrangler secret put TDX_CLIENT_SECRET
 npx wrangler d1 migrations apply mochi-transit --remote
 npm run deploy
+npm run snapshot:city -- Chiayi   # 匯入縣市路網快照(可換;小縣市幾分鐘,雙北量大會久一些)
 ```
+
+注意 Cache API 在 `*.workers.dev` 網址上是 no-op,要綁自訂網域快取層才會生效。
 
 CI 同步需要的 repo secrets:`TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
 
@@ -99,3 +115,7 @@ CI 同步需要的 repo secrets:`TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`、`CLOUDFL
 
 - 公車資料:交通部 [TDX 運輸資料流通服務](https://tdx.transportdata.tw/)
 - 底圖:© [OpenStreetMap](https://www.openstreetmap.org/copyright) 貢獻者
+
+## 授權
+
+程式碼以 [Apache-2.0](LICENSE) 授權開源。公車資料與地圖圖資依上述來源各自的授權條款使用。

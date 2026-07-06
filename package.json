@@ -1,6 +1,12 @@
 {
-  "name": "mochi-tools",
+  "name": "mochi-bus",
   "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/a20030824/mochi-bus.git"
+  },
+  "homepage": "https://bus.moc96336.com/",
   "scripts": {
     "build:map": "vite build",
     "dev": "npm run build:map && wrangler dev",
