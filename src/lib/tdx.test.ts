@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedBusQuery } from '../domain/bus-query'
-import { formatETALabel, formatStopStatus, getCommuteETA, mergeEquivalentStopGroups, resetTDXRateLimitTracking, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
+import { formatETALabel, formatStopStatus, getCommuteETA, mergeEquivalentStopGroups, resetTDXRateLimitTracking, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
 
 describe('TDX presentation', () => {
   it('formats immediate arrivals', () => {
@@ -86,6 +86,21 @@ describe('TDX upstream failures', () => {
     vi.setSystemTime(new Date('2026-07-08T08:15:00+08:00'))
     const second = await getCommuteETA(env, query)
     expect(second.warning).toBe('tdx-quota')
+  })
+
+  it('does not let a personal credential test on the setup page contaminate the shared quota tracker', async () => {
+    stubRateLimitedTDX()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-08T08:00:00+08:00'))
+
+    // setup 頁「儲存並測試」打的是使用者自備憑證,持續撞 429 是他個人帳號的事。
+    await expect(verifyTDXCredentials('personal-id', 'personal-secret')).rejects.toThrow()
+    vi.setSystemTime(new Date('2026-07-08T08:15:00+08:00'))
+    await expect(verifyTDXCredentials('personal-id', 'personal-secret')).rejects.toThrow()
+
+    // 共用憑證本身一次都還沒失敗過,不該被這些測試請求的 429 波及而升級成「額度已用完」。
+    const result = await getCommuteETA(env, query)
+    expect(result.warning).toBe('tdx-rate-limit')
   })
 })
 

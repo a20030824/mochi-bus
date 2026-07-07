@@ -164,25 +164,28 @@ export const tdxWarningMessages: Record<TDXWarning, string> = {
 // 額度用完與頻率超限 TDX 都只回 429,單看狀態碼分不出來;但頻率超限幾秒就恢復、
 // 額度用完會持續到月底。以「連續 429 撐了多久」區分該給使用者哪種說法:
 // 只要中間有任何一次成功就歸零,所以尖峰時偶發的頻率 429 不會被誤判成額度用完。
-let rateLimitedSince: number | null = null
+// 只追蹤共用憑證的結果——使用者在 setup 頁測試或帶自己 TDX 憑證時撞到的 429
+// 是他個人帳號的事,不能拿來污染「共用額度可能已用完」這句對所有人顯示的訊息。
+let sharedRateLimitedSince: number | null = null
 const QUOTA_SUSPECT_AFTER_MS = 10 * 60 * 1000
 
 export function tdxWarningFromError(error: unknown): TDXWarning | undefined {
   if (!(error instanceof TDXServiceError)) return undefined
   if (!error.rateLimited) return 'tdx-unavailable'
-  return rateLimitedSince !== null && Date.now() - rateLimitedSince >= QUOTA_SUSPECT_AFTER_MS
+  return sharedRateLimitedSince !== null && Date.now() - sharedRateLimitedSince >= QUOTA_SUSPECT_AFTER_MS
     ? 'tdx-quota'
     : 'tdx-rate-limit'
 }
 
 // 測試用:清掉跨測試殘留的 429 追蹤狀態。
 export function resetTDXRateLimitTracking(): void {
-  rateLimitedSince = null
+  sharedRateLimitedSince = null
 }
 
 // TDX 的 429 body 會說明是頻率超限還是額度用盡,記進 log 供事後判讀;內容絕不回給使用者。
-async function tdxResponseError(context: string, response: Response): Promise<TDXServiceError> {
-  if (response.status === 429) rateLimitedSince ??= Date.now()
+// isShared 只有共用憑證的請求才是 true,決定這次結果要不要更新額度追蹤狀態。
+async function tdxResponseError(context: string, response: Response, isShared: boolean): Promise<TDXServiceError> {
+  if (isShared && response.status === 429) sharedRateLimitedSince ??= Date.now()
   const body = await response.text().catch(() => '')
   console.error(JSON.stringify({
     message: 'tdx_upstream_error',
@@ -214,12 +217,14 @@ export function tdxRouteScope(city: string, routeUid?: string): string {
   return routeUid?.startsWith('THB') ? 'InterCity' : `City/${encodeURIComponent(city)}`
 }
 
-export async function getTDXToken(env: TDXEnv): Promise<string> {
+// isShared 標記這次拿到的 token 來自共用憑證還是使用者自備憑證,
+// 讓呼叫端(fetchTDXJson)知道之後打 API 撞 429 時該不該算進共用額度追蹤。
+export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShared: boolean }> {
   const userId = env.TDX_USER_CLIENT_ID
   const userSecret = env.TDX_USER_CLIENT_SECRET
   if (userId && userSecret && !memoryCacheGet<boolean>(`tdx/token-invalid/${userId}`)) {
     try {
-      return await tokenFor(userId, userSecret, USER_TOKEN_MAX_SECONDS)
+      return { token: await tokenFor(userId, userSecret, USER_TOKEN_MAX_SECONDS, false), isShared: false }
     } catch (error) {
       // 憑證在儲存時驗證過,執行期失效屬少見情況:記錄(絕不含憑證本身)、
       // 冷卻後退回共用憑證,讓服務不中斷。
@@ -227,16 +232,16 @@ export async function getTDXToken(env: TDXEnv): Promise<string> {
       console.error('tdx_user_token_failed', error instanceof Error ? error.message : String(error))
     }
   }
-  return tokenFor(env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET)
+  return { token: await tokenFor(env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET, undefined, true), isShared: true }
 }
 
-async function tokenFor(clientId: string, clientSecret: string, maxSeconds?: number): Promise<string> {
+async function tokenFor(clientId: string, clientSecret: string, maxSeconds: number | undefined, isShared: boolean): Promise<string> {
   const cached = tokenCache.get(clientId)
   if (cached && cached.expiresAt > Date.now()) return cached.value
   const pending = pendingTokens.get(clientId)
   if (pending) return pending
 
-  const promise = fetchTDXToken(clientId, clientSecret, maxSeconds)
+  const promise = fetchTDXToken(clientId, clientSecret, maxSeconds, isShared)
   pendingTokens.set(clientId, promise)
   try {
     return await promise
@@ -245,7 +250,7 @@ async function tokenFor(clientId: string, clientSecret: string, maxSeconds?: num
   }
 }
 
-async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds?: number): Promise<string> {
+async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds: number | undefined, isShared: boolean): Promise<string> {
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
     client_id: clientId,
@@ -266,8 +271,8 @@ async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds?
     throw new TDXServiceError('TDX token request failed', undefined, { cause: error })
   }
 
-  if (!response.ok) throw await tdxResponseError('TDX token request failed', response)
-  rateLimitedSince = null
+  if (!response.ok) throw await tdxResponseError('TDX token request failed', response, isShared)
+  if (isShared) sharedRateLimitedSince = null
   const data = await response.json() as { access_token?: string; expires_in?: number }
   if (!data.access_token) throw new TDXServiceError('TDX token response is missing access_token')
 
@@ -287,8 +292,9 @@ async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds?
 }
 
 // setup 頁「儲存並測試」用:直接打 token 端點驗證這組憑證換不換得到 token。
+// 測試的憑證不論是不是共用憑證本人,都不該算進共用額度追蹤——isShared 固定 false。
 export async function verifyTDXCredentials(clientId: string, clientSecret: string): Promise<void> {
-  await fetchTDXToken(clientId, clientSecret, 60)
+  await fetchTDXToken(clientId, clientSecret, 60, false)
 }
 
 // 把瀏覽器自帶的 TDX 憑證掛上 env(進階設定)。只對 fetch 發出的 API 請求有意義:
@@ -647,7 +653,7 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
     return data
   }
 
-  const token = await getTDXToken(env)
+  const { token, isShared } = await getTDXToken(env)
   let response: Response
   try {
     response = await fetch(url, {
@@ -657,8 +663,8 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
   } catch (error) {
     throw new TDXServiceError('TDX request failed', undefined, { cause: error })
   }
-  if (!response.ok) throw await tdxResponseError('TDX request failed', response)
-  rateLimitedSince = null
+  if (!response.ok) throw await tdxResponseError('TDX request failed', response, isShared)
+  if (isShared) sharedRateLimitedSince = null
 
   const data = await response.json() as T
   memoryCacheSet(memoryKey, data, ttlSeconds)
