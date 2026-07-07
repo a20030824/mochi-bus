@@ -21,7 +21,7 @@ import {
   searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, tdxRouteScope, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, TDXServiceError, tdxRouteScope, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
 import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
 import { renderMapPage } from '../map-page'
 
@@ -335,7 +335,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         await writeLastRealtime(city, routeName, items)
         realtimeQueries += 1
       } catch (error) {
-        rateLimited = error instanceof Error && error.message.includes('(429)')
+        rateLimited = error instanceof TDXServiceError && error.rateLimited
         console.error(JSON.stringify({
           message: 'place_arrival_realtime_failed', city, routeName,
           error: error instanceof Error ? error.message : String(error),

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { formatETALabel, formatStopStatus, mergeEquivalentStopGroups, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ResolvedBusQuery } from '../domain/bus-query'
+import { formatETALabel, formatStopStatus, getCommuteETA, mergeEquivalentStopGroups, resetTDXRateLimitTracking, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
 
 describe('TDX presentation', () => {
   it('formats immediate arrivals', () => {
@@ -34,6 +35,57 @@ describe('withUserTDX', () => {
     expect(withUserTDX(env, '  ', 'secret')).toBe(env)
     expect(withUserTDX(env, 'x'.repeat(121), 'secret')).toBe(env)
     expect(withUserTDX(env, 'id', 'x'.repeat(241))).toBe(env)
+  })
+})
+
+describe('TDX upstream failures', () => {
+  const env: TDXEnv = { TDX_CLIENT_ID: 'shared-id', TDX_CLIENT_SECRET: 'shared-secret' }
+  const query = {
+    city: 'Taipei',
+    routeName: '307',
+    routeUid: 'TPE19108',
+    stopName: '捷運西門站',
+    stopUid: 'TPE213044',
+    direction: 0,
+  } satisfies ResolvedBusQuery
+
+  const stubRateLimitedTDX = () => {
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 429 })))
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    resetTDXRateLimitTracking()
+  })
+
+  it('marks ETA results when the shared TDX pool is rate limited', async () => {
+    stubRateLimitedTDX()
+
+    const result = await getCommuteETA(env, query)
+
+    expect(result.warning).toBe('tdx-rate-limit')
+    expect(result.label).toBe('暫無預估時間')
+  })
+
+  it('escalates to a quota warning when 429 persists past the threshold', async () => {
+    stubRateLimitedTDX()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-08T08:00:00+08:00'))
+
+    const first = await getCommuteETA(env, query)
+    expect(first.warning).toBe('tdx-rate-limit')
+
+    // 頻率超限幾秒就恢復;429 一路持續超過門檻,就該改判成「共用額度可能已用完」。
+    vi.setSystemTime(new Date('2026-07-08T08:15:00+08:00'))
+    const second = await getCommuteETA(env, query)
+    expect(second.warning).toBe('tdx-quota')
   })
 })
 

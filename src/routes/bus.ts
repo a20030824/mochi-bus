@@ -15,9 +15,13 @@ import {
   getStopRouteSuggestions,
   QueryResolutionError,
   resolveBusQuery,
+  TDXServiceError,
+  tdxWarningFromError,
+  tdxWarningMessages,
   verifyTDXCredentials,
   withUserTDX,
   type TDXEnv,
+  type TDXWarning,
 } from '../lib/tdx'
 import { appIcon, renderAmbiguousPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
 import { getSnapshotRouteCatalog, getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
@@ -30,7 +34,7 @@ const bus = new Hono<Env>()
 const tdxEnv = (c: Context<Env>) =>
   withUserTDX(c.env, c.req.header('x-tdx-client-id'), c.req.header('x-tdx-client-secret'))
 
-bus.get('/', async (c) => renderETA(c, defaultBusQuery, true))
+bus.get('/', async (c) => renderETA(c, defaultBusQuery, true, true, homeNotice(c)))
 
 bus.get('/bus', async (c) => {
   if (!hasBusQuery(c)) return c.redirect('/')
@@ -46,6 +50,13 @@ bus.get('/bus', async (c) => {
     if (error instanceof QueryResolutionError && error.candidates.length > 1) {
       const query = parseRequestQuery(c)
       return c.html(renderAmbiguousPage(query, error.candidates), 409, pageHeaders)
+    }
+    if (error instanceof TDXServiceError) {
+      // TDX 掛掉(額度用完/頻率超限/連不上)時不丟錯誤頁:URL 帶齊識別碼就先信它、
+      // 跳過站牌驗證照常渲染,已存書籤還能看時刻表 fallback;資訊不足的查詢才回首頁並帶提示。
+      const query = parseRequestQuery(c)
+      if (query.stopUid && query.stopName) return renderETA(c, query, false, true)
+      return redirectHomeWithTDXNotice(c, error)
     }
     return renderPageError(c, error)
   }
@@ -276,18 +287,22 @@ async function renderETA(
   query: BusQuery,
   useLocalPreset: boolean,
   alreadyResolved = false,
+  notice?: string,
 ) {
+  const preResolved = query.stopUid && query.stopName
+    ? query as BusQuery & { stopUid: string; stopName: string }
+    : undefined
   try {
-    const resolved = alreadyResolved && query.stopUid && query.stopName
-      ? query as BusQuery & { stopUid: string; stopName: string }
-      : await resolveBusQuery(c.env, query)
+    const resolved = alreadyResolved && preResolved ? preResolved : await resolveBusQuery(c.env, query)
     const result = await getCommuteETA(c.env, resolved)
-    return c.html(renderETAPage({ query: resolved, result, useLocalBoard: useLocalPreset }), 200, pageHeaders)
+    return c.html(renderETAPage({ query: resolved, result, notice, useLocalBoard: useLocalPreset }), 200, pageHeaders)
   } catch (error) {
     console.error('eta_page_failed', error)
+    // 出錯也盡量渲染頁面本體(帶錯誤訊息),別讓 TDX 故障把整頁打成錯誤頁;
+    // query 帶齊識別碼就直接用,不再打一次注定失敗的 resolveBusQuery。
     try {
-      const resolved = await resolveBusQuery(c.env, query)
-      return c.html(renderETAPage({ query: resolved, error: toPublicError(error), useLocalBoard: useLocalPreset }), 200, pageHeaders)
+      const resolved = preResolved ?? await resolveBusQuery(c.env, query)
+      return c.html(renderETAPage({ query: resolved, error: toPublicError(error), notice, useLocalBoard: useLocalPreset }), 200, pageHeaders)
     } catch {
       return renderPageError(c, error)
     }
@@ -307,21 +322,43 @@ function hasBusQuery(c: Context<Env>): boolean {
   return Boolean(c.req.query('route') || c.req.query('routeName'))
 }
 
+// 導回首頁時用 ?notice= 帶原因(值就是 TDXWarning),首頁據此顯示服務橫幅。
+function homeNotice(c: Context<Env>): string | undefined {
+  const notice = c.req.query('notice')
+  return notice && notice in tdxWarningMessages ? tdxWarningMessages[notice as TDXWarning] : undefined
+}
+
+function redirectHomeWithTDXNotice(c: Context<Env>, error: TDXServiceError) {
+  return c.redirect(`/?notice=${tdxWarningFromError(error) ?? 'tdx-unavailable'}`, 302)
+}
+
 function renderPageError(c: Context<Env>, error: unknown) {
   const message = toPublicError(error)
-  const status = error instanceof QueryValidationError ? 400 : error instanceof QueryResolutionError ? 404 : 503
+  const isQueryError = error instanceof QueryValidationError || error instanceof QueryResolutionError
+  const status = error instanceof QueryValidationError
+    ? 400
+    : error instanceof QueryResolutionError ? 404
+      : error instanceof TDXServiceError && error.rateLimited ? 429 : 503
   const setupUrl = `/setup?${toBusSearchParams({ ...defaultBusQuery, stopName: defaultBusQuery.stopName }).toString()}`
-  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font-family:system-ui;max-width:520px;margin:80px auto;padding:24px;background:#f7f2e8;color:#29251f}a{color:#a44f39}</style><h1>找不到這班公車</h1><p>${escapeHTML(message)}</p><p><a href="${escapeHTML(setupUrl)}">重新選擇路線與站牌</a></p>`, status)
+  const title = isQueryError ? '找不到這班公車' : '暫時無法取得公車資料'
+  const actions = isQueryError
+    ? `<p><a href="${escapeHTML(setupUrl)}">重新選擇路線與站牌</a></p>`
+    : '<p><a href="/">回到首頁</a> · <a href="/map">打開地圖</a></p>'
+  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font-family:system-ui;max-width:520px;margin:80px auto;padding:24px;background:#f7f2e8;color:#29251f}a{color:#a44f39}</style><h1>${escapeHTML(title)}</h1><p>${escapeHTML(message)}</p>${actions}`, status)
 }
 
 function jsonError(c: Context<Env>, error: unknown) {
   console.error('bus_api_failed', error)
-  const status = error instanceof QueryValidationError ? 400 : error instanceof QueryResolutionError ? 404 : 502
+  const status = error instanceof QueryValidationError
+    ? 400
+    : error instanceof QueryResolutionError ? 404
+      : error instanceof TDXServiceError && error.rateLimited ? 429 : 502
   return c.json({ error: toPublicError(error) }, status, noStoreHeaders)
 }
 
 function toPublicError(error: unknown): string {
   if (error instanceof QueryValidationError || error instanceof QueryResolutionError) return error.message
+  if (error instanceof TDXServiceError) return tdxWarningMessages[tdxWarningFromError(error) ?? 'tdx-unavailable']
   return '暫時無法取得公車資料'
 }
 

@@ -113,6 +113,7 @@ export type ETAResult = {
   stale: boolean
   // 即時 GPS 沒有預估時間時，會退回查時刻表；source 讓前端知道這是不是真的即時資料。
   source: 'realtime' | 'schedule' | 'none'
+  warning?: TDXWarning
 }
 
 export type StopRouteSuggestion = ResolvedBusQuery & {
@@ -138,6 +139,58 @@ export class QueryResolutionError extends Error {
     super(message)
     this.name = 'QueryResolutionError'
   }
+}
+
+export class TDXServiceError extends Error {
+  constructor(message: string, readonly status?: number, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'TDXServiceError'
+  }
+
+  get rateLimited(): boolean {
+    return this.status === 429
+  }
+}
+
+export type TDXWarning = 'tdx-rate-limit' | 'tdx-quota' | 'tdx-unavailable'
+
+// 給使用者看的 TDX 異常說明,唯一的一份;SSR、API 錯誤與前端輪詢共用,改文案只改這裡。
+export const tdxWarningMessages: Record<TDXWarning, string> = {
+  'tdx-rate-limit': 'TDX 即時查詢暫時受限（額度或頻率），地圖與已同步路網仍可使用。',
+  'tdx-quota': '共用的 TDX 額度可能已用完，暫時查不到即時到站；地圖與已同步路網仍可使用，也可到「我的公車」的進階設定填自己的 TDX 憑證。',
+  'tdx-unavailable': 'TDX 暫時連不上，地圖與已同步路網仍可使用。',
+}
+
+// 額度用完與頻率超限 TDX 都只回 429,單看狀態碼分不出來;但頻率超限幾秒就恢復、
+// 額度用完會持續到月底。以「連續 429 撐了多久」區分該給使用者哪種說法:
+// 只要中間有任何一次成功就歸零,所以尖峰時偶發的頻率 429 不會被誤判成額度用完。
+let rateLimitedSince: number | null = null
+const QUOTA_SUSPECT_AFTER_MS = 10 * 60 * 1000
+
+export function tdxWarningFromError(error: unknown): TDXWarning | undefined {
+  if (!(error instanceof TDXServiceError)) return undefined
+  if (!error.rateLimited) return 'tdx-unavailable'
+  return rateLimitedSince !== null && Date.now() - rateLimitedSince >= QUOTA_SUSPECT_AFTER_MS
+    ? 'tdx-quota'
+    : 'tdx-rate-limit'
+}
+
+// 測試用:清掉跨測試殘留的 429 追蹤狀態。
+export function resetTDXRateLimitTracking(): void {
+  rateLimitedSince = null
+}
+
+// TDX 的 429 body 會說明是頻率超限還是額度用盡,記進 log 供事後判讀;內容絕不回給使用者。
+async function tdxResponseError(context: string, response: Response): Promise<TDXServiceError> {
+  if (response.status === 429) rateLimitedSince ??= Date.now()
+  const body = await response.text().catch(() => '')
+  console.error(JSON.stringify({
+    message: 'tdx_upstream_error',
+    context,
+    status: response.status,
+    body: body.slice(0, 300),
+  }))
+  return new TDXServiceError(`${context} (${response.status})`, response.status)
 }
 
 type TokenCache = { value: string; expiresAt: number }
@@ -198,19 +251,25 @@ async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds?
     client_id: clientId,
     client_secret: clientSecret,
   })
-  const response = await fetch(
-    'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    },
-  )
+  let response: Response
+  try {
+    response = await fetch(
+      'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      },
+    )
+  } catch (error) {
+    throw new TDXServiceError('TDX token request failed', undefined, { cause: error })
+  }
 
-  if (!response.ok) throw new Error(`TDX token request failed (${response.status})`)
+  if (!response.ok) throw await tdxResponseError('TDX token request failed', response)
+  rateLimitedSince = null
   const data = await response.json() as { access_token?: string; expires_in?: number }
-  if (!data.access_token) throw new Error('TDX token response is missing access_token')
+  if (!data.access_token) throw new TDXServiceError('TDX token response is missing access_token')
 
   const expiresIn = Math.max(60, Math.min(data.expires_in ?? 3600, maxSeconds ?? Number.POSITIVE_INFINITY))
   tokenCache.set(clientId, {
@@ -273,9 +332,11 @@ export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<Res
 
 export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, query: ResolvedBusQuery): Promise<ETAResult> {
   let items: BusETAItem[] = []
+  let warning: TDXWarning | undefined
   try {
     items = await getBusETA(env, query)
   } catch (error) {
+    warning = tdxWarningFromError(error)
     console.error(JSON.stringify({
       message: 'commute_eta_realtime_failed',
       city: query.city,
@@ -296,7 +357,7 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
     Direction: query.direction,
     StopStatus: 0,
   }, query)
-  if (result.minutes !== null) return result
+  if (result.minutes !== null) return warning ? { ...result, warning } : result
 
   // 即時資料沒有預估時間(尚未發車／資料中斷)時，退回查時刻表，避免小型客運業者
   // 即時回報不穩定時整面板一直卡在「暫無資料」。
@@ -327,10 +388,12 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
           ? '今日已收班'
           : estimate.departureBased ? '時刻表發車預估' : '時刻表預估',
       source: 'schedule',
+      warning,
     }
   } catch (error) {
+    warning ??= tdxWarningFromError(error)
     console.error('eta_schedule_fallback_failed', error)
-    return result
+    return warning ? { ...result, warning } : result
   }
 }
 
@@ -585,11 +648,17 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
   }
 
   const token = await getTDXToken(env)
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
-  if (!response.ok) throw new Error(`TDX request failed (${response.status})`)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+  } catch (error) {
+    throw new TDXServiceError('TDX request failed', undefined, { cause: error })
+  }
+  if (!response.ok) throw await tdxResponseError('TDX request failed', response)
+  rateLimitedSince = null
 
   const data = await response.json() as T
   memoryCacheSet(memoryKey, data, ttlSeconds)
