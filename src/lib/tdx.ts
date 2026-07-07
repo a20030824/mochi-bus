@@ -155,6 +155,12 @@ const USER_TOKEN_MAX_SECONDS = 600
 // 失效的使用者憑證短暫停用,避免每個請求都去撞 token 端點。
 const INVALID_USER_KEY_SECONDS = 120
 
+// 公路客運(公路總局)的資源掛在 /InterCity 底下,沒有 /City/{city} 路徑段;
+// RouteUID 固定 THB 開頭。凡是「按路線」的即時/時刻表/站序/線形查詢都要據此換端點。
+export function tdxRouteScope(city: string, routeUid?: string): string {
+  return routeUid?.startsWith('THB') ? 'InterCity' : `City/${encodeURIComponent(city)}`
+}
+
 export async function getTDXToken(env: TDXEnv): Promise<string> {
   const userId = env.TDX_USER_CLIENT_ID
   const userSecret = env.TDX_USER_CLIENT_SECRET
@@ -236,7 +242,7 @@ export function withUserTDX<E extends TDXEnv>(env: E, clientId?: string, clientS
 }
 
 export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<ResolvedBusQuery> {
-  const groups = await getRouteStopGroups(env, query.city, query.routeName)
+  const groups = await getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
   const candidates = groups
     .flatMap((group) => group.stops)
     .filter((stop) => stop.direction === query.direction)
@@ -297,8 +303,8 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
   try {
     const schedules = env.TRANSIT_DB && env.TRANSIT_SHAPES
       ? await getSnapshotSchedule(env as TDXEnv & TransitBindings, query.city, query.routeName)
-        ?? await getBusSchedule(env, query.city, query.routeName)
-      : await getBusSchedule(env, query.city, query.routeName)
+        ?? await getBusSchedule(env, query.city, query.routeName, query.routeUid)
+      : await getBusSchedule(env, query.city, query.routeName, query.routeUid)
     const now = new Date()
     const estimate = nextScheduledMinutes(schedules, {
       stopUid: query.stopUid, direction: query.direction, subRouteUid: query.subRouteUid,
@@ -328,9 +334,9 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
   }
 }
 
-export async function getBusSchedule(env: TDXEnv, city: string, routeName: string): Promise<ScheduleItem[]> {
+export async function getBusSchedule(env: TDXEnv, city: string, routeName: string, routeUid?: string): Promise<ScheduleItem[]> {
   const url = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/Schedule/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+    `https://tdx.transportdata.tw/api/basic/v2/Bus/Schedule/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
   )
   url.searchParams.set('$format', 'JSON')
   return fetchTDXJson<ScheduleItem[]>(env, url, 6 * 60 * 60)
@@ -340,12 +346,22 @@ export async function getRouteStopGroups(
   env: TDXEnv,
   city: string,
   routeName: string,
+  routeUid?: string,
 ): Promise<StopGroup[]> {
   const url = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/StopOfRoute/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+    `https://tdx.transportdata.tw/api/basic/v2/Bus/StopOfRoute/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
   )
   url.searchParams.set('$format', 'JSON')
-  const data = await fetchTDXJson<StopOfRouteItem[]>(env, url, STATIC_CACHE_SECONDS)
+  let data = await fetchTDXJson<StopOfRouteItem[]>(env, url, STATIC_CACHE_SECONDS)
+  // 沒有 routeUid 可判斷(setup 選單只傳路名)而市區端點查不到時,退去公路客運端點找:
+  // 快照目錄裡的 THB 路線得靠這個 fallback 拿到站序。
+  if (!data.length && !routeUid) {
+    const intercityUrl = new URL(
+      `https://tdx.transportdata.tw/api/basic/v2/Bus/StopOfRoute/InterCity/${encodeURIComponent(routeName)}`,
+    )
+    intercityUrl.searchParams.set('$format', 'JSON')
+    data = await fetchTDXJson<StopOfRouteItem[]>(env, intercityUrl, STATIC_CACHE_SECONDS)
+  }
 
   const groups = data
     .filter((item): item is StopOfRouteItem & { Direction: Direction } =>
@@ -416,11 +432,29 @@ export async function getRouteCatalog(env: TDXEnv, city: string): Promise<RouteC
       routeName: item.RouteName.Zh_tw,
       departure: item.DepartureStopNameZh,
       destination: item.DestinationStopNameZh,
-      category: classifyRouteName(item.RouteName.Zh_tw),
+      category: classifyRouteName(item.RouteName.Zh_tw, item.RouteUID),
     }))
 
   return [...new Map(routes.map((route) => [route.routeName, route])).values()]
     .sort((a, b) => a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }))
+}
+
+// 公路客運全目錄(約 500 條、全台一份)。只取方向標籤用得到的欄位,$select 之後
+// 回應只剩幾十 KB,照靜態資料的節奏快取。
+async function getIntercityRouteCatalog(env: TDXEnv): Promise<RouteCatalogItem[]> {
+  const url = new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Route/InterCity')
+  url.searchParams.set('$select', 'RouteUID,RouteName,DepartureStopNameZh,DestinationStopNameZh')
+  url.searchParams.set('$format', 'JSON')
+  const data = await fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS)
+  return data
+    .filter((item): item is RouteItem & { RouteName: { Zh_tw: string } } => Boolean(item.RouteName?.Zh_tw))
+    .map((item) => ({
+      routeUid: item.RouteUID,
+      routeName: item.RouteName.Zh_tw,
+      departure: item.DepartureStopNameZh,
+      destination: item.DestinationStopNameZh,
+      category: classifyRouteName(item.RouteName.Zh_tw, item.RouteUID),
+    }))
 }
 
 export async function getStopRouteSuggestions(
@@ -429,26 +463,28 @@ export async function getStopRouteSuggestions(
   stopName: string,
   anchorStopUid?: string,
 ): Promise<StopRouteSuggestion[]> {
-  const etaUrl = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}`,
-  )
-  const stopUrl = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/Stop/City/${encodeURIComponent(city)}`,
-  )
   const filter = `StopName/Zh_tw eq '${stopName.replaceAll("'", "''")}'`
-  etaUrl.searchParams.set('$filter', filter)
-  etaUrl.searchParams.set('$format', 'JSON')
-  stopUrl.searchParams.set('$filter', filter)
-  stopUrl.searchParams.set('$format', 'JSON')
-  const [data, stops, routes] = await Promise.all([
-    fetchTDXJson<BusETAItem[]>(env, etaUrl, ETA_CACHE_SECONDS),
-    fetchTDXJson<StopItem[]>(env, stopUrl, STATIC_CACHE_SECONDS),
+  const filteredUrl = (path: string) => {
+    const url = new URL(`https://tdx.transportdata.tw/api/basic/v2/Bus/${path}`)
+    url.searchParams.set('$filter', filter)
+    url.searchParams.set('$format', 'JSON')
+    return url
+  }
+  // 公路客運跟市區公車常共用同名站牌,同站建議要兩邊都查;
+  // 公路客運那側失敗只影響客運建議,不拖垮市區結果。
+  const [data, stops, routes, intercityEta, intercityStops, intercityRoutes] = await Promise.all([
+    fetchTDXJson<BusETAItem[]>(env, filteredUrl(`EstimatedTimeOfArrival/City/${encodeURIComponent(city)}`), ETA_CACHE_SECONDS),
+    fetchTDXJson<StopItem[]>(env, filteredUrl(`Stop/City/${encodeURIComponent(city)}`), STATIC_CACHE_SECONDS),
     getRouteCatalog(env, city),
+    fetchTDXJson<BusETAItem[]>(env, filteredUrl('EstimatedTimeOfArrival/InterCity'), ETA_CACHE_SECONDS).catch(() => [] as BusETAItem[]),
+    fetchTDXJson<StopItem[]>(env, filteredUrl('Stop/InterCity'), STATIC_CACHE_SECONDS).catch(() => [] as StopItem[]),
+    getIntercityRouteCatalog(env).catch(() => [] as RouteCatalogItem[]),
   ])
-  const nearbyStopUids = findNearbyStopUids(stops, anchorStopUid)
-  const routeByUid = new Map(routes.filter((route) => route.routeUid).map((route) => [route.routeUid, route]))
+  const nearbyStopUids = findNearbyStopUids([...stops, ...intercityStops], anchorStopUid)
+  const routeByUid = new Map([...routes, ...intercityRoutes]
+    .filter((route) => route.routeUid).map((route) => [route.routeUid, route]))
 
-  const suggestions = data
+  const suggestions = [...data, ...intercityEta]
     .filter((item): item is BusETAItem & { StopUID: string; StopName: { Zh_tw: string }; Direction: Direction } =>
       Boolean(item.StopUID && item.StopName?.Zh_tw && item.RouteName?.Zh_tw)
       && (item.Direction === 0 || item.Direction === 1),
@@ -484,7 +520,7 @@ export async function getStopRouteSuggestions(
 
 export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Promise<RouteDetail> {
   const [groups, etaItems] = await Promise.all([
-    getRouteStopGroups(env, query.city, query.routeName),
+    getRouteStopGroups(env, query.city, query.routeName, query.routeUid),
     getBusETA(env, query),
   ])
   const group = groups.find((candidate) =>
@@ -528,7 +564,7 @@ export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Prom
 
 async function getBusETA(env: TDXEnv, query: BusQuery): Promise<BusETAItem[]> {
   const url = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(query.city)}/${encodeURIComponent(query.routeName)}`,
+    `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/${tdxRouteScope(query.city, query.routeUid)}/${encodeURIComponent(query.routeName)}`,
   )
   url.searchParams.set('$format', 'JSON')
   return fetchTDXJson<BusETAItem[]>(env, url, ETA_CACHE_SECONDS)

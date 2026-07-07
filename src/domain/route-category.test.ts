@@ -25,4 +25,13 @@ describe('classifyRouteName', () => {
   it('recognises flexible taxi bus names', () => {
     expect(classifyRouteName('5公車式小黃')).toBe('小黃')
   })
+
+  it('classifies THB routes as intercity buses regardless of name', () => {
+    expect(classifyRouteName('5300', 'THB5300')).toBe('公路客運')
+    expect(classifyRouteName('台灣好行日月潭線', 'THB6670')).toBe('公路客運')
+  })
+
+  it('keeps numeric city routes numeric when routeUid is not THB', () => {
+    expect(classifyRouteName('307', 'TPE10132')).toBe('數字')
+  })
 })

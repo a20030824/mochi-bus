@@ -168,7 +168,7 @@ export async function getSnapshotRouteCatalog(env: TransitBindings, city: string
     routeName: route.route_name,
     departure: route.departure_name ?? undefined,
     destination: route.destination_name ?? undefined,
-    category: classifyRouteName(route.route_name),
+    category: classifyRouteName(route.route_name, route.route_uid),
   }))
 }
 
@@ -285,6 +285,9 @@ export async function findNearbyStopPlaces(
 // 否則查詢字串對不上 stops.normalized_name 的內容。
 function normalizeStopName(value: string): string {
   return value.normalize('NFKC').replace(/[\s()（）]/g, '').toLowerCase()
+    .replaceAll('臺', '台')
+    .replace(/火車站|車站/g, '站')
+    .replace(/站$/, '')
 }
 
 type SearchPlaceRow = {

@@ -20,7 +20,7 @@ import {
   type TDXEnv,
 } from '../lib/tdx'
 import { appIcon, renderAmbiguousPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
-import { getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
+import { getSnapshotRouteCatalog, getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { mapCities } from '../config/map-cities'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
@@ -142,7 +142,10 @@ bus.get('/api/v1/routes', async (c) => {
   try {
     const city = c.req.query('city')?.trim() || defaultBusQuery.city
     if (!supportedCityCodes.has(city)) throw new QueryValidationError(`不支援的縣市：${city}`)
-    const routes = await getRouteCatalog(tdxEnv(c), city)
+    // 快照目錄優先:除了省 TDX 額度,也只有它包含攤入本縣市的公路客運路線;
+    // 沒建快照的縣市才退回 TDX 即時目錄(只有市區公車)。
+    const snapshotRoutes = await getSnapshotRouteCatalog(c.env, city)
+    const routes = snapshotRoutes.length ? snapshotRoutes : await getRouteCatalog(tdxEnv(c), city)
     // TDX 原始目錄已在 edge 快取；API schema 不交給瀏覽器長快取，避免舊欄位卡住 UI。
     return c.json({ schemaVersion: 2, city, routes }, 200, noStoreHeaders)
   } catch (error) {

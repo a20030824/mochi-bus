@@ -77,6 +77,8 @@ npm run dev
 
 GitHub Actions(`.github/workflows/sync-transit.yml`)每天跑,縣市按星期分片以壓在 D1 免費額度內;內容沒變的縣市由 hash 檢查跳過。手動 `workflow_dispatch` 可強制重匯單一縣市。
 
+匯入時會把行經本縣市的**公路客運**(TDX InterCity 端點、RouteUID 為 THB 開頭)整條攤進該縣市快照:站牌歸屬依 TDX 的 `LocationCityCode` 判斷,站位靠正規化站名 + 200m 網格跟市區公車自然合併。Worker 端的即時查詢(ETA、時刻表、站序、車輛位置)按 RouteUID 前綴自動切換 City / InterCity 端點。
+
 時刻表支援三種 TDX 形態:逐站時刻、只有起點發車時刻(標為「發車」估計)、班距制(Frequencys,顯示「N–M 分一班」)。超過一小時的估計改顯示絕對時刻(如「17:11 發車」)。
 
 ## 快取層級

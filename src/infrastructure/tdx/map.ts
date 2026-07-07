@@ -20,15 +20,22 @@ export async function getRouteMapVariants(
   city: string,
   routeName: string,
 ): Promise<RouteMapVariant[]> {
-  const shapeUrl = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/Shape/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
-  )
-  shapeUrl.searchParams.set('$format', 'JSON')
+  const shapeUrl = (scope: string) => {
+    const url = new URL(
+      `https://tdx.transportdata.tw/api/basic/v2/Bus/Shape/${scope}/${encodeURIComponent(routeName)}`,
+    )
+    url.searchParams.set('$format', 'JSON')
+    return url
+  }
 
-  const [groups, shapes] = await Promise.all([
+  const [groups, cityShapes] = await Promise.all([
     getRouteStopGroups(env, city, routeName),
-    fetchTDXJson<ShapeItem[]>(env, shapeUrl, SHAPE_CACHE_SECONDS),
+    fetchTDXJson<ShapeItem[]>(env, shapeUrl(`City/${encodeURIComponent(city)}`), SHAPE_CACHE_SECONDS),
   ])
+  // getRouteStopGroups 在市區查不到時會退去公路客運端點;站序來自 THB 路線的話,線形也要跟著換。
+  const shapes = !cityShapes.length && groups.some((group) => group.routeUid?.startsWith('THB'))
+    ? await fetchTDXJson<ShapeItem[]>(env, shapeUrl('InterCity'), SHAPE_CACHE_SECONDS)
+    : cityShapes
 
   const usedShapes = new Map<string, number>()
   const variants: RouteMapVariant[] = []

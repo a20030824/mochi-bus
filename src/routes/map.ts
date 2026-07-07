@@ -21,7 +21,7 @@ import {
   searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, tdxRouteScope, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
 import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
 import { renderMapPage } from '../map-page'
 
@@ -43,9 +43,9 @@ function arrivalCacheKey(kind: 'cooldown' | 'last', city: string, suffix = ''): 
   return new Request(`https://mochi-cache.invalid/arrivals/${kind}/${encodeURIComponent(city)}/${encodeURIComponent(suffix)}`)
 }
 
-function routeEtaUrl(city: string, routeName: string): URL {
+function routeEtaUrl(city: string, routeName: string, routeUid?: string): URL {
   const url = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+    `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
   )
   url.searchParams.set('$format', 'JSON')
   return url
@@ -184,7 +184,7 @@ map.get('/api/v1/map/vehicles', async (c) => {
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
     if (!routeName || routeName.length > 40) throw new QueryValidationError('路線格式錯誤')
     const url = new URL(
-      `https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeByFrequency/City/${encodeURIComponent(city)}/${encodeURIComponent(routeName)}`,
+      `https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeByFrequency/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
     )
     url.searchParams.set('$format', 'JSON')
     let items: VehicleItem[] = []
@@ -314,6 +314,8 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
     ) : undefined
     const candidates = includeFocusedCandidate(selectRealtimeCandidates(scheduledRoutes), focused)
     const candidateRouteNames = [...new Set(candidates.map((route) => route.routeName))]
+    // 公路客運(THB)的即時查詢走 InterCity 端點,查之前要能從路名找回 routeUid
+    const routeUidByName = new Map(candidates.map((route) => [route.routeName, route.routeUid]))
     const etaItems: BusETAItem[] = []
     const staleRouteNames = new Set<string>()
     let rateLimited = await hasRealtimeCooldown(city, scope)
@@ -328,7 +330,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         continue
       }
       try {
-        const items = await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName), 15)
+        const items = await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName, routeUidByName.get(routeName)), 15)
         etaItems.push(...items)
         await writeLastRealtime(city, routeName, items)
         realtimeQueries += 1
@@ -453,15 +455,15 @@ map.post('/api/v1/map/journey-eta', async (c) => {
     // 逐路線查 ETA(legs ≤ 12,去重後更少),與站牌到站查詢共用同一份快取。
     // 不抓整縣市:雙北的全城 ETA 一包可達數十 MB,快取只有幾秒,
     // 每次規劃都重抓一次,還會把 isolate 記憶體快取撐爆。
-    const routeNames = [...new Set(refs.map((ref) => ref.routeName))]
-    const etaItems = (await Promise.all(routeNames.map(async (routeName) => {
+    const uniqueRouteRefs = [...new Map(refs.map((ref) => [ref.routeName, ref])).values()]
+    const etaItems = (await Promise.all(uniqueRouteRefs.map(async (ref) => {
       try {
-        return await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName), 15)
+        return await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, ref.routeName, ref.routeUid), 15)
       } catch (error) {
         console.error(JSON.stringify({
           message: 'journey_eta_upstream_failed',
           city,
-          routeName,
+          routeName: ref.routeName,
           error: error instanceof Error ? error.message : String(error),
         }))
         return [] as BusETAItem[]
@@ -488,10 +490,10 @@ map.post('/api/v1/map/journey-eta', async (c) => {
     const missingRefs = refs.filter((ref) => realtimeEstimates.get(ref.key)?.minutes === null)
     if (missingRefs.length) {
       try {
-        const routeNames = [...new Set(missingRefs.map((ref) => ref.routeName))]
-        const schedules = (await Promise.all(routeNames.map(async (routeName) =>
-          await getSnapshotSchedule(env, city, routeName)
-          ?? await getBusSchedule(env, city, routeName),
+        const missingRouteRefs = [...new Map(missingRefs.map((ref) => [ref.routeName, ref])).values()]
+        const schedules = (await Promise.all(missingRouteRefs.map(async (ref) =>
+          await getSnapshotSchedule(env, city, ref.routeName)
+          ?? await getBusSchedule(env, city, ref.routeName, ref.routeUid),
         ))).flat()
         const scheduled = getScheduledEstimates(missingRefs, schedules)
         scheduled.forEach((estimate, key) => realtimeEstimates.set(key, estimate))

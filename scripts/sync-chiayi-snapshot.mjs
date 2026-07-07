@@ -31,26 +31,65 @@ const tokenResponse = await fetch('https://tdx.transportdata.tw/auth/realms/TDXC
 if (!tokenResponse.ok) throw new Error(`TDX token failed (${tokenResponse.status})`)
 const token = (await tokenResponse.json()).access_token
 const base = `https://tdx.transportdata.tw/api/basic/v2/Bus`
-const get = async (resource) => {
+const tdxGet = async (path) => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const response = await fetch(`${base}/${resource}/City/${CITY}?$format=JSON`, {
+    const response = await fetch(`${base}/${path}?$format=JSON`, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     })
     if (response.ok) return response.json()
     if (response.status !== 429 || attempt === 4) {
-      throw new Error(`TDX ${resource} failed (${response.status})`)
+      throw new Error(`TDX ${path} failed (${response.status})`)
     }
     const retryAfter = Number(response.headers.get('Retry-After'))
     const delay = Number.isFinite(retryAfter) ? Math.min(30, retryAfter) * 1000 : 2 ** (attempt + 1) * 1000
     await new Promise((resolve) => setTimeout(resolve, delay))
   }
-  throw new Error(`TDX ${resource} retry exhausted`)
+  throw new Error(`TDX ${path} retry exhausted`)
 }
+const get = (resource) => tdxGet(`${resource}/City/${CITY}`)
 
 const routeItems = await get('Route')
 const stopOfRouteItems = await get('StopOfRoute')
 const shapeItems = await get('Shape')
 const scheduleItems = await get('Schedule')
+
+// 公路客運(InterCity 端點,RouteUID 為 THB 開頭)在不少縣市就是日常公車:
+// 苗栗的 City 端點只有 27 個站位,公路客運卻有 733 站。把「至少一站落在本縣市」的
+// 客運路線整條攤進本縣市快照——站位靠 normalizeName+200m 跟市區站牌自然合併,
+// 跨縣市的站照樣保留,路線頁才有完整站序(代價是跨縣市路線會在多個城市重複存)。
+// 站牌屬於哪個縣市以 TDX 的 LocationCityCode 為準(實測 19,191 站零缺漏)。
+const LOCATION_CITY_CODES = {
+  Taipei: 'TPE', NewTaipei: 'NWT', Taoyuan: 'TAO', Keelung: 'KEE',
+  Hsinchu: 'HSZ', HsinchuCounty: 'HSQ', MiaoliCounty: 'MIA', Taichung: 'TXG',
+  ChanghuaCounty: 'CHA', NantouCounty: 'NAN', YunlinCounty: 'YUN',
+  Chiayi: 'CYI', ChiayiCounty: 'CYQ', Tainan: 'TNN', Kaohsiung: 'KHH',
+  PingtungCounty: 'PIF', YilanCounty: 'ILA', HualienCounty: 'HUA', TaitungCounty: 'TTT',
+  PenghuCounty: 'PEN', KinmenCounty: 'KIN', LienchiangCounty: 'LIE',
+}
+{
+  const locationCode = LOCATION_CITY_CODES[CITY]
+  if (!locationCode) throw new Error(`未知的城市代碼 ${CITY},無法對應 LocationCityCode`)
+  const intercityStops = await tdxGet('Stop/InterCity')
+  const cityStopUids = new Set(intercityStops
+    .filter((stop) => stop.StopUID && stop.LocationCityCode === locationCode)
+    .map((stop) => stop.StopUID))
+  if (cityStopUids.size) {
+    const intercityStopOfRoute = await tdxGet('StopOfRoute/InterCity')
+    const routeUids = new Set(intercityStopOfRoute
+      .filter((item) => item.RouteUID && item.Stops?.some((stop) => cityStopUids.has(stop.StopUID)))
+      .map((item) => item.RouteUID))
+    if (routeUids.size) {
+      const [intercityRoutes, intercityShapes, intercitySchedules] = await Promise.all([
+        tdxGet('Route/InterCity'), tdxGet('Shape/InterCity'), tdxGet('Schedule/InterCity'),
+      ])
+      routeItems.push(...intercityRoutes.filter((item) => routeUids.has(item.RouteUID)))
+      stopOfRouteItems.push(...intercityStopOfRoute.filter((item) => routeUids.has(item.RouteUID)))
+      shapeItems.push(...intercityShapes.filter((item) => routeUids.has(item.RouteUID)))
+      scheduleItems.push(...intercitySchedules.filter((item) => routeUids.has(item.RouteUID)))
+      console.log(JSON.stringify({ city: CITY, intercityRoutes: routeUids.size, intercityStopsInCity: cityStopUids.size }))
+    }
+  }
+}
 
 // 內容沒變就跳過整次匯入:D1 免費方案每天只有 10 萬列寫入額度,
 // 多數縣市的路線資料幾週才變一次,沒必要每次全量重匯。
@@ -329,7 +368,16 @@ function sqlValue(value) {
   if (typeof value === 'number') return String(value)
   return `'${String(value).replaceAll("'", "''")}'`
 }
-function normalizeName(value) { return value.normalize('NFKC').replace(/[\s()（）]/g, '').toLowerCase() }
+// 必須跟 src/infrastructure/transit/snapshot-repository.ts 的 normalizeStopName 完全一致。
+// 「臺→台」與「火車站/車站→站、去結尾站」是為了讓公路客運與市區公車的同站異名收斂:
+// 雙冬站⇄雙冬、新竹火車站⇄新竹站、高鐵臺中站⇄高鐵台中站(實測南投漏接 -30%)。
+// 轉運站不受影響(不含「車站」子字串,只去結尾一個「站」),不會跟火車站誤併。
+function normalizeName(value) {
+  return value.normalize('NFKC').replace(/[\s()（）]/g, '').toLowerCase()
+    .replaceAll('臺', '台')
+    .replace(/火車站|車站/g, '站')
+    .replace(/站$/, '')
+}
 function hash(value) {
   let result = 2166136261
   for (const char of value) result = Math.imul(result ^ char.charCodeAt(0), 16777619)
@@ -386,7 +434,8 @@ function hashContent(payloads) {
   // 快照產出格式的版本:bundle/network 的結構有改就 +1,
   // 讓所有城市自動重匯,不會被「內容未變更」跳過而留著舊格式。
   // 4:place bundle 的班表比對加入「借同方向其他支線」的 fallback。
-  const SNAPSHOT_FORMAT = 4
+  // 5:normalizeName 加「臺→台、車站→站、去結尾站」,placeId 全部重算。
+  const SNAPSHOT_FORMAT = 5
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])
