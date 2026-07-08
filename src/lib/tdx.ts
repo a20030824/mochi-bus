@@ -142,13 +142,15 @@ export class QueryResolutionError extends Error {
 }
 
 export class TDXServiceError extends Error {
+  warning?: TDXWarning
+
   constructor(message: string, readonly status?: number, options?: ErrorOptions) {
     super(message, options)
     this.name = 'TDXServiceError'
   }
 
   get rateLimited(): boolean {
-    return this.status === 429
+    return this.status === 429 || this.warning === 'tdx-rate-limit' || this.warning === 'tdx-quota'
   }
 }
 
@@ -171,6 +173,7 @@ const QUOTA_SUSPECT_AFTER_MS = 10 * 60 * 1000
 
 export function tdxWarningFromError(error: unknown): TDXWarning | undefined {
   if (!(error instanceof TDXServiceError)) return undefined
+  if (error.warning) return error.warning
   if (!error.rateLimited) return 'tdx-unavailable'
   return sharedRateLimitedSince !== null && Date.now() - sharedRateLimitedSince >= QUOTA_SUSPECT_AFTER_MS
     ? 'tdx-quota'
@@ -185,15 +188,33 @@ export function resetTDXRateLimitTracking(): void {
 // TDX 的 429 body 會說明是頻率超限還是額度用盡,記進 log 供事後判讀;內容絕不回給使用者。
 // isShared 只有共用憑證的請求才是 true,決定這次結果要不要更新額度追蹤狀態。
 async function tdxResponseError(context: string, response: Response, isShared: boolean): Promise<TDXServiceError> {
-  if (isShared && response.status === 429) sharedRateLimitedSince ??= Date.now()
   const body = await response.text().catch(() => '')
+  const warning = classifyTDXWarning(response.status, body)
+  if (isShared && (response.status === 429 || warning === 'tdx-rate-limit' || warning === 'tdx-quota')) {
+    sharedRateLimitedSince ??= Date.now()
+  }
   console.error(JSON.stringify({
     message: 'tdx_upstream_error',
     context,
     status: response.status,
     body: body.slice(0, 300),
   }))
-  return new TDXServiceError(`${context} (${response.status})`, response.status)
+  const error = new TDXServiceError(`${context} (${response.status})`, response.status)
+  error.warning = warning
+  return error
+}
+
+function classifyTDXWarning(status: number, body: string): TDXWarning | undefined {
+  const text = body.toLowerCase()
+  const quotaLike = /quota|quotas|monthly|usage|額度|配額|用量|用完|用盡/.test(text)
+    || (/exceed|exceeded|exceeds|超過|超出/.test(text) && /limit|limited|限制|上限/.test(text) && !/rate|frequency|頻率/.test(text))
+  if (quotaLike) return 'tdx-quota'
+
+  if (status !== 429 && /rate.?limit|too many requests|frequency|頻率|請求過多/.test(text)) {
+    return 'tdx-rate-limit'
+  }
+
+  return undefined
 }
 
 type TokenCache = { value: string; expiresAt: number }

@@ -102,6 +102,20 @@ describe('TDX upstream failures', () => {
     const result = await getCommuteETA(env, query)
     expect(result.warning).toBe('tdx-rate-limit')
   })
+
+  it('recognizes quota responses even when TDX does not use HTTP 429', async () => {
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('monthly quota exceeded', { status: 403 })))
+
+    const result = await getCommuteETA(env, query)
+
+    expect(result.warning).toBe('tdx-quota')
+  })
 })
 
 describe('route variants', () => {
