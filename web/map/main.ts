@@ -612,7 +612,7 @@ function renderRoutePicker() {
 
   const counts = new Map<string, number>()
   routes.forEach((route) => counts.set(route.category, (counts.get(route.category) ?? 0) + 1))
-  const names = ['全部', ...['數字', '幹線', '接駁', '幸福／社區', '觀光', '小黃', '其他'].filter((name) => counts.has(name))]
+  const names = ['全部', ...['數字', '幹線', '接駁', '幸福／社區', '觀光', '小黃', '公路客運', '其他'].filter((name) => counts.has(name))]
 
   const render = () => {
     categories.replaceChildren(...names.map((name) => {
