@@ -2,6 +2,7 @@ import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
 import { createViewBackController } from '../../src/domain/map/view-back'
 import { matchStopsToShape } from '../../src/domain/map/shape-matcher'
+import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import {
   getActiveCity,
   isFavoriteDirection,
@@ -181,12 +182,16 @@ map.createPane('previewDotPane').style.zIndex = '425'
 map.createPane('routePane').style.zIndex = '440'
 map.createPane('stopPane').style.zIndex = '480'
 map.createPane('networkPane').style.zIndex = '410'
+// hover 高亮線疊在全路網淡線之上、預覽線之下;獨立 pane 讓它拿到自己的
+// renderer(SVG),重繪高亮不會連帶重畫整張全路網 canvas。
+map.createPane('networkHoverPane').style.zIndex = '415'
 map.createPane('vehiclePane').style.zIndex = '520'
 
 // 全路網一次畫數百條線與站點,效能上仍用 canvas;
 // networkPane 在所有互動 pane 之下,canvas 攔截不會影響其他圖層。
-// tolerance 只在觸控裝置放大,滑鼠維持原生線寬判定,hover 才會跟手即時復原。
-const networkRenderer = L.canvas({ pane: 'networkPane', tolerance: hoverCapable ? 0 : 12 })
+// 整層 non-interactive:Leaflet canvas 對每次 mousemove 逐一 hit-test
+// 上百條線會讓桌機 hover 卡死,命中改由 network-pick 的網格索引回答。
+const networkRenderer = L.canvas({ pane: 'networkPane' })
 
 L.control.zoom({ position: 'bottomleft' }).addTo(map)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -227,8 +232,12 @@ let routeBackAction: (() => void) | undefined
 let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
 let variantPickerUsed = false
 let networkVisible = false
-let networkCache: { city: string; data: CityNetwork } | undefined
+let networkCache: { city: string; data: CityNetwork; index: NetworkIndex } | undefined
 let networkStopMarkers: L.CircleMarker[] = []
+let networkHoverLine: LeafletGeoJSON | undefined
+let networkHoverRouteIndex = -1
+let networkHoverFrame: number | undefined
+let networkHoverLatLng: L.LatLng | undefined
 let vehicleRefreshTimer: number | undefined
 
 const routePalette = ['#b85f49', '#4f685b', '#55718a', '#b08a47', '#765b78', '#6f7561']
@@ -361,8 +370,24 @@ document.getElementById('map-brand')?.addEventListener('click', (event) => {
 map.on('zoomend', updateStopMarkerSize)
 map.on('click', (event) => {
   if (!activeCity) return
-  if (tripStage !== 'idle') void selectTripCoordinate(event.latlng.lat, event.latlng.lng)
-  else if (map.getZoom() >= 14) void findNearbyPlaces(event.latlng.lat, event.latlng.lng, true)
+  // 全路網圖層是 non-interactive,點線/點站點都會落到這裡:先問網格索引。
+  // 觸控沒有游標精準度,容差比照舊 canvas tolerance 放大。
+  const pick = pickNetworkAt(event.latlng, hoverCapable ? 8 : 14, hoverCapable ? 10 : 16)
+  if (tripStage !== 'idle') {
+    // 規劃選點中,點到小站點就吸附站點座標;點到線只是瞄準地圖,照點的位置處理
+    if (pick?.kind === 'place') void selectTripCoordinate(pick.place.latitude, pick.place.longitude)
+    else void selectTripCoordinate(event.latlng.lat, event.latlng.lng)
+    return
+  }
+  if (pick?.kind === 'place') {
+    void findNearbyPlaces(pick.place.latitude, pick.place.longitude, true)
+    return
+  }
+  if (pick?.kind === 'route') {
+    void loadRoute(pick.route.routeName, pick.route.variantKey, false, routeColor(pick.route.routeName))
+    return
+  }
+  if (map.getZoom() >= 14) void findNearbyPlaces(event.latlng.lat, event.latlng.lng, true)
   else {
     map.flyTo(event.latlng, 14)
     setStatus('放大後再選站牌，避免誤選太遠的位置')
@@ -1088,7 +1113,12 @@ async function toggleCityNetwork() {
       const response = await fetch(`/api/v1/map/network?city=${encodeURIComponent(activeCity.code)}`)
       const data = await response.json() as CityNetwork & { error?: string }
       if (!response.ok) throw new Error(data.error)
-      networkCache = { city: activeCity.code, data }
+      // 圖層全部 non-interactive,hover/click 的命中由網格索引回答;跟資料一起快取
+      const index = buildNetworkIndex(
+        data.routes.map((route) => route.shape.geometry.coordinates as LonLat[]),
+        data.places.map((place) => [place.longitude, place.latitude] as LonLat),
+      )
+      networkCache = { city: activeCity.code, data, index }
     }
     drawCityNetwork(networkCache.data)
     setStatus(`全路網 · ${networkCache.data.routes.length} 個方向 · ${networkCache.data.places.length} 個站點`)
@@ -1103,47 +1133,23 @@ function drawCityNetwork(network: CityNetwork) {
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
   networkLayer.clearLayers()
+  clearNetworkHover()
   networkStopMarkers = []
-  // 淡線是刻意的:全路網數百條線只當背景,站點與 hover 強調才是主角
+  // 淡線是刻意的:全路網數百條線只當背景,站點與 hover 強調才是主角。
+  // 整層 non-interactive:canvas 對互動 path 每次 mousemove 都要逐條 hit-test,
+  // 桌機 hover 會卡死;hover/click 改由地圖層級事件 + 網格索引接手。
   const networkLineStyle = { weight: 2.6, opacity: .34, lineCap: 'round' as const, lineJoin: 'round' as const }
   network.routes.forEach((route) => {
-    const color = routeColor(route.routeName)
-    const line = L.geoJSON(route.shape, {
-      // renderer 屬於 PathOptions,經 resetStyle 併入 layer options,在加入地圖前生效。
-      style: { renderer: networkRenderer, color, ...networkLineStyle },
-    })
-      .on('click', (event) => {
-        L.DomEvent.stopPropagation(event)
-        // 路線規劃進行中,點到背景線只是瞄準地圖,當一般選點處理
-        if (tripStage !== 'idle') {
-          const { latlng } = event as L.LeafletMouseEvent
-          void selectTripCoordinate(latlng.lat, latlng.lng)
-          return
-        }
-        void loadRoute(route.routeName, route.variantKey, false, color)
-      })
-      .addTo(networkLayer)
-    bindHoverTooltip(line, `${route.routeName} · ${route.label}`, { sticky: true })
-    line.on('mouseover', () => line.setStyle({ weight: 5, opacity: .75 }))
-    line.on('mouseout', () => line.setStyle(networkLineStyle))
+    L.geoJSON(route.shape, {
+      // renderer/interactive 屬於 PathOptions,經 style 併入 layer options,在加入地圖前生效。
+      style: { renderer: networkRenderer, color: routeColor(route.routeName), interactive: false, ...networkLineStyle },
+    }).addTo(networkLayer)
   })
   const radius = map.getZoom() >= 15 ? 4 : map.getZoom() >= 12 ? 2.5 : 1.4
   network.places.forEach((place) => {
     const marker = L.circleMarker([place.latitude, place.longitude], {
-      renderer: networkRenderer, radius, weight: 1, color: '#fffaf0', fillColor: '#4f685b', fillOpacity: .72,
-    })
-      .on('click', (event) => {
-        L.DomEvent.stopPropagation(event)
-        // 路線規劃進行中,點小站點就是在指定起終點;
-        // 不能走 findNearbyPlaces,那條路會把規劃狀態整個清掉
-        if (tripStage !== 'idle') {
-          void selectTripCoordinate(place.latitude, place.longitude)
-          return
-        }
-        void findNearbyPlaces(place.latitude, place.longitude, true)
-      })
-      .addTo(networkLayer)
-    bindHoverTooltip(marker, place.name)
+      renderer: networkRenderer, interactive: false, radius, weight: 1, color: '#fffaf0', fillColor: '#4f685b', fillOpacity: .72,
+    }).addTo(networkLayer)
     networkStopMarkers.push(marker)
   })
   networkVisible = true
@@ -1153,11 +1159,98 @@ function drawCityNetwork(network: CityNetwork) {
 
 function setNetworkVisible(visible: boolean) {
   if (visible) return
+  clearNetworkHover()
   networkLayer.clearLayers()
   networkStopMarkers = []
   networkVisible = false
   networkButton.classList.remove('active')
   networkButton.setAttribute('aria-pressed', 'false')
+}
+
+// 把游標下的位置丟給網格索引,容差以像素給、在這裡換算成緯度度數;
+// 回傳直接解好參照的路線/站點,呼叫端不用碰索引細節。
+type ResolvedNetworkPick =
+  | { kind: 'place'; place: CityNetwork['places'][number] }
+  | { kind: 'route'; route: CityNetwork['routes'][number]; routeIndex: number }
+
+function pickNetworkAt(latlng: L.LatLng, routePixels: number, placePixels: number): ResolvedNetworkPick | undefined {
+  if (!networkVisible || !networkCache) return undefined
+  const pick = pickNetwork(
+    networkCache.index,
+    [latlng.lng, latlng.lat],
+    pixelsToLatDegrees(routePixels),
+    pixelsToLatDegrees(placePixels),
+  )
+  if (!pick) return undefined
+  if (pick.kind === 'place') return { kind: 'place', place: networkCache.data.places[pick.placeIndex] }
+  return { kind: 'route', route: networkCache.data.routes[pick.routeIndex], routeIndex: pick.routeIndex }
+}
+
+// 用地圖自己的投影換算「n 像素在目前 zoom 是幾度緯度」,不用自己背公式。
+function pixelsToLatDegrees(pixels: number): number {
+  const size = map.getSize()
+  const center = map.containerPointToLatLng([size.x / 2, size.y / 2])
+  const shifted = map.containerPointToLatLng([size.x / 2, size.y / 2 - pixels])
+  return Math.abs(shifted.lat - center.lat)
+}
+
+// 全路網共用一顆 tooltip、一條高亮線:數千個圖形各綁 tooltip/事件的成本
+// 才是桌機卡頓的來源。高亮線畫在 networkHoverPane(自己的 SVG renderer),
+// 重繪它不會連帶重畫整張全路網 canvas。
+const networkHoverTooltip = L.tooltip({ direction: 'top', offset: [0, -10] })
+
+map.on('mousemove', (event) => {
+  if (!hoverCapable || !networkVisible) return
+  networkHoverLatLng = event.latlng
+  if (networkHoverFrame !== undefined) return
+  networkHoverFrame = requestAnimationFrame(() => {
+    networkHoverFrame = undefined
+    if (networkHoverLatLng) updateNetworkHover(networkHoverLatLng)
+  })
+})
+// 拖曳/縮放中游標下的東西一直在變,乾脆收掉;滑出地圖容器也是。
+map.on('movestart', clearNetworkHover)
+map.on('mouseout', clearNetworkHover)
+
+function updateNetworkHover(latlng: L.LatLng) {
+  const pick = pickNetworkAt(latlng, 6, 9)
+  if (!pick) {
+    clearNetworkHover()
+    return
+  }
+  map.getContainer().style.cursor = 'pointer'
+  if (pick.kind === 'place') {
+    setNetworkHighlight(-1)
+    networkHoverTooltip.setContent(pick.place.name).setLatLng([pick.place.latitude, pick.place.longitude])
+  } else {
+    setNetworkHighlight(pick.routeIndex)
+    networkHoverTooltip.setContent(`${pick.route.routeName} · ${pick.route.label}`).setLatLng(latlng)
+  }
+  if (!map.hasLayer(networkHoverTooltip)) networkHoverTooltip.openOn(map)
+}
+
+function setNetworkHighlight(routeIndex: number) {
+  if (routeIndex === networkHoverRouteIndex) return
+  networkHoverLine?.remove()
+  networkHoverLine = undefined
+  networkHoverRouteIndex = routeIndex
+  if (routeIndex < 0 || !networkCache) return
+  const route = networkCache.data.routes[routeIndex]
+  networkHoverLine = L.geoJSON(route.shape, {
+    pane: 'networkHoverPane',
+    style: {
+      color: routeColor(route.routeName), weight: 5, opacity: .75,
+      lineCap: 'round', lineJoin: 'round', interactive: false,
+    },
+  }).addTo(map)
+}
+
+function clearNetworkHover() {
+  setNetworkHighlight(-1)
+  // 排隊中的 rAF 醒來會看到 undefined,不會把剛清掉的 hover 又補回來
+  networkHoverLatLng = undefined
+  if (map.hasLayer(networkHoverTooltip)) map.closeTooltip(networkHoverTooltip)
+  map.getContainer().style.cursor = ''
 }
 
 async function findNearbyPlaces(latitude: number, longitude: number, autoPreview = false) {
