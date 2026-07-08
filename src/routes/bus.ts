@@ -26,6 +26,7 @@ import {
 import { appIcon, renderAmbiguousPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
 import { getSnapshotRouteCatalog, getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { mapCities } from '../config/map-cities'
+import { siteSearchDescription } from '../seo'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
 const bus = new Hono<Env>()
@@ -250,13 +251,16 @@ bus.get('/sitemap.xml', (c) => {
 
 bus.get('/manifest.webmanifest', (c) => c.json({
   name: 'Mochi Bus',
-  short_name: '公車 ETA',
-  description: '一眼查看固定站牌的公車到站時間',
+  short_name: '公車到站',
+  description: siteSearchDescription,
   start_url: '/',
   display: 'standalone',
   background_color: '#f7f2e8',
   theme_color: '#f7f2e8',
-  icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
+  icons: [
+    { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' },
+    { src: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png', purpose: 'any maskable' },
+  ],
 }, 200, {
   'Content-Type': 'application/manifest+json; charset=utf-8',
   'Cache-Control': 'public, max-age=86400',

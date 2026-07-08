@@ -1,3 +1,5 @@
+import { renderWebsiteStructuredData, siteSearchDescription, siteSocialDescription, siteTitle } from './seo'
+
 export type MapPageMeta = {
   title?: string
   description?: string
@@ -6,8 +8,8 @@ export type MapPageMeta = {
 // 深連結(?route= / ?city=)由伺服器端組標題:社群/聊天軟體的爬蟲不跑 JS,
 // SSR 給對標題,分享出去的預覽卡才看得出是哪條路線;頁內切換另由前端更新 document.title。
 export function renderMapPage(meta: MapPageMeta = {}): string {
-  const title = meta.title ?? '公車地圖｜Mochi Bus'
-  const description = meta.description ?? '把公車路線直接畫在城市裡'
+  const title = meta.title ?? siteTitle
+  const description = meta.description ?? siteSearchDescription
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -16,11 +18,13 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
   <meta name="theme-color" content="#e8e2d6">
   <meta name="description" content="${escapeHTML(description)}">
   <meta property="og:title" content="${escapeHTML(title)}">
-  <meta property="og:description" content="${escapeHTML(description)}">
+  <meta property="og:description" content="${escapeHTML(siteSocialDescription)}">
   <meta property="og:site_name" content="Mochi Bus">
+  ${renderWebsiteStructuredData()}
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <title>${escapeHTML(title)}</title>
   <link rel="stylesheet" href="/assets/map.css">
   <link rel="modulepreload" href="/assets/map.js">
