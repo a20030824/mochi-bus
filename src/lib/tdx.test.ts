@@ -116,6 +116,25 @@ describe('TDX upstream failures', () => {
 
     expect(result.warning).toBe('tdx-quota')
   })
+
+  it('recognizes quota suspension when TDX rejects the token request outright', async () => {
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    })
+    // 額度用完時 TDX 觀察到的實際行為:整個 App 停權,連 token 都換不到,
+    // 回標準 OAuth 錯誤(400 unauthorized_client),不是查詢 API 才擋 429。
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: 'unauthorized_client', error_description: 'Invalid client credentials' }),
+      { status: 400 },
+    )))
+
+    const result = await getCommuteETA(env, query)
+
+    expect(result.warning).toBe('tdx-quota')
+  })
 })
 
 describe('route variants', () => {

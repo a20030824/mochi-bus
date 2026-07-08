@@ -208,6 +208,9 @@ function classifyTDXWarning(status: number, body: string): TDXWarning | undefine
   const text = body.toLowerCase()
   const quotaLike = /quota|quotas|monthly|usage|額度|配額|用量|用完|用盡/.test(text)
     || (/exceed|exceeded|exceeds|超過|超出/.test(text) && /limit|limited|限制|上限/.test(text) && !/rate|frequency|頻率/.test(text))
+    // 額度用完時 TDX 是整個 App 停權,連 token 端點都回標準 OAuth 錯誤(400 unauthorized_client/
+    // invalid_client),不是文件假設的「先給 token、查詢時才擋 429」——這種換不到 token 也算額度用盡。
+    || /unauthorized_client|invalid_client|invalid client credentials/.test(text)
   if (quotaLike) return 'tdx-quota'
 
   if (status !== 429 && /rate.?limit|too many requests|frequency|頻率|請求過多/.test(text)) {
