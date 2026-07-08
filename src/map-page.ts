@@ -3,6 +3,7 @@ import { renderWebsiteStructuredData, siteSearchDescription, siteSocialDescripti
 export type MapPageMeta = {
   title?: string
   description?: string
+  heading?: string
 }
 
 // 深連結(?route= / ?city=)由伺服器端組標題:社群/聊天軟體的爬蟲不跑 JS,
@@ -10,6 +11,7 @@ export type MapPageMeta = {
 export function renderMapPage(meta: MapPageMeta = {}): string {
   const title = meta.title ?? siteTitle
   const description = meta.description ?? siteSearchDescription
+  const heading = meta.heading ?? '台灣公車地圖'
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -33,6 +35,7 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
 </head>
 <body>
   <div id="map-app">
+    <h1 class="map-page-title">${escapeHTML(heading)}</h1>
     <div id="map" aria-label="公車路線地圖"></div>
     <header class="map-header">
       <a id="map-brand" href="/map" class="map-brand" title="回到全台總覽">MOCHI <span>MAP</span></a>

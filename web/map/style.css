@@ -11,6 +11,15 @@ button, input { font: inherit; }
 button { cursor: pointer; }
 
 #map { background: #d8d4ca; }
+.map-page-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .leaflet-tile-pane { filter: grayscale(.72) sepia(.12) saturate(.65) brightness(1.06) contrast(.9); }
 .leaflet-control-attribution { background: rgba(244, 239, 228, .82) !important; color: #67685f; }
 .leaflet-control-attribution a { color: #4f685b; }

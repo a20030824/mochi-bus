@@ -26,6 +26,7 @@ export function renderETAPage(view: ETAView): string {
   const pageDescription = useLocalBoard
     ? siteSearchDescription
     : `${query.routeName} 在${query.stopName}的即時到站時間`
+  const heading = useLocalBoard ? '台灣公車到站看板' : `${query.routeName} 在 ${query.stopName} 的到站時間`
   const mapHref = `/map?city=${encodeURIComponent(query.city)}`
   // 上方已有服務橫幅(notice)時,狀態列不再重複同一句 TDX 警語。
   const warningNotice = !notice && result?.warning ? tdxWarningMessages[result.warning] : undefined
@@ -42,7 +43,7 @@ export function renderETAPage(view: ETAView): string {
       <div class="onboard-sign" id="onboard-sign" hidden aria-hidden="true">
         <span class="onboard-sign-track"><span>Understand the network first, then catch the bus.</span><span>Understand the network first, then catch the bus.</span></span>
       </div>
-      <p class="eyebrow" id="board-title">${escapeHTML(query.stopName)}</p>
+      <h1 class="eyebrow" id="board-title">${escapeHTML(heading)}</h1>
       <div class="bus-list" id="bus-list">${renderBusRow(query, result, error)}</div>
       <div class="onboard" id="onboard" hidden>
         <p>找到你每天在等的那班車，這一頁就會變成你的。</p>
@@ -314,7 +315,17 @@ export function renderSetupPage(cities: ReadonlyArray<readonly [string, string]>
             <p class="glossary-tip">常用站牌與設定只保存在這台裝置。</p>
             <p class="glossary-tip">支援加入主畫面（PWA），下次就像 App 一樣直接打開。</p>
             <p class="glossary-tip">如果 Mochi Bus 有幫到你，歡迎使用自己的 TDX API，把共用額度留給下一位需要的人。</p>
+          </details>
+        </div>
+        <div class="advanced-section">
+          <details class="glossary">
+            <summary>關於 Mochi Bus</summary>
+            <p class="glossary-tip">Mochi Bus 的起點，是一次搭公車時的小抱怨：有些工具有地圖，卻不一定照顧到每個地方的即時資訊；有些工具有即時資訊，卻很難看懂路線在城市裡實際怎麼走。</p>
+            <p class="glossary-tip">路線本來就應該畫在地圖上。站牌不只是等車的地方，也是一個能看見城市交通網路的節點。</p>
+            <p class="glossary-tip">所以它不只想回答「我要怎麼去那裡」，也想回答「這座城市的公車是怎麼運作的」。地圖是主角，不是搜尋框；點站牌是探索，不只是查 ETA。</p>
+            <p class="glossary-tip">它也不急著追蹤你現在在哪。地圖只用粗略位置猜縣市，首頁則回到你存下的常用站牌；重點是看懂路網，而不是把每一步都導航完。</p>
             <p class="glossary-thanks">公車資料來自交通部 TDX，底圖是 OpenStreetMap 貢獻者的作品，由 Cloudflare Workers 送到你手上。謝謝他們。</p>
+            <p class="glossary-thanks">Mochi Bus 採 Apache-2.0 授權開源，歡迎到 <a href="https://github.com/a20030824/mochi-bus" target="_blank" rel="noopener">GitHub</a> 提出 Issue、Pull Request 或 Fork。</p>
           </details>
         </div>
         <div class="advanced-section">
@@ -353,7 +364,7 @@ export function renderSetupPage(cities: ReadonlyArray<readonly [string, string]>
 
 export function renderRoutePage(query: ResolvedBusQuery, detail: RouteDetail): string {
   const stops = detail.stops.map((stop) => `<li class="route-stop${stop.selected ? ' selected' : ''}"><span class="dot"></span><div><strong>${escapeHTML(stop.stopName)}</strong>${stop.selected ? '<em>你的站牌</em>' : ''}</div><span>${escapeHTML(stop.etaLabel ?? '')}</span></li>`).join('')
-  return pageShell(`${query.routeName} 路線｜Mochi Bus`, `<main class="route-page"><header class="topbar"><a class="icon-link" href="javascript:history.back()">返回</a><a class="brand" href="/">MOCHI BUS</a></header><section class="route-head"><span class="route-badge">${escapeHTML(query.routeName)}</span><h1>${escapeHTML(detail.label)}</h1><p>你等車的位置已經標好</p></section><ol class="route-timeline">${stops}</ol></main>`, '', `${query.routeName}(${detail.label})的完整站序與各站到站時間`)
+  return pageShell(`${query.routeName} 路線｜Mochi Bus`, `<main class="route-page"><header class="topbar"><a class="icon-link" href="javascript:history.back()">返回</a><a class="brand" href="/">MOCHI BUS</a></header><section class="route-head"><span class="route-badge">${escapeHTML(query.routeName)}</span><h1>${escapeHTML(`${query.routeName} · ${detail.label}`)}</h1><p>你等車的位置已經標好</p></section><ol class="route-timeline">${stops}</ol></main>`, '', `${query.routeName}(${detail.label})的完整站序與各站到站時間`)
 }
 
 export function renderAmbiguousPage(query: BusQuery, candidates: RouteStop[]): string {
