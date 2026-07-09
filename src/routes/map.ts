@@ -368,7 +368,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
                 : route.scheduleDepartureBased
                   ? `${Math.max(1, route.scheduleMinutes ?? 1)} 分後發車`
                   : `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`)
-            : '暫無班次',
+            : '暫無資訊',
         stopStatus: realtime?.StopStatus ?? 0,
         source,
       }

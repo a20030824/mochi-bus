@@ -225,7 +225,7 @@ type TokenCache = { value: string; expiresAt: number }
 const tokenCache = new Map<string, TokenCache>()
 const pendingTokens = new Map<string, Promise<string>>()
 
-const ETA_CACHE_SECONDS = 8
+const ETA_CACHE_SECONDS = 12
 const STATIC_CACHE_SECONDS = 60 * 60
 const STALE_AFTER_MS = 3 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 6000

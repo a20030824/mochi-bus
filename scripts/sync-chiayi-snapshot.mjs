@@ -241,7 +241,7 @@ for (const item of patternStops) {
     !pattern.subrouteUid || !schedule.SubRouteUID || schedule.SubRouteUID === pattern.subrouteUid)
   // 雙北的 Schedule 常只掛在代表支線(或缺方向):262 有 8 個支線×方向組合,
   // 班表卻只覆蓋其中 4 個。自己的班表拿不到就借同路線同方向其他支線的當估計,
-  // 顯示端本來就標成「預估」;不借的話這些站會整排「暫無班次」,明明是高頻車。
+  // 顯示端本來就標成「預估」;不借的話這些站會整排「暫無資訊」,明明是高頻車。
   const matchingSchedules = exactSchedules.length ? exactSchedules : sameDirection
   const schedules = matchingSchedules.map((schedule) => ({
     SubRouteUID: schedule.SubRouteUID,
@@ -249,7 +249,7 @@ for (const item of patternStops) {
     Timetables: (schedule.Timetables ?? []).map((timetable) => {
       const atThisStop = (timetable.StopTimes ?? []).filter((time) => time.StopUID === item.stopUid)
       // 有些縣市(如台南)每班次只提供起點發車時間,本站過濾後會全空;
-      // 保留起點那筆,讓網頁端退回用「發車時間」估計,不然整站會變「暫無班次」。
+      // 保留起點那筆,讓網頁端退回用「發車時間」估計,不然整站會變「暫無資訊」。
       const stopTimes = atThisStop.length ? atThisStop : (timetable.StopTimes ?? [])
         .slice()
         .sort((a, b) => (a.StopSequence ?? 0) - (b.StopSequence ?? 0))
