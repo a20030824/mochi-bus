@@ -166,7 +166,18 @@ map.get('/api/v1/map/network', async (c) => {
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
     const network = await getCityNetwork(c.env, city)
     if (!network) return c.json({ error: '這個縣市尚未建立全路網資料' }, 404)
-    return c.json({ schemaVersion: 1, city, ...network }, 200, {
+    // R2 的 network.json 原樣串流,不在 Worker 內 parse+stringify(雙北 35MB+ 會撞
+    // isolate 記憶體上限回 503)。前端只讀 routes/places,舊快照缺 schemaVersion/city 也無妨。
+    if (network.kind === 'stream') {
+      return new Response(network.body, {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'public, max-age=86400',
+          'ETag': network.etag,
+        },
+      })
+    }
+    return c.json({ schemaVersion: 1, city, ...network.network }, 200, {
       'Cache-Control': 'public, max-age=86400',
     })
   } catch (error) {

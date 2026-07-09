@@ -172,27 +172,38 @@ export async function getSnapshotRouteCatalog(env: TransitBindings, city: string
   }))
 }
 
-export async function getCityNetwork(env: TransitBindings, city: string) {
+export type CityNetworkResult =
+  | { kind: 'stream'; body: ReadableStream; etag: string }
+  | {
+    kind: 'inline'
+    network: {
+      version: string
+      routes: Array<{
+        routeName: string
+        variantKey: string
+        label: string
+        shape: ShapeFeature
+      }>
+      places: Array<{
+        placeId: string
+        name: string
+        latitude: number
+        longitude: number
+      }>
+    }
+  }
+
+export async function getCityNetwork(env: TransitBindings, city: string): Promise<CityNetworkResult | null> {
   const version = await getActiveVersion(env, city)
   if (!version) return null
 
+  // 雙北的 network.json 有 35MB+:在 Worker 裡 json() 解析後記憶體膨脹好幾倍,
+  // 再 stringify 一次就撞 isolate 的 128MB 上限,runtime 直接回 503。
+  // R2 命中就把 body 原樣交給 handler 串流,Worker 不碰內容;
+  // schemaVersion/city 這些回應欄位由 sync 腳本寫進檔案本身。
   const bundleKey = `snapshots/${version}/cities/${city}/network.json`
   const bundle = await env.TRANSIT_SHAPES.get(bundleKey)
-  if (bundle) return await bundle.json<{
-    version: string
-    routes: Array<{
-      routeName: string
-      variantKey: string
-      label: string
-      shape: ShapeFeature
-    }>
-    places: Array<{
-      placeId: string
-      name: string
-      latitude: number
-      longitude: number
-    }>
-  }>()
+  if (bundle) return { kind: 'stream', body: bundle.body, etag: bundle.httpEtag }
 
   const [patterns, places] = await Promise.all([
     env.TRANSIT_DB.prepare(`
@@ -234,14 +245,17 @@ export async function getCityNetwork(env: TransitBindings, city: string) {
   }))).filter((route): route is NonNullable<typeof route> => route !== null)
 
   return {
-    version: version,
-    routes,
-    places: places.results.map((place) => ({
-      placeId: place.place_id,
-      name: place.place_name,
-      latitude: place.latitude,
-      longitude: place.longitude,
-    })),
+    kind: 'inline',
+    network: {
+      version: version,
+      routes,
+      places: places.results.map((place) => ({
+        placeId: place.place_id,
+        name: place.place_name,
+        latitude: place.latitude,
+        longitude: place.longitude,
+      })),
+    },
   }
 }
 

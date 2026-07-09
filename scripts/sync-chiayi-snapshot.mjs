@@ -309,13 +309,25 @@ for (let start = 0; start < sql.length; start += SQL_CHUNK_STATEMENTS) {
 
 const networkKey = `snapshots/${version}/cities/${CITY}/network.json`
 const networkFile = join(outputRoot, 'network.json')
+// schemaVersion/city 直接寫進檔案:API 端把這個物件原樣串流給瀏覽器
+// (雙北 35MB+ 在 Worker 內 parse+stringify 會撞記憶體上限),不再有機會補欄位。
+// 全路網圖層是 0.34 透明度的 2.6px 背景淡線,shape 用 ~8m 容差簡化就夠,
+// 檔案可縮小數倍;細節路線圖用的 shapes/*.json 不動,維持原始線形。
 await writeFile(networkFile, JSON.stringify({
+  schemaVersion: 1,
+  city: CITY,
   version,
   routes: patterns.map((pattern) => ({
     routeName: routeByUid.get(pattern.routeUid).name,
     variantKey: pattern.id,
     label: `${pattern.departure} → ${pattern.destination}`,
-    shape: pattern.shapeFeature,
+    shape: {
+      ...pattern.shapeFeature,
+      geometry: {
+        ...pattern.shapeFeature.geometry,
+        coordinates: simplifyLine(pattern.shapeFeature.geometry.coordinates, 8),
+      },
+    },
   })),
   places: [...places.values()].map((place) => ({
     placeId: place.id, name: place.name, latitude: place.lat, longitude: place.lon,
@@ -389,6 +401,44 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
   const a = Math.sin(deltaLat / 2) ** 2 + Math.cos(radians(lat1)) * Math.cos(radians(lat2)) * Math.sin(deltaLon / 2) ** 2
   return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
+// Douglas-Peucker 折線簡化,容差單位是公尺。平面近似:緯度 1 度 ≈ 111,320m,
+// 經度依線段起點的緯度縮放;台灣尺度下這個近似對公尺級容差的誤差可忽略。
+function simplifyLine(coordinates, toleranceMeters) {
+  if (coordinates.length <= 2) return coordinates
+  const latScale = 111_320
+  const lonScale = 111_320 * Math.cos(coordinates[0][1] * Math.PI / 180)
+  const points = coordinates.map(([lon, lat]) => [lon * lonScale, lat * latScale])
+  const keep = new Uint8Array(coordinates.length)
+  keep[0] = keep[coordinates.length - 1] = 1
+  const stack = [[0, coordinates.length - 1]]
+  while (stack.length) {
+    const [start, end] = stack.pop()
+    const [x1, y1] = points[start]
+    const [x2, y2] = points[end]
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const lengthSquared = dx * dx + dy * dy
+    let maxDistance = 0
+    let maxIndex = start
+    for (let i = start + 1; i < end; i += 1) {
+      const [x, y] = points[i]
+      // 點到「線段」的距離(不是無限直線):公車路線常折返,端點重合時
+      // lengthSquared 為 0,直線距離公式會除以零
+      const t = lengthSquared === 0 ? 0
+        : Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / lengthSquared))
+      const distance = Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy))
+      if (distance > maxDistance) {
+        maxDistance = distance
+        maxIndex = i
+      }
+    }
+    if (maxDistance > toleranceMeters) {
+      keep[maxIndex] = 1
+      stack.push([start, maxIndex], [maxIndex, end])
+    }
+  }
+  return coordinates.filter((_, index) => keep[index])
+}
 function decodePolyline(encoded) {
   const coordinates = []; let index = 0; let latitude = 0; let longitude = 0
   while (index < encoded.length) {
@@ -435,7 +485,8 @@ function hashContent(payloads) {
   // 讓所有城市自動重匯,不會被「內容未變更」跳過而留著舊格式。
   // 4:place bundle 的班表比對加入「借同方向其他支線」的 fallback。
   // 5:normalizeName 加「臺→台、車站→站、去結尾站」,placeId 全部重算。
-  const SNAPSHOT_FORMAT = 5
+  // 6:network.json 內建 schemaVersion/city(API 改原樣串流)+ shape 簡化瘦身。
+  const SNAPSHOT_FORMAT = 6
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])
