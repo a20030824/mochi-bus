@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
@@ -22,6 +23,19 @@ import {
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
 import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, TDXServiceError, tdxRouteScope, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import {
+  ApiInputError,
+  apiInputErrorBody,
+  JOURNEY_ETA_BODY_LIMIT_BYTES,
+  optionalQueryString,
+  parseCoordinate,
+  parseJourneyEtaInput,
+  parseOptionalDirection,
+  parseRadius,
+  parseTdxCredentials,
+  readJsonBody,
+  requiredQueryString,
+} from '../lib/api-input'
 import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
 import { renderMapPage } from '../map-page'
 
@@ -29,8 +43,13 @@ type Env = { Bindings: TDXEnv & TransitBindings }
 const map = new Hono<Env>()
 
 // API 請求可帶使用者自備的 TDX 憑證(setup 頁進階設定),即時查詢改用他的額度。
-const tdxEnv = (c: Context<Env>) =>
-  withUserTDX(c.env, c.req.header('x-tdx-client-id'), c.req.header('x-tdx-client-secret'))
+const tdxEnv = (c: Context<Env>) => {
+  const credentials = parseTdxCredentials(
+    c.req.header('x-tdx-client-id'),
+    c.req.header('x-tdx-client-secret'),
+  )
+  return withUserTDX(c.env, credentials?.clientId, credentials?.clientSecret)
+}
 
 // 429 冷卻以「縣市+憑證來源」為範圍:共用池在冷卻時,自備憑證的人不必連坐,
 // 反過來他的 429 也不該冷卻到共用池。client_id 不是機密(secret 才是),當 key 沒問題。
@@ -129,8 +148,7 @@ map.get('/api/v1/map/routes', async (c) => {
       'Cache-Control': `public, max-age=${snapshotRoutes.length ? 86400 : 300}`,
     })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '路線目錄讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '路線目錄讀取失敗')
   }
 })
 
@@ -152,11 +170,10 @@ map.get('/api/v1/map/route', async (c) => {
       'Cache-Control': `public, max-age=${snapshotVariants.length ? 86400 : 300}`,
     })
   } catch (error) {
-    console.error('route_map_failed', error)
-    const message = error instanceof QueryValidationError ? error.message : '暫時無法取得路線地圖'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502, {
-      'Cache-Control': 'no-store',
-    })
+    if (!(error instanceof QueryValidationError || error instanceof ApiInputError)) {
+      console.error('route_map_failed', error)
+    }
+    return mapJsonError(c, error, '暫時無法取得路線地圖')
   }
 })
 
@@ -181,8 +198,7 @@ map.get('/api/v1/map/network', async (c) => {
       'Cache-Control': 'public, max-age=86400',
     })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '全路網讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '全路網讀取失敗')
   }
 })
 
@@ -190,8 +206,8 @@ map.get('/api/v1/map/vehicles', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
     const routeName = c.req.query('route')?.trim()
-    const routeUid = c.req.query('routeUid')?.trim()
-    const direction = Number(c.req.query('direction'))
+    const routeUid = optionalQueryString(c.req.query('routeUid'), 'RouteUID', 100)
+    const direction = parseOptionalDirection(c.req.query('direction'))
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
     if (!routeName || routeName.length > 40) throw new QueryValidationError('路線格式錯誤')
     const url = new URL(
@@ -209,7 +225,7 @@ map.get('/api/v1/map/vehicles', async (c) => {
     }
     const vehicles = items
       .filter((item) => !routeUid || item.RouteUID === routeUid)
-      .filter((item) => !Number.isInteger(direction) || item.Direction === direction)
+      .filter((item) => direction === undefined || item.Direction === direction)
       .filter((item) => Number.isFinite(item.BusPosition?.PositionLat) && Number.isFinite(item.BusPosition?.PositionLon))
       .map((item) => ({
         plate: item.PlateNumb ?? null,
@@ -223,8 +239,7 @@ map.get('/api/v1/map/vehicles', async (c) => {
       'Cache-Control': 'public, max-age=15',
     })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '車輛位置讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '車輛位置讀取失敗')
   }
 })
 
@@ -250,24 +265,21 @@ map.get('/api/v1/map/search', async (c) => {
       'Cache-Control': 'public, max-age=3600',
     })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '站牌搜尋失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '站牌搜尋失敗')
   }
 })
 
 map.get('/api/v1/map/nearby', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
-    const latitude = Number(c.req.query('lat'))
-    const longitude = Number(c.req.query('lon'))
-    const radius = Math.min(2_000, Math.max(50, Number(c.req.query('radius') ?? 500)))
+    const latitude = parseCoordinate(c.req.query('lat'), 'latitude')
+    const longitude = parseCoordinate(c.req.query('lon'), 'longitude')
+    const radius = parseRadius(c.req.query('radius'))
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) throw new QueryValidationError('座標格式錯誤')
     const places = await findNearbyStopPlaces(c.env, city, latitude, longitude, radius)
     return c.json({ schemaVersion: 1, city, radius, places }, 200, { 'Cache-Control': 'public, max-age=300' })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '附近站牌查詢失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '附近站牌查詢失敗')
   }
 })
 
@@ -275,11 +287,11 @@ map.get('/api/v1/map/place/:placeId/routes', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const routes = await getStopPlaceRoutes(c.env, city, c.req.param('placeId'))
+    const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)
+    const routes = await getStopPlaceRoutes(c.env, city, placeId)
     return c.json({ schemaVersion: 3, city, routes }, 200, { 'Cache-Control': 'public, max-age=86400' })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '站牌路線讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '站牌路線讀取失敗')
   }
 })
 
@@ -289,7 +301,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
     const scope = tdxScope(env)
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const placeId = c.req.param('placeId')
+    const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)
     const bundle = await getStopPlaceBundle(env, city, placeId)
     const now = new Date()
     const scheduledRoutes = bundle ? bundle.routes.map(({ schedules, ...route }) => ({
@@ -315,12 +327,12 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         }, now),
       }))
     })()
-    const focusStopUid = c.req.query('focusStopUid')?.trim()
-    const focusSubRouteUid = c.req.query('focusSubRouteUid')?.trim()
-    const focusDirection = Number(c.req.query('focusDirection'))
+    const focusStopUid = optionalQueryString(c.req.query('focusStopUid'), 'StopUID', 100)
+    const focusSubRouteUid = optionalQueryString(c.req.query('focusSubRouteUid'), 'SubRouteUID', 100)
+    const focusDirection = parseOptionalDirection(c.req.query('focusDirection'), 'focusDirection')
     const focused = focusStopUid ? scheduledRoutes.find((route) =>
       route.stopUid === focusStopUid
-      && (!Number.isInteger(focusDirection) || route.direction === focusDirection)
+      && (focusDirection === undefined || route.direction === focusDirection)
       && (!focusSubRouteUid || route.subRouteUid === focusSubRouteUid),
     ) : undefined
     const candidates = includeFocusedCandidate(selectRealtimeCandidates(scheduledRoutes), focused)
@@ -395,8 +407,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
     }, 200, { 'Cache-Control': 'public, max-age=15' })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '到站時間讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '到站時間讀取失敗')
   }
 })
 
@@ -404,63 +415,54 @@ map.get('/api/v1/map/place/:placeId', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const place = await getStopPlace(c.env, city, c.req.param('placeId'))
+    const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)
+    const place = await getStopPlace(c.env, city, placeId)
     if (!place) return c.json({ error: '找不到這個站牌' }, 404)
     return c.json({ schemaVersion: 1, city, place }, 200, { 'Cache-Control': 'public, max-age=86400' })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '站牌資料讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '站牌資料讀取失敗')
   }
 })
 
 map.get('/api/v1/map/direct', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
-    const from = c.req.query('from')?.trim()
-    const to = c.req.query('to')?.trim()
+    const from = requiredQueryString(c.req.query('from'), '起點', 100)
+    const to = requiredQueryString(c.req.query('to'), '終點', 100)
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    if (!from || !to || from.length > 100 || to.length > 100) throw new QueryValidationError('起點或終點格式錯誤')
     const routes = await getDirectRoutes(c.env, city, from, to)
     return c.json({ schemaVersion: 1, city, from, to, routes }, 200, {
       'Cache-Control': 'public, max-age=86400',
     })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '直達路線查詢失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '直達路線查詢失敗')
   }
 })
 
 map.get('/api/v1/map/transfer', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
-    const from = c.req.query('from')?.trim()
-    const to = c.req.query('to')?.trim()
+    const from = requiredQueryString(c.req.query('from'), '出發位置', 100)
+    const to = requiredQueryString(c.req.query('to'), '目的地', 100)
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    if (!from || !to || from.length > 100 || to.length > 100) throw new QueryValidationError('出發位置或目的地格式錯誤')
     const plans = await getOneTransferRoutes(c.env, city, from, to)
     return c.json({ schemaVersion: 1, city, from, to, plans }, 200, {
       'Cache-Control': 'public, max-age=86400',
     })
   } catch (error) {
-    const message = error instanceof QueryValidationError ? error.message : '轉乘路線查詢失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502)
+    return mapJsonError(c, error, '轉乘路線查詢失敗')
   }
 })
 
-map.post('/api/v1/map/journey-eta', async (c) => {
+map.post('/api/v1/map/journey-eta', bodyLimit({
+  maxSize: JOURNEY_ETA_BODY_LIMIT_BYTES,
+  onError: (c) => c.json({ error: '請求內容過大', code: 'PAYLOAD_TOO_LARGE' }, 413, {
+    'Cache-Control': 'no-store',
+  }),
+}), async (c) => {
   try {
+    const { city, legs } = parseJourneyEtaInput(await readJsonBody(c.req.raw), supportedCityCodes)
     const env = tdxEnv(c)
-    const body = await c.req.json<{
-      city?: string
-      legs?: Array<{ key?: string; patternId?: string; sequence?: number }>
-    }>()
-    const city = body.city?.trim()
-    const legs = body.legs?.filter((leg): leg is { key: string; patternId: string; sequence: number } =>
-      Boolean(leg.key && leg.patternId && leg.key.length <= 80 && leg.patternId.length <= 100)
-      && Number.isInteger(leg.sequence) && (leg.sequence as number) >= 0,
-    ) ?? []
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    if (!legs.length || legs.length > 12) throw new QueryValidationError('ETA 查詢項目格式錯誤')
 
     const refs = await getJourneyLegStopRefs(env, city, legs)
     // 逐路線查 ETA(legs ≤ 12,去重後更少),與站牌到站查詢共用同一份快取。
@@ -521,14 +523,13 @@ map.post('/api/v1/map/journey-eta', async (c) => {
       'Cache-Control': 'no-store',
     })
   } catch (error) {
-    console.error(JSON.stringify({
-      message: 'journey_eta_failed',
-      error: error instanceof Error ? error.message : String(error),
-    }))
-    const message = error instanceof QueryValidationError ? error.message : 'ETA 排序資料讀取失敗'
-    return c.json({ error: message }, error instanceof QueryValidationError ? 400 : 502, {
-      'Cache-Control': 'no-store',
-    })
+    if (!(error instanceof QueryValidationError || error instanceof ApiInputError)) {
+      console.error(JSON.stringify({
+        message: 'journey_eta_failed',
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    }
+    return mapJsonError(c, error, 'ETA 排序資料讀取失敗')
   }
 })
 
@@ -578,6 +579,16 @@ function scheduleFields(schedules: ScheduleItem[], query: ScheduleQuery, now: Da
     scheduleHeadway: estimate?.headwayMinutes ?? null,
     scheduleClock: estimate ? scheduleClockLabel(estimate, now) : null,
   }
+}
+
+function mapJsonError(c: Context<Env>, error: unknown, fallback: string) {
+  if (error instanceof ApiInputError) {
+    return c.json(apiInputErrorBody(error), error.status, { 'Cache-Control': 'no-store' })
+  }
+  const isQueryError = error instanceof QueryValidationError
+  return c.json({ error: isQueryError ? error.message : fallback }, isQueryError ? 400 : 502, {
+    'Cache-Control': 'no-store',
+  })
 }
 
 export default map

@@ -53,6 +53,16 @@ describe('parseBusQuery', () => {
       direction: '2',
     }, undefined, cities)).toThrow(QueryValidationError)
   })
+
+  it('rejects oversized stable identifiers', () => {
+    expect(() => parseBusQuery({
+      city: 'Taipei',
+      route: '307',
+      stopUid: 'x'.repeat(101),
+      routeUid: 'TPE19108',
+      direction: '0',
+    }, undefined, cities)).toThrow('StopUID 格式錯誤')
+  })
 })
 
 describe('canonical URLs', () => {

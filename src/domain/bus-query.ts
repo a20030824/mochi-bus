@@ -46,6 +46,9 @@ export function parseBusQuery(
   if (routeName.length > 40) throw new QueryValidationError('公車路線過長')
   if (!stopName && !stopUid) throw new QueryValidationError('缺少站牌名稱或 StopUID')
   if (stopName && stopName.length > 80) throw new QueryValidationError('站牌名稱過長')
+  if (stopUid && stopUid.length > 100) throw new QueryValidationError('StopUID 格式錯誤')
+  if (routeUid && routeUid.length > 100) throw new QueryValidationError('RouteUID 格式錯誤')
+  if (subRouteUid && subRouteUid.length > 100) throw new QueryValidationError('SubRouteUID 格式錯誤')
   if (directionValue !== '0' && directionValue !== '1') {
     throw new QueryValidationError('direction 必須是 0 或 1')
   }
