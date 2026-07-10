@@ -84,7 +84,7 @@
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | Open |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Open |
 | SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/rate-limit.ts`、`src/lib/tdx.ts`、`src/routes/map.ts:450-532` | Phase 1 | Verified：input boundaries、per-location edge rate limit、single-flight 與 credential-scoped circuit breaker 已部署 `8fa1fd3d-…` |
-| SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts:223-390`、`web/boards/store.ts:137-153` | Phase 1 | In Progress：credential fingerprint、invalid cache isolation、hard-cap LRU 已部署 `1f8ec17c-…`；browser storage policy 待辦 |
+| SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts`、`web/boards/store.ts:135-305`、`src/ui.ts:331-407` | Phase 1 | Verified：server fingerprint/LRU 與 session-first browser lifecycle 已部署 `b71d9105-…` |
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
 | TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | Open |
 | COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `web/map/main.ts:1494-1506,1588-1592` | Phase 2 | Open |
@@ -160,6 +160,8 @@
 
 > 2026-07-10 edge rate limit／circuit breaker 結果：commit `508ee92` 已 100% 部署為 `8fa1fd3d-3621-4c9e-a7cb-0bcfb351b93a`，前一版 `1f8ec17c-3ce4-496d-ba19-bfe6e4b1839b` 可直接回滾。Wrangler 新增 standard（120/60s）、expensive（30/60s）、TDX verify（5/60s）三個 Rate Limiting bindings；頁面、cities 與 locate 不計量，其餘 API 預設受保護。公開免登入服務沒有穩定 user ID，因此 counter key 使用 Cloudflare 寫入的來源 IP；IP 不進 log／analytics／response，binding 失敗時結構化記錄且 fail-open。TDX token/data circuit 分開按 credential fingerprint 管理：60 秒內三次 timeout／5xx 開路 30 秒，429 立即開路並遵守 bounded `Retry-After`，quota 開路 5 分鐘，冷卻後只放一個 half-open probe，狀態表 hard cap 128。19 個測試檔、136/136 tests、typegen、TypeScript、build、dry-run 全數通過；production smoke 的首頁、cities、routes、nearby、vehicle path 均為 200，單一 keep-alive verify 測試由 400 收斂為 429，並確認 `Retry-After: 60`、`Cache-Control: no-store`、HSTS/CSP。注意 Workers Rate Limiting binding 官方語意是每個 Cloudflare location 的 permissive／eventually-consistent 防濫用機制，不是全球精準配額；若未來需要跨 PoP 強一致計數，應另以 Durable Object 實作。SEC-002 在此威脅模型下標記 Verified。
 
+> 2026-07-10 BYOK browser lifecycle 結果：commit `b580dd4` 已 100% 部署為 `b71d9105-4ff8-45ea-92e0-3759f4ccabb9`，前一版 `8fa1fd3d-3621-4c9e-a7cb-0bcfb351b93a` 可直接回滾。新憑證預設只寫 `sessionStorage`，該 API 被拒絕時再退回頁面記憶體；只有 setup 頁明確勾選「記住於此裝置」才寫 `localStorage`。舊 `mochi.bus.tdxAuth.v1` 首次讀取會搬到 session、刪除長期副本並顯示一次 migration 提示；模式切換會先確認舊副本已移除，不能清除時不會假裝成功。Stored value 重新驗證型別、空白與 120/240 長度界線，清除功能同時移除 legacy/session/device/notice；UI 補上 input labels、保存期限說明，既有 Client ID 可在不把 secret 回填到畫面的情況下切換模式。20 個測試檔、146/146 tests、typegen、TypeScript、build、dry-run 全數通過；production setup HTML、stable boards entry 與 hashed store chunk 一致，首頁/cities/assets 為 200，HSTS/CSP 等安全標頭正常。SEC-003 標記 Verified。
+
 #### P1-1：API 輸入與資源保護
 
 **修改範圍**
@@ -194,7 +196,7 @@
 
 #### P1-2：BYOK 安全模型與 token cache 修正
 
-> Server-side cache 子項已於 `bad5f7b`／`1f8ec17c-…` 完成並線上驗證；localStorage opt-in／session migration 尚未開始。
+> Server-side cache 與 browser lifecycle 已分別於 `bad5f7b`、`b580dd4` 完成並線上驗證；SEC-003 已 Verified。
 
 **修改範圍**
 
