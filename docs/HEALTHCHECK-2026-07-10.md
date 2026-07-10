@@ -1,7 +1,7 @@
 # Mochi Bus 健檢紀錄與整改計畫 — 2026-07-10
 
 > 本文件是 2026-07-10 深度健檢的可追蹤紀錄，也是後續修改的執行藍圖。
-> 狀態：**整改進行中；Phase 0 已部署驗證，Phase 1 tooling/CI 已在本地完成並待首次 GitHub run**。
+> 狀態：**整改進行中；Phase 0 已部署驗證，Phase 1 tooling 已提交，API input protection 已部署**。
 
 ## 1. 紀錄資訊
 
@@ -83,7 +83,7 @@
 | DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/sync-chiayi-snapshot.mjs:117-220,293,337-355` | Phase 3 | Open |
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | Open |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Open |
-| SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/routes/map.ts:450-532`、`src/routes/bus.ts:122-196` | Phase 1 | Open |
+| SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/routes/map.ts:450-532`、`src/routes/bus.ts:122-196` | Phase 1 | In Progress：body/schema/query boundaries 已部署 `af3bda71-…`；rate limit／single-flight 待辦 |
 | SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts:223-226,249-314`、`web/boards/store.ts:137-153` | Phase 1 | Open |
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
 | TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | Open |
@@ -153,6 +153,8 @@
 ### Phase 1 — 安全、CI 與執行環境護欄（第 1 週）
 
 > 2026-07-10 tooling/CI 進度：新增 push/PR CI 與 Dependabot；checkout/setup-node 固定完整 commit SHA 並停用 credential persistence；snapshot secrets 已收斂到 publish step；Node engine 更新為 ≥22、CI 使用 24 LTS；Worker 與 snapshot local env 範本分離；`wrangler types --check` 已納入 `npm run check` 並在本地通過。CICD-001 要等 workflow push 後首次成功 run，並確認 Cloudflare token least privilege／GitHub Environment 保護後才能 Verified。
+
+> 2026-07-10 API input protection 結果：commit `9e78150` 已部署為 `af3bda71-d518-487a-a7cb-288e3580e4cd`。`/journey-eta` 限制 16 KiB，依序區分 payload too large（413）、unsupported media type（415）、malformed JSON（400）與 schema violation（422）；所有 legs 必須有效且 client key 不可重複。Nearby 座標／半徑、direction、place/route/stop identifiers 與 BYOK credential pair 也加入長度、範圍及成對驗證。17 個測試檔、119/119 tests、typegen、TypeScript、build、dry-run、正常 nearby、22 城市 routes 與惡意輸入線上 smoke 全數通過。SEC-002 保持 In Progress，因分散式 rate limit、timeout/circuit breaker 與 single-flight 尚未完成。
 
 #### P1-1：API 輸入與資源保護
 
