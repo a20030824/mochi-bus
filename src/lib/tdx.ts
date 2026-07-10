@@ -221,14 +221,29 @@ function classifyTDXWarning(status: number, body: string): TDXWarning | undefine
 }
 
 type TokenCache = { value: string; expiresAt: number }
-// 以 client_id 為 key:共用憑證與各使用者憑證的 token 各自快取、互不覆蓋。
+type CredentialSource = 'shared' | 'user'
+
+// key 是 source + client_id + client_secret 的 SHA-256 指紋；Map 裡不保留原始 secret，
+// 同一 client_id 換 secret、或共用/自備來源相同時也不會誤用彼此的 token。
 const tokenCache = new Map<string, TokenCache>()
 const pendingTokens = new Map<string, Promise<string>>()
+const pendingDataRequests = new Map<string, Promise<unknown>>()
+
+// 測試用：模擬 isolate 重建，避免模組層快取讓案例彼此污染。
+export function resetTDXTestState(): void {
+  sharedRateLimitedSince = null
+  tokenCache.clear()
+  pendingTokens.clear()
+  pendingDataRequests.clear()
+}
 
 const ETA_CACHE_SECONDS = 12
 const STATIC_CACHE_SECONDS = 60 * 60
 const STALE_AFTER_MS = 3 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 6000
+const MAX_TOKEN_CACHE_ENTRIES = 128
+const MAX_PENDING_TOKEN_REQUESTS = 64
+const MAX_PENDING_DATA_REQUESTS = 128
 // 使用者憑證換到的 token 最多在伺服器記憶體留這麼久(用完即丟原則的折衷:
 // 每個請求都重打 token 端點會撞它自己的頻率限制);共用憑證照 TDX 給的效期用滿。
 const USER_TOKEN_MAX_SECONDS = 600
@@ -246,35 +261,95 @@ export function tdxRouteScope(city: string, routeUid?: string): string {
 export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShared: boolean }> {
   const userId = env.TDX_USER_CLIENT_ID
   const userSecret = env.TDX_USER_CLIENT_SECRET
-  if (userId && userSecret && !memoryCacheGet<boolean>(`tdx/token-invalid/${userId}`)) {
-    try {
-      return { token: await tokenFor(userId, userSecret, USER_TOKEN_MAX_SECONDS, false), isShared: false }
-    } catch (error) {
-      // 憑證在儲存時驗證過,執行期失效屬少見情況:記錄(絕不含憑證本身)、
-      // 冷卻後退回共用憑證,讓服務不中斷。
-      memoryCacheSet(`tdx/token-invalid/${userId}`, true, INVALID_USER_KEY_SECONDS)
-      console.error('tdx_user_token_failed', error instanceof Error ? error.message : String(error))
+  if (userId && userSecret) {
+    const userKey = await credentialFingerprint('user', userId, userSecret)
+    const invalidKey = `tdx/token-invalid/${userKey}`
+    if (!memoryCacheGet<boolean>(invalidKey)) {
+      try {
+        return { token: await tokenFor(userId, userSecret, userKey, USER_TOKEN_MAX_SECONDS, false), isShared: false }
+      } catch (error) {
+        // 憑證在儲存時驗證過,執行期失效屬少見情況:記錄(絕不含憑證本身)、
+        // 冷卻後退回共用憑證,讓服務不中斷。
+        memoryCacheSet(invalidKey, true, INVALID_USER_KEY_SECONDS)
+        console.error('tdx_user_token_failed', error instanceof Error ? error.message : String(error))
+      }
     }
   }
-  return { token: await tokenFor(env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET, undefined, true), isShared: true }
+  const sharedKey = await credentialFingerprint('shared', env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET)
+  return { token: await tokenFor(env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET, sharedKey, undefined, true), isShared: true }
 }
 
-async function tokenFor(clientId: string, clientSecret: string, maxSeconds: number | undefined, isShared: boolean): Promise<string> {
-  const cached = tokenCache.get(clientId)
-  if (cached && cached.expiresAt > Date.now()) return cached.value
-  const pending = pendingTokens.get(clientId)
+async function credentialFingerprint(source: CredentialSource, clientId: string, clientSecret: string): Promise<string> {
+  const input = new TextEncoder().encode(`${source}\0${clientId}\0${clientSecret}`)
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', input))
+  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function cachedToken(key: string): string | undefined {
+  const cached = tokenCache.get(key)
+  if (!cached) return undefined
+  if (cached.expiresAt <= Date.now()) {
+    tokenCache.delete(key)
+    return undefined
+  }
+  tokenCache.delete(key)
+  tokenCache.set(key, cached)
+  return cached.value
+}
+
+function cacheToken(key: string, entry: TokenCache): void {
+  tokenCache.delete(key)
+  tokenCache.set(key, entry)
+  while (tokenCache.size > MAX_TOKEN_CACHE_ENTRIES) {
+    const oldestKey = tokenCache.keys().next().value
+    if (oldestKey === undefined) break
+    tokenCache.delete(oldestKey)
+  }
+}
+
+async function singleFlight<T>(
+  pendingRequests: Map<string, Promise<T>>,
+  key: string,
+  maxEntries: number,
+  request: () => Promise<T>,
+): Promise<T> {
+  const pending = pendingRequests.get(key)
   if (pending) return pending
 
-  const promise = fetchTDXToken(clientId, clientSecret, maxSeconds, isShared)
-  pendingTokens.set(clientId, promise)
+  const promise = request()
+  // 滿載時仍執行請求，但不再把新的 Promise 放進表內；如此能保證記憶體硬上限，
+  // 也不會為了 LRU 淘汰仍在進行中的請求、反而破壞既有合併效果。
+  if (pendingRequests.size >= maxEntries) return promise
+
+  pendingRequests.set(key, promise)
   try {
     return await promise
   } finally {
-    pendingTokens.delete(clientId)
+    if (pendingRequests.get(key) === promise) pendingRequests.delete(key)
   }
 }
 
-async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds: number | undefined, isShared: boolean): Promise<string> {
+async function tokenFor(
+  clientId: string,
+  clientSecret: string,
+  credentialKey: string,
+  maxSeconds: number | undefined,
+  isShared: boolean,
+): Promise<string> {
+  const cached = cachedToken(credentialKey)
+  if (cached) return cached
+  return singleFlight(pendingTokens, credentialKey, MAX_PENDING_TOKEN_REQUESTS, () => (
+    fetchTDXToken(clientId, clientSecret, credentialKey, maxSeconds, isShared)
+  ))
+}
+
+async function fetchTDXToken(
+  clientId: string,
+  clientSecret: string,
+  credentialKey: string,
+  maxSeconds: number | undefined,
+  isShared: boolean,
+): Promise<string> {
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
     client_id: clientId,
@@ -301,24 +376,18 @@ async function fetchTDXToken(clientId: string, clientSecret: string, maxSeconds:
   if (!data.access_token) throw new TDXServiceError('TDX token response is missing access_token')
 
   const expiresIn = Math.max(60, Math.min(data.expires_in ?? 3600, maxSeconds ?? Number.POSITIVE_INFINITY))
-  tokenCache.set(clientId, {
+  cacheToken(credentialKey, {
     value: data.access_token,
     expiresAt: Date.now() + Math.max(30, expiresIn - 60) * 1000,
   })
-  // 到期的 token 沒人主動清,量大時掃一輪,別讓 Map 無上限成長。
-  if (tokenCache.size > 100) {
-    const now = Date.now()
-    for (const [key, entry] of tokenCache) {
-      if (entry.expiresAt <= now) tokenCache.delete(key)
-    }
-  }
   return data.access_token
 }
 
 // setup 頁「儲存並測試」用:直接打 token 端點驗證這組憑證換不換得到 token。
 // 測試的憑證不論是不是共用憑證本人,都不該算進共用額度追蹤——isShared 固定 false。
 export async function verifyTDXCredentials(clientId: string, clientSecret: string): Promise<void> {
-  await fetchTDXToken(clientId, clientSecret, 60, false)
+  const credentialKey = await credentialFingerprint('user', clientId, clientSecret)
+  await fetchTDXToken(clientId, clientSecret, credentialKey, 60, false)
 }
 
 // 把瀏覽器自帶的 TDX 憑證掛上 env(進階設定)。只對 fetch 發出的 API 請求有意義:
@@ -677,28 +746,41 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
     return data
   }
 
-  const { token, isShared } = await getTDXToken(env)
-  let response: Response
-  try {
-    response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-  } catch (error) {
-    throw new TDXServiceError('TDX request failed', undefined, { cause: error })
-  }
-  if (!response.ok) throw await tdxResponseError('TDX request failed', response, isShared)
-  if (isShared) sharedRateLimitedSince = null
+  const source: CredentialSource = env.TDX_USER_CLIENT_ID && env.TDX_USER_CLIENT_SECRET ? 'user' : 'shared'
+  const clientId = source === 'user' ? env.TDX_USER_CLIENT_ID! : env.TDX_CLIENT_ID
+  const clientSecret = source === 'user' ? env.TDX_USER_CLIENT_SECRET! : env.TDX_CLIENT_SECRET
+  const credentialKey = await credentialFingerprint(source, clientId, clientSecret)
+  const pendingKey = `${memoryKey}/${credentialKey}`
 
-  const data = await response.json() as T
-  memoryCacheSet(memoryKey, data, ttlSeconds)
-  await edgeCache.put(cacheKey, new Response(JSON.stringify(data), {
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': `public, max-age=${ttlSeconds}`,
+  return singleFlight(
+    pendingDataRequests as Map<string, Promise<T>>,
+    pendingKey,
+    MAX_PENDING_DATA_REQUESTS,
+    async () => {
+      const { token, isShared } = await getTDXToken(env)
+      let response: Response
+      try {
+        response = await fetch(url, {
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        })
+      } catch (error) {
+        throw new TDXServiceError('TDX request failed', undefined, { cause: error })
+      }
+      if (!response.ok) throw await tdxResponseError('TDX request failed', response, isShared)
+      if (isShared) sharedRateLimitedSince = null
+
+      const data = await response.json() as T
+      memoryCacheSet(memoryKey, data, ttlSeconds)
+      await edgeCache.put(cacheKey, new Response(JSON.stringify(data), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': `public, max-age=${ttlSeconds}`,
+        },
+      }))
+      return data
     },
-  }))
-  return data
+  )
 }
 
 function dedupeStops(stops: RouteStop[]): RouteStop[] {

@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedBusQuery } from '../domain/bus-query'
-import { formatETALabel, formatStopStatus, getCommuteETA, mergeEquivalentStopGroups, resetTDXRateLimitTracking, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
+import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getTDXToken, mergeEquivalentStopGroups, resetTDXRateLimitTracking, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
 
 describe('TDX presentation', () => {
   it('formats immediate arrivals', () => {
@@ -35,6 +35,143 @@ describe('withUserTDX', () => {
     expect(withUserTDX(env, '  ', 'secret')).toBe(env)
     expect(withUserTDX(env, 'x'.repeat(121), 'secret')).toBe(env)
     expect(withUserTDX(env, 'id', 'x'.repeat(241))).toBe(env)
+  })
+})
+
+describe('TDX credential cache resilience', () => {
+  beforeEach(() => resetTDXTestState())
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    resetTDXTestState()
+  })
+
+  const tokenResponse = (token: string) => new Response(JSON.stringify({
+    access_token: token,
+    expires_in: 3600,
+  }), { headers: { 'Content-Type': 'application/json' } })
+
+  it('isolates tokens when the same client ID is used with a different secret', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams
+      return tokenResponse(`token-${body.get('client_secret')}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = await getTDXToken({ TDX_CLIENT_ID: 'same-id', TDX_CLIENT_SECRET: 'secret-a' })
+    const second = await getTDXToken({ TDX_CLIENT_ID: 'same-id', TDX_CLIENT_SECRET: 'secret-b' })
+
+    expect(first.token).toBe('token-secret-a')
+    expect(second.token).toBe('token-secret-b')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('single-flights concurrent token requests for the exact same credential', async () => {
+    const fetchMock = vi.fn(async () => tokenResponse('one-token'))
+    vi.stubGlobal('fetch', fetchMock)
+    const env: TDXEnv = { TDX_CLIENT_ID: 'concurrent-id', TDX_CLIENT_SECRET: 'concurrent-secret' }
+
+    const [first, second] = await Promise.all([getTDXToken(env), getTDXToken(env)])
+
+    expect(first.token).toBe('one-token')
+    expect(second.token).toBe('one-token')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the token cache at a hard LRU cap', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams
+      return tokenResponse(`token-${body.get('client_id')}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (let index = 0; index <= 128; index += 1) {
+      await getTDXToken({ TDX_CLIENT_ID: `lru-id-${index}`, TDX_CLIENT_SECRET: `lru-secret-${index}` })
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(129)
+
+    await getTDXToken({ TDX_CLIENT_ID: 'lru-id-128', TDX_CLIENT_SECRET: 'lru-secret-128' })
+    expect(fetchMock).toHaveBeenCalledTimes(129)
+
+    await getTDXToken({ TDX_CLIENT_ID: 'lru-id-0', TDX_CLIENT_SECRET: 'lru-secret-0' })
+    expect(fetchMock).toHaveBeenCalledTimes(130)
+  })
+
+  it('single-flights concurrent data misses for the same credential', async () => {
+    const cacheMatch = vi.fn(async () => undefined)
+    const cachePut = vi.fn(async () => undefined)
+    vi.stubGlobal('caches', { default: { match: cacheMatch, put: cachePut } })
+
+    let dataRequests = 0
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes('/openid-connect/token')) return tokenResponse('data-token')
+      dataRequests += 1
+      return new Response(JSON.stringify([{ id: 'result' }]), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const env: TDXEnv = { TDX_CLIENT_ID: 'data-id', TDX_CLIENT_SECRET: 'data-secret' }
+    const url = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=single-flight')
+
+    const [first, second] = await Promise.all([
+      fetchTDXJson<Array<{ id: string }>>(env, url, 30),
+      fetchTDXJson<Array<{ id: string }>>(env, url, 30),
+    ])
+
+    expect(first).toEqual([{ id: 'result' }])
+    expect(second).toEqual(first)
+    expect(dataRequests).toBe(1)
+    expect(cachePut).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not share an in-flight data failure across different secrets', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    })
+
+    let dataRequests = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes('/openid-connect/token')) {
+        const body = init?.body as URLSearchParams
+        return tokenResponse(`token-${body.get('client_secret')}`)
+      }
+
+      dataRequests += 1
+      const authorization = new Headers(init?.headers).get('Authorization')
+      if (authorization === 'Bearer token-secret-a') return new Response('rate limited', { status: 429 })
+      return new Response(JSON.stringify([{ id: 'secret-b-result' }]), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    const url = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=credential-isolation')
+    const results = await Promise.allSettled([
+      fetchTDXJson({ TDX_CLIENT_ID: 'same-id', TDX_CLIENT_SECRET: 'secret-a' }, url, 30),
+      fetchTDXJson({ TDX_CLIENT_ID: 'same-id', TDX_CLIENT_SECRET: 'secret-b' }, url, 30),
+    ])
+
+    expect(results[0].status).toBe('rejected')
+    expect(results[1]).toEqual({ status: 'fulfilled', value: [{ id: 'secret-b-result' }] })
+    expect(dataRequests).toBe(2)
+  })
+
+  it('applies the six-second timeout signal to token requests and wraps aborts', async () => {
+    const timeoutSignal = new AbortController().signal
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeoutSignal)
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('timed out', 'TimeoutError')
+    }))
+
+    await expect(verifyTDXCredentials('timeout-id', 'timeout-secret')).rejects.toBeInstanceOf(TDXServiceError)
+    expect(timeoutSpy).toHaveBeenCalledWith(6000)
   })
 })
 

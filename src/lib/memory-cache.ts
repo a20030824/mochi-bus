@@ -8,6 +8,10 @@ type Entry = { value: unknown; expiresAt: number }
 const store = new Map<string, Entry>()
 const MAX_ENTRIES = 500
 
+export function resetMemoryCacheForTests(): void {
+  store.clear()
+}
+
 export function memoryCacheGet<T>(key: string): T | undefined {
   const entry = store.get(key)
   if (!entry) return undefined
@@ -15,21 +19,25 @@ export function memoryCacheGet<T>(key: string): T | undefined {
     store.delete(key)
     return undefined
   }
+  // Map 保留插入順序；命中時移到尾端，讓容量淘汰真正遵循 LRU。
+  store.delete(key)
+  store.set(key, entry)
   return entry.value as T
 }
 
 export function memoryCacheSet(key: string, value: unknown, ttlSeconds: number): void {
-  if (store.size >= MAX_ENTRIES && !store.has(key)) {
+  if (!store.has(key) && store.size >= MAX_ENTRIES) {
     const now = Date.now()
     for (const [staleKey, entry] of store) {
       if (entry.expiresAt <= now) store.delete(staleKey)
     }
-    // 清完過期還是滿:丟最舊的一批(Map 保插入順序),避免無上限成長。
-    if (store.size >= MAX_ENTRIES) {
-      for (const oldestKey of [...store.keys()].slice(0, Math.ceil(MAX_ENTRIES / 5))) {
-        store.delete(oldestKey)
-      }
-    }
   }
+
+  store.delete(key)
   store.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 })
+  while (store.size > MAX_ENTRIES) {
+    const oldestKey = store.keys().next().value
+    if (oldestKey === undefined) break
+    store.delete(oldestKey)
+  }
 }
