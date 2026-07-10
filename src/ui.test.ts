@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderMapPage } from './map-page'
 import { siteSearchDescription, siteSocialDescription, siteTitle } from './seo'
-import { renderETAPage } from './ui'
+import { renderETAPage, renderSetupPage } from './ui'
 
 const query = {
   city: 'Taipei',
@@ -38,5 +38,16 @@ describe('SEO metadata', () => {
     const html = renderMapPage({ heading: '台北市公車地圖' })
 
     expect(html).toContain('<h1 class="map-page-title">台北市公車地圖</h1>')
+  })
+
+  it('makes persistent BYOK storage an explicit setup-page opt-in', () => {
+    const html = renderSetupPage([['Taipei', '臺北']])
+
+    expect(html).toContain('<label for="tdx-client-id">Client ID</label>')
+    expect(html).toContain('<label for="tdx-client-secret">Client Secret</label>')
+    expect(html).toContain('id="tdx-remember" type="checkbox"')
+    expect(html).toContain('否則關閉本分頁後即移除')
+    expect(html).toContain("tdxRemember.checked?'device':'session'")
+    expect(html).toContain('舊版長期保存的憑證已改為只保留在此分頁')
   })
 })
