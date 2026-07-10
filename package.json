@@ -7,14 +7,18 @@
     "url": "https://github.com/a20030824/mochi-bus.git"
   },
   "homepage": "https://bus.moc96336.com/",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "build:map": "vite build",
     "dev": "npm run build:map && wrangler dev",
     "deploy": "npm run build:map && wrangler deploy --minify",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "npm run test && npm run typecheck && npm run build:map && wrangler deploy --dry-run",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "check": "npm run cf-typegen:check && npm run test && npm run typecheck && npm run build:map && wrangler deploy --dry-run",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example",
+    "cf-typegen:check": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example --check",
     "snapshot:chiayi": "node scripts/sync-chiayi-snapshot.mjs Chiayi",
     "snapshot:city": "node scripts/sync-chiayi-snapshot.mjs"
   },

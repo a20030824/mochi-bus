@@ -7,9 +7,12 @@ const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
 const BUCKET = 'mochi-transit-shapes'
 const outputRoot = join('.transit-snapshot', CITY)
-const vars = await readVars('.dev.vars')
-if (!vars.TDX_CLIENT_ID || !vars.TDX_CLIENT_SECRET) {
-  throw new Error('Missing TDX_CLIENT_ID or TDX_CLIENT_SECRET in .dev.vars')
+const workerVars = await readVars('.dev.vars')
+const snapshotVars = await readVars('.snapshot.env')
+const tdxClientId = process.env.TDX_CLIENT_ID ?? workerVars.TDX_CLIENT_ID
+const tdxClientSecret = process.env.TDX_CLIENT_SECRET ?? workerVars.TDX_CLIENT_SECRET
+if (!tdxClientId || !tdxClientSecret) {
+  throw new Error('Missing TDX_CLIENT_ID or TDX_CLIENT_SECRET in the environment or .dev.vars')
 }
 // R2 物件走 S3 相容 API 直接 PUT/DELETE:wrangler CLI 每個物件要 spawn 一個 process,
 // 大城市數萬個物件會跑不完(GitHub Actions 單 job 上限 6 小時)。
@@ -24,8 +27,8 @@ const tokenResponse = await fetch('https://tdx.transportdata.tw/auth/realms/TDXC
   headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   body: new URLSearchParams({
     grant_type: 'client_credentials',
-    client_id: vars.TDX_CLIENT_ID,
-    client_secret: vars.TDX_CLIENT_SECRET,
+    client_id: tdxClientId,
+    client_secret: tdxClientSecret,
   }),
 })
 if (!tokenResponse.ok) throw new Error(`TDX token failed (${tokenResponse.status})`)
@@ -448,7 +451,13 @@ function decodePolyline(encoded) {
   return coordinates
 }
 async function readVars(file) {
-  const content = await readFile(file, 'utf8')
+  let content
+  try {
+    content = await readFile(file, 'utf8')
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') return {}
+    throw error
+  }
   return Object.fromEntries(content.split(/\r?\n/).filter((line) => line && !line.startsWith('#')).map((line) => {
     const index = line.indexOf('='); return [line.slice(0, index).trim(), line.slice(index + 1).trim().replace(/^['"]|['"]$/g, '')]
   }))
@@ -470,9 +479,17 @@ async function runD1(file) {
   }
 }
 async function createR2Client() {
-  const accessKeyId = vars.R2_ACCESS_KEY_ID ?? process.env.R2_ACCESS_KEY_ID
-  const secretAccessKey = vars.R2_SECRET_ACCESS_KEY ?? process.env.R2_SECRET_ACCESS_KEY
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID ?? snapshotVars.R2_ACCESS_KEY_ID ?? workerVars.R2_ACCESS_KEY_ID
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY ?? snapshotVars.R2_SECRET_ACCESS_KEY ?? workerVars.R2_SECRET_ACCESS_KEY
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? snapshotVars.CLOUDFLARE_ACCOUNT_ID ?? workerVars.CLOUDFLARE_ACCOUNT_ID
+  const usesLegacyWorkerVars = [
+    ['R2_ACCESS_KEY_ID', accessKeyId],
+    ['R2_SECRET_ACCESS_KEY', secretAccessKey],
+    ['CLOUDFLARE_ACCOUNT_ID', accountId],
+  ].some(([name, value]) => value && !process.env[name] && !snapshotVars[name] && workerVars[name])
+  if (usesLegacyWorkerVars) {
+    console.warn('Snapshot publisher credentials in .dev.vars are deprecated; move them to .snapshot.env.')
+  }
   if (!accessKeyId || !secretAccessKey || !accountId) return null
   const { AwsClient } = await import('aws4fetch')
   return {

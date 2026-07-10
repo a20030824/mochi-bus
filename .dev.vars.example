@@ -1,0 +1,4 @@
+# Worker runtime secrets used by `wrangler dev` and deterministic type generation.
+TDX_CLIENT_ID="replace-with-your-client-id"
+TDX_CLIENT_SECRET="replace-with-your-client-secret"
+

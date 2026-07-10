@@ -24,7 +24,7 @@ Mochi Bus 的起點，是一次搭公車時的小抱怨:有些工具有地圖，
 
 ## 本機啟動
 
-前置需求:**Node 20+** 和一組免費的 [TDX](https://tdx.transportdata.tw/) 會員憑證(註冊即發)。不需要 Cloudflare 帳號——`wrangler dev` 在本機模擬整個 Workers 環境(含 D1/R2)。
+前置需求:**Node 22+**（建議使用 `.nvmrc` 指定的 Node 24 LTS）和一組免費的 [TDX](https://tdx.transportdata.tw/) 會員憑證(註冊即發)。不需要 Cloudflare 帳號——`wrangler dev` 在本機模擬整個 Workers 環境(含 D1/R2)。
 
 建立 `.dev.vars`:
 
@@ -32,6 +32,8 @@ Mochi Bus 的起點，是一次搭公車時的小抱怨:有些工具有地圖，
 TDX_CLIENT_ID="你的 Client ID"
 TDX_CLIENT_SECRET="你的 Client Secret"
 ```
+
+`.dev.vars.example` 是可提交的 Worker runtime 範本；`.dev.vars` 只放 Worker 本機執行需要的 TDX 憑證。若要從本機發布路網快照，另將 `.snapshot.env.example` 複製成 `.snapshot.env` 並填入 R2 publisher credentials。兩個實際檔案都已被 Git 忽略。
 
 ```sh
 npm install
@@ -111,7 +113,7 @@ npx wrangler r2 bucket create mochi-transit-shapes
 接著驗證、設定憑證、部署:
 
 ```sh
-npm run check        # vitest + tsc + vite build + wrangler dry-run
+npm run check        # typegen check + vitest + tsc + vite build + wrangler dry-run
 npx wrangler secret put TDX_CLIENT_ID
 npx wrangler secret put TDX_CLIENT_SECRET
 npx wrangler d1 migrations apply mochi-transit --remote
@@ -121,7 +123,7 @@ npm run snapshot:city -- Chiayi   # 匯入縣市路網快照(可換;小縣市幾
 
 注意 Cache API 在 `*.workers.dev` 網址上是 no-op,要綁自訂網域快取層才會生效。
 
-CI 同步需要的 repo secrets:`TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
+CI 同步需要的 repo secrets:`TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。這些 secrets 只注入 snapshot publish step，不會暴露給 checkout、Node setup 或 `npm ci`；正式環境建議再用 GitHub Environment required reviewers 保護。
 
 ## 資料與圖資來源
 
