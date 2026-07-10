@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedBusQuery } from '../domain/bus-query'
-import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getTDXToken, mergeEquivalentStopGroups, resetTDXRateLimitTracking, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
+import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
 
 describe('TDX presentation', () => {
   it('formats immediate arrivals', () => {
@@ -44,6 +44,7 @@ describe('TDX credential cache resilience', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
     resetTDXTestState()
   })
 
@@ -173,6 +174,74 @@ describe('TDX credential cache resilience', () => {
     await expect(verifyTDXCredentials('timeout-id', 'timeout-secret')).rejects.toBeInstanceOf(TDXServiceError)
     expect(timeoutSpy).toHaveBeenCalledWith(6000)
   })
+
+  it('opens the circuit after three transient failures', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fetchMock = vi.fn(async () => { throw new TypeError('network unavailable') })
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(verifyTDXCredentials('circuit-id', 'circuit-secret')).rejects.toBeInstanceOf(TDXServiceError)
+    }
+    await expect(verifyTDXCredentials('circuit-id', 'circuit-secret')).rejects.toMatchObject({
+      warning: 'tdx-unavailable',
+      status: 503,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps data failures separate from a healthy token endpoint', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    })
+    let dataRequests = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes('/openid-connect/token')) return tokenResponse('healthy-token')
+      dataRequests += 1
+      throw new TypeError('TDX data unavailable')
+    }))
+    const env: TDXEnv = { TDX_CLIENT_ID: 'data-circuit-id', TDX_CLIENT_SECRET: 'data-circuit-secret' }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const url = new URL(`https://tdx.transportdata.tw/api/basic/v2/test?failure=${attempt}`)
+      await expect(fetchTDXJson(env, url, 30)).rejects.toBeInstanceOf(TDXServiceError)
+    }
+    await expect(fetchTDXJson(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?failure=blocked'),
+      30,
+    )).rejects.toMatchObject({ warning: 'tdx-unavailable', status: 503 })
+    expect(dataRequests).toBe(3)
+  })
+
+  it('opens immediately on 429 and honors Retry-After before a half-open probe', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-10T08:00:00Z'))
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('rate limited', {
+        status: 429,
+        headers: { 'Retry-After': '10' },
+      }))
+      .mockResolvedValueOnce(tokenResponse('recovered-token'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(verifyTDXCredentials('retry-id', 'retry-secret')).rejects.toBeInstanceOf(TDXServiceError)
+    await expect(verifyTDXCredentials('retry-id', 'retry-secret')).rejects.toMatchObject({
+      warning: 'tdx-rate-limit',
+      status: 429,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(10_000)
+    await expect(verifyTDXCredentials('retry-id', 'retry-secret')).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('TDX upstream failures', () => {
@@ -196,10 +265,12 @@ describe('TDX upstream failures', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 429 })))
   }
 
+  beforeEach(() => resetTDXTestState())
+
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
-    resetTDXRateLimitTracking()
+    resetTDXTestState()
   })
 
   it('marks ETA results when the shared TDX pool is rate limited', async () => {

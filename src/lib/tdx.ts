@@ -222,12 +222,20 @@ function classifyTDXWarning(status: number, body: string): TDXWarning | undefine
 
 type TokenCache = { value: string; expiresAt: number }
 type CredentialSource = 'shared' | 'user'
+type CircuitState = {
+  failures: number
+  lastFailureAt: number
+  openedUntil: number
+  halfOpen: boolean
+  warning: TDXWarning
+}
 
 // key 是 source + client_id + client_secret 的 SHA-256 指紋；Map 裡不保留原始 secret，
 // 同一 client_id 換 secret、或共用/自備來源相同時也不會誤用彼此的 token。
 const tokenCache = new Map<string, TokenCache>()
 const pendingTokens = new Map<string, Promise<string>>()
 const pendingDataRequests = new Map<string, Promise<unknown>>()
+const tdxCircuits = new Map<string, CircuitState>()
 
 // 測試用：模擬 isolate 重建，避免模組層快取讓案例彼此污染。
 export function resetTDXTestState(): void {
@@ -235,6 +243,7 @@ export function resetTDXTestState(): void {
   tokenCache.clear()
   pendingTokens.clear()
   pendingDataRequests.clear()
+  tdxCircuits.clear()
 }
 
 const ETA_CACHE_SECONDS = 12
@@ -244,6 +253,12 @@ const REQUEST_TIMEOUT_MS = 6000
 const MAX_TOKEN_CACHE_ENTRIES = 128
 const MAX_PENDING_TOKEN_REQUESTS = 64
 const MAX_PENDING_DATA_REQUESTS = 128
+const MAX_CIRCUIT_ENTRIES = 128
+const CIRCUIT_FAILURE_THRESHOLD = 3
+const CIRCUIT_FAILURE_WINDOW_MS = 60 * 1000
+const TRANSIENT_CIRCUIT_OPEN_MS = 30 * 1000
+const QUOTA_CIRCUIT_OPEN_MS = 5 * 60 * 1000
+const MAX_RETRY_AFTER_MS = 5 * 60 * 1000
 // 使用者憑證換到的 token 最多在伺服器記憶體留這麼久(用完即丟原則的折衷:
 // 每個請求都重打 token 端點會撞它自己的頻率限制);共用憑證照 TDX 給的效期用滿。
 const USER_TOKEN_MAX_SECONDS = 600
@@ -258,7 +273,7 @@ export function tdxRouteScope(city: string, routeUid?: string): string {
 
 // isShared 標記這次拿到的 token 來自共用憑證還是使用者自備憑證,
 // 讓呼叫端(fetchTDXJson)知道之後打 API 撞 429 時該不該算進共用額度追蹤。
-export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShared: boolean }> {
+export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShared: boolean; credentialKey: string }> {
   const userId = env.TDX_USER_CLIENT_ID
   const userSecret = env.TDX_USER_CLIENT_SECRET
   if (userId && userSecret) {
@@ -266,7 +281,11 @@ export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShare
     const invalidKey = `tdx/token-invalid/${userKey}`
     if (!memoryCacheGet<boolean>(invalidKey)) {
       try {
-        return { token: await tokenFor(userId, userSecret, userKey, USER_TOKEN_MAX_SECONDS, false), isShared: false }
+        return {
+          token: await tokenFor(userId, userSecret, userKey, USER_TOKEN_MAX_SECONDS, false),
+          isShared: false,
+          credentialKey: userKey,
+        }
       } catch (error) {
         // 憑證在儲存時驗證過,執行期失效屬少見情況:記錄(絕不含憑證本身)、
         // 冷卻後退回共用憑證,讓服務不中斷。
@@ -276,7 +295,11 @@ export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShare
     }
   }
   const sharedKey = await credentialFingerprint('shared', env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET)
-  return { token: await tokenFor(env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET, sharedKey, undefined, true), isShared: true }
+  return {
+    token: await tokenFor(env.TDX_CLIENT_ID, env.TDX_CLIENT_SECRET, sharedKey, undefined, true),
+    isShared: true,
+    credentialKey: sharedKey,
+  }
 }
 
 async function credentialFingerprint(source: CredentialSource, clientId: string, clientSecret: string): Promise<string> {
@@ -307,6 +330,105 @@ function cacheToken(key: string, entry: TokenCache): void {
   }
 }
 
+function retryAfterMilliseconds(value: string | null, now: number): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value.trim())
+  const milliseconds = Number.isFinite(seconds)
+    ? seconds * 1000
+    : Date.parse(value) - now
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return undefined
+  return Math.min(Math.max(milliseconds, 1000), MAX_RETRY_AFTER_MS)
+}
+
+function cacheCircuit(key: string, state: CircuitState): void {
+  tdxCircuits.delete(key)
+  tdxCircuits.set(key, state)
+  while (tdxCircuits.size > MAX_CIRCUIT_ENTRIES) {
+    const oldestKey = tdxCircuits.keys().next().value
+    if (oldestKey === undefined) break
+    tdxCircuits.delete(oldestKey)
+  }
+}
+
+function assertTDXCircuitClosed(key: string): void {
+  const state = tdxCircuits.get(key)
+  if (!state) return
+
+  const now = Date.now()
+  if (state.openedUntil > now) {
+    const error = new TDXServiceError(
+      'TDX circuit breaker is open',
+      state.warning === 'tdx-unavailable' ? 503 : 429,
+    )
+    error.warning = state.warning
+    throw error
+  }
+
+  if (state.halfOpen) {
+    const error = new TDXServiceError(
+      'TDX circuit breaker probe is in progress',
+      state.warning === 'tdx-unavailable' ? 503 : 429,
+    )
+    error.warning = state.warning
+    throw error
+  }
+
+  if (state.openedUntil > 0) {
+    // 冷卻結束後放行一次 half-open probe；若 probe 再失敗會立刻重新熔斷。
+    cacheCircuit(key, {
+      ...state,
+      failures: CIRCUIT_FAILURE_THRESHOLD - 1,
+      openedUntil: 0,
+      halfOpen: true,
+    })
+    return
+  }
+  if (now - state.lastFailureAt >= CIRCUIT_FAILURE_WINDOW_MS) tdxCircuits.delete(key)
+}
+
+function recordTDXCircuitFailure(key: string, error: TDXServiceError, retryAfter: string | null = null): void {
+  const status = error.status
+  const transient = status === undefined || status === 408 || (status >= 500 && status <= 599)
+  if (!error.rateLimited && !transient) {
+    recordTDXCircuitSuccess(key)
+    return
+  }
+
+  const now = Date.now()
+  const previous = tdxCircuits.get(key)
+  const failures = previous?.halfOpen
+    ? CIRCUIT_FAILURE_THRESHOLD
+    : previous && now - previous.lastFailureAt < CIRCUIT_FAILURE_WINDOW_MS
+      ? previous.failures + 1
+      : 1
+  const warning = error.warning ?? (error.rateLimited ? 'tdx-rate-limit' : 'tdx-unavailable')
+  let openedUntil = 0
+  if (error.rateLimited) {
+    const openFor = warning === 'tdx-quota'
+      ? QUOTA_CIRCUIT_OPEN_MS
+      : retryAfterMilliseconds(retryAfter, now) ?? TRANSIENT_CIRCUIT_OPEN_MS
+    openedUntil = now + openFor
+  } else if (failures >= CIRCUIT_FAILURE_THRESHOLD) {
+    openedUntil = now + TRANSIENT_CIRCUIT_OPEN_MS
+  }
+
+  cacheCircuit(key, { failures, lastFailureAt: now, openedUntil, halfOpen: false, warning })
+  if (openedUntil > now && (!previous || previous.openedUntil <= now)) {
+    console.error(JSON.stringify({
+      message: 'tdx_circuit_opened',
+      warning,
+      openMs: openedUntil - now,
+    }))
+  }
+}
+
+function recordTDXCircuitSuccess(key: string): void {
+  tdxCircuits.delete(key)
+}
+
+const tokenCircuitKey = (credentialKey: string) => `token/${credentialKey}`
+const dataCircuitKey = (credentialKey: string) => `data/${credentialKey}`
+
 async function singleFlight<T>(
   pendingRequests: Map<string, Promise<T>>,
   key: string,
@@ -336,6 +458,7 @@ async function tokenFor(
   maxSeconds: number | undefined,
   isShared: boolean,
 ): Promise<string> {
+  assertTDXCircuitClosed(tokenCircuitKey(credentialKey))
   const cached = cachedToken(credentialKey)
   if (cached) return cached
   return singleFlight(pendingTokens, credentialKey, MAX_PENDING_TOKEN_REQUESTS, () => (
@@ -350,6 +473,7 @@ async function fetchTDXToken(
   maxSeconds: number | undefined,
   isShared: boolean,
 ): Promise<string> {
+  const circuitKey = tokenCircuitKey(credentialKey)
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
     client_id: clientId,
@@ -367,14 +491,32 @@ async function fetchTDXToken(
       },
     )
   } catch (error) {
-    throw new TDXServiceError('TDX token request failed', undefined, { cause: error })
+    const serviceError = new TDXServiceError('TDX token request failed', undefined, { cause: error })
+    recordTDXCircuitFailure(circuitKey, serviceError)
+    throw serviceError
   }
 
-  if (!response.ok) throw await tdxResponseError('TDX token request failed', response, isShared)
+  if (!response.ok) {
+    const error = await tdxResponseError('TDX token request failed', response, isShared)
+    recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
+    throw error
+  }
   if (isShared) sharedRateLimitedSince = null
-  const data = await response.json() as { access_token?: string; expires_in?: number }
-  if (!data.access_token) throw new TDXServiceError('TDX token response is missing access_token')
+  let data: { access_token?: string; expires_in?: number }
+  try {
+    data = await response.json() as { access_token?: string; expires_in?: number }
+  } catch (error) {
+    const serviceError = new TDXServiceError('TDX token response is invalid JSON', 502, { cause: error })
+    recordTDXCircuitFailure(circuitKey, serviceError)
+    throw serviceError
+  }
+  if (!data.access_token) {
+    const error = new TDXServiceError('TDX token response is missing access_token', 502)
+    recordTDXCircuitFailure(circuitKey, error)
+    throw error
+  }
 
+  recordTDXCircuitSuccess(circuitKey)
   const expiresIn = Math.max(60, Math.min(data.expires_in ?? 3600, maxSeconds ?? Number.POSITIVE_INFINITY))
   cacheToken(credentialKey, {
     value: data.access_token,
@@ -387,6 +529,7 @@ async function fetchTDXToken(
 // 測試的憑證不論是不是共用憑證本人,都不該算進共用額度追蹤——isShared 固定 false。
 export async function verifyTDXCredentials(clientId: string, clientSecret: string): Promise<void> {
   const credentialKey = await credentialFingerprint('user', clientId, clientSecret)
+  assertTDXCircuitClosed(tokenCircuitKey(credentialKey))
   await fetchTDXToken(clientId, clientSecret, credentialKey, 60, false)
 }
 
@@ -757,7 +900,9 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
     pendingKey,
     MAX_PENDING_DATA_REQUESTS,
     async () => {
-      const { token, isShared } = await getTDXToken(env)
+      const { token, isShared, credentialKey: tokenCredentialKey } = await getTDXToken(env)
+      const circuitKey = dataCircuitKey(tokenCredentialKey)
+      assertTDXCircuitClosed(circuitKey)
       let response: Response
       try {
         response = await fetch(url, {
@@ -765,12 +910,26 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         })
       } catch (error) {
-        throw new TDXServiceError('TDX request failed', undefined, { cause: error })
+        const serviceError = new TDXServiceError('TDX request failed', undefined, { cause: error })
+        recordTDXCircuitFailure(circuitKey, serviceError)
+        throw serviceError
       }
-      if (!response.ok) throw await tdxResponseError('TDX request failed', response, isShared)
+      if (!response.ok) {
+        const error = await tdxResponseError('TDX request failed', response, isShared)
+        recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
+        throw error
+      }
       if (isShared) sharedRateLimitedSince = null
 
-      const data = await response.json() as T
+      let data: T
+      try {
+        data = await response.json() as T
+      } catch (error) {
+        const serviceError = new TDXServiceError('TDX response is invalid JSON', 502, { cause: error })
+        recordTDXCircuitFailure(circuitKey, serviceError)
+        throw serviceError
+      }
+      recordTDXCircuitSuccess(circuitKey)
       memoryCacheSet(memoryKey, data, ttlSeconds)
       await edgeCache.put(cacheKey, new Response(JSON.stringify(data), {
         headers: {

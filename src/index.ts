@@ -2,8 +2,10 @@ import { Hono } from 'hono'
 import bus from './routes/bus'
 import map from './routes/map'
 import { httpsRedirectTarget, securityHeaders } from './security'
+import { apiRateLimit } from './rate-limit'
 
-const app = new Hono()
+type Env = { Bindings: CloudflareBindings }
+const app = new Hono<Env>()
 
 app.use('*', async (c, next) => {
   const requestUrl = new URL(c.req.url)
@@ -20,6 +22,8 @@ app.use('*', async (c, next) => {
     if (!c.res.headers.has(name)) c.header(name, value)
   }
 })
+
+app.use('/api/*', apiRateLimit())
 
 app.route('/', map)
 app.route('/', bus)
