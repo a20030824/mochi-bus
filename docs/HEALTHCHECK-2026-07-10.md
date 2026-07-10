@@ -83,8 +83,8 @@
 | DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/sync-chiayi-snapshot.mjs:117-220,293,337-355` | Phase 3 | Open |
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | Open |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Open |
-| SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/routes/map.ts:450-532`、`src/routes/bus.ts:122-196` | Phase 1 | In Progress：body/schema/query boundaries 已部署 `af3bda71-…`；rate limit／single-flight 待辦 |
-| SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts:223-226,249-314`、`web/boards/store.ts:137-153` | Phase 1 | Open |
+| SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/routes/map.ts:450-532`、`src/routes/bus.ts:122-196` | Phase 1 | In Progress：body/schema/query boundaries 與 TDX token/data single-flight 已部署；分散式 rate limit／circuit breaker 待辦 |
+| SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts:223-390`、`web/boards/store.ts:137-153` | Phase 1 | In Progress：credential fingerprint、invalid cache isolation、hard-cap LRU 已部署 `1f8ec17c-…`；browser storage policy 待辦 |
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
 | TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | Open |
 | COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `web/map/main.ts:1494-1506,1588-1592` | Phase 2 | Open |
@@ -154,7 +154,9 @@
 
 > 2026-07-10 tooling/CI 進度：新增 push/PR CI 與 Dependabot；checkout/setup-node 固定完整 commit SHA 並停用 credential persistence；snapshot secrets 已收斂到 publish step；Node engine 更新為 ≥22、CI 使用 24 LTS；Worker 與 snapshot local env 範本分離；`wrangler types --check` 已納入 `npm run check` 並在本地通過。CICD-001 要等 workflow push 後首次成功 run，並確認 Cloudflare token least privilege／GitHub Environment 保護後才能 Verified。
 
-> 2026-07-10 API input protection 結果：commit `9e78150` 已部署為 `af3bda71-d518-487a-a7cb-288e3580e4cd`。`/journey-eta` 限制 16 KiB，依序區分 payload too large（413）、unsupported media type（415）、malformed JSON（400）與 schema violation（422）；所有 legs 必須有效且 client key 不可重複。Nearby 座標／半徑、direction、place/route/stop identifiers 與 BYOK credential pair 也加入長度、範圍及成對驗證。17 個測試檔、119/119 tests、typegen、TypeScript、build、dry-run、正常 nearby、22 城市 routes 與惡意輸入線上 smoke 全數通過。SEC-002 保持 In Progress，因分散式 rate limit、timeout/circuit breaker 與 single-flight 尚未完成。
+> 2026-07-10 API input protection 結果：commit `9e78150` 已部署為 `af3bda71-d518-487a-a7cb-288e3580e4cd`。`/journey-eta` 限制 16 KiB，依序區分 payload too large（413）、unsupported media type（415）、malformed JSON（400）與 schema violation（422）；所有 legs 必須有效且 client key 不可重複。Nearby 座標／半徑、direction、place/route/stop identifiers 與 BYOK credential pair 也加入長度、範圍及成對驗證。17 個測試檔、119/119 tests、typegen、TypeScript、build、dry-run、正常 nearby、22 城市 routes 與惡意輸入線上 smoke 全數通過。當下 SEC-002 保持 In Progress；後續 timeout/single-flight 進度見下一筆紀錄。
+
+> 2026-07-10 TDX resilience 結果：commit `bad5f7b` 已 100% 部署為 `1f8ec17c-3ce4-496d-ba19-bfe6e4b1839b`，前一版 `af3bda71-d518-487a-a7cb-288e3580e4cd` 可直接回滾。token、pending token、invalid credential key 改用 `SHA-256(source + NUL + clientId + NUL + clientSecret)`，原始 secret 不進 Map key；token cache 採 128 筆 hard-cap LRU，pending token/data 表分別限制 64/128 筆。同憑證 token 與同 URL+credential 的 data miss 已 single-flight，不同 secret 的上游失敗不會互相污染；共用記憶體 cache 也改為 500 筆 hard-cap LRU。既有 token/data fetch 6 秒 timeout 已加入 regression test。18 個測試檔、127/127 tests、typegen、TypeScript、build、dry-run 全數通過；production deployment status 為新版 100%，首頁、cities、Chiayi routes/nearby 與 cache-busted TDX vehicle path 均回 200，HSTS/CSP 等安全標頭仍存在。SEC-002 尚待分散式 rate limit／circuit breaker；SEC-003 尚待 browser credential storage policy。
 
 #### P1-1：API 輸入與資源保護
 
@@ -190,6 +192,8 @@
 
 #### P1-2：BYOK 安全模型與 token cache 修正
 
+> Server-side cache 子項已於 `bad5f7b`／`1f8ec17c-…` 完成並線上驗證；localStorage opt-in／session migration 尚未開始。
+
 **修改範圍**
 
 - `src/lib/tdx.ts`
@@ -200,7 +204,7 @@
 
 **修改內容**
 
-- token、pending promise 與 invalid credential cache key 改成 `SHA-256(clientId + NUL + clientSecret + source)` 的 fingerprint，避免同 clientId 不同 secret 互相污染。
+- token、pending promise 與 invalid credential cache key 改成 `SHA-256(source + NUL + clientId + NUL + clientSecret)` 的 fingerprint，避免同 clientId 不同 secret 互相污染。
 - 設定 cache hard cap、TTL 與 LRU eviction；永遠不把原始 secret 寫進 log 或 error。
 - localStorage 改為明確 opt-in 的「記住於此裝置」，預設只存 sessionStorage 或記憶體。
 - 中期評估 BYOK v2：以短期、HttpOnly、Secure、SameSite cookie 封裝 server-side session；若 Cloudflare 儲存面無法安全落地，保持 transient 模式而非假裝安全保存。
@@ -599,13 +603,13 @@ interface RoutePatternRef {
 
 在正式寫功能前，可先完成以下低風險高報酬項目：
 
-- [ ] Cloudflare 開啟 Always Use HTTPS。
-- [ ] Minimum TLS 設為 1.2。
-- [ ] 以短 `max-age` 啟用 HSTS，記錄提升時間表。
-- [ ] 建立 edge/security runbook 並保存 `curl`／OpenSSL 驗證結果。
-- [ ] 將 GitHub workflow secrets 收斂到 step scope。
-- [ ] 新增 PR/push CI，鎖住現有 98 tests、typecheck、build 與 dry-run 基線。
-- [ ] 修好 `wrangler types --check`，再開始 schema 重構。
+- [x] Cloudflare 開啟 Always Use HTTPS。
+- [x] Minimum TLS 設為 1.2。
+- [x] 以短 `max-age` 啟用 HSTS，記錄提升時間表。
+- [x] 建立 edge/security runbook 並保存 `curl`／OpenSSL 驗證結果。
+- [x] 將 GitHub workflow secrets 收斂到 step scope。
+- [x] 新增 PR/push CI，鎖住 tests、typecheck、build 與 dry-run 基線。
+- [x] 修好 `wrangler types --check`，再開始 schema 重構。
 - [ ] 為 route pattern identity 先建立失敗 fixture，不先改 production 邏輯。
 - [ ] 把 snapshot validator 設計成 publish 的必要條件，而不是只發 warning。
 
