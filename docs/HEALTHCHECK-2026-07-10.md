@@ -88,7 +88,7 @@
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
 | TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | In Progress：`@cloudflare/vitest-pool-workers` 已納入 CI 覆蓋 middleware/body-limit；瀏覽器 Playwright／axe 仍 Open |
 | COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `src/domain/map/transfer-estimate.ts`、`web/map/main.ts` | Phase 2 | Verified：時間範圍、步行與候車不確定性已部署 `c298089c-…` |
-| ARCH-001 | P2 | 大量 browser JS 內嵌字串未被完整 typecheck/lint，地圖主檔過大 | `src/ui.ts:63-285,379-408`、`web/map/main.ts` | Phase 5 | Open |
+| ARCH-001 | P2 | 大量 browser JS 內嵌字串未被完整 typecheck/lint，地圖主檔過大 | `src/ui.ts:63-285,379-408`、`web/map/main.ts` | Phase 5 | In Progress：setup 頁腳本已搬到 `web/setup/main.ts` 並納入 TypeScript/build;ETA 頁 inline script 與 `web/map/main.ts` 拆分仍 Open |
 | QUERY-001 | P2 | nearby 先在 bbox 無排序 `LIMIT 100`，高密度區可能漏掉真正最近站牌 | `src/infrastructure/transit/snapshot-repository.ts`、`src/infrastructure/transit/snapshot-repository.test.ts` | Phase 2 | Verified：完整 bbox 候選經 Haversine 排序後才取最近 100；已部署 `f6c08bfb-…` |
 | CACHE-001 | P2 | Cache API write 位於回應關鍵路徑，cache failure 可能拖累或弄壞主請求 | `src/lib/edge-cache.ts`、`src/lib/tdx.ts`、`src/routes/map.ts` | Phase 1 | Verified：背景寫入與 read/write fail-open 已部署 `19229db5-…` |
 | PIPE-001 | P2 | token fetch 無 timeout/retry，Retry-After 解析有陷阱，單城失敗中止整批 | `scripts/sync-chiayi-snapshot.mjs:22-54`、`.github/workflows/sync-transit.yml:72-74` | Phase 3 | Open |
@@ -551,6 +551,8 @@ interface RoutePatternRef {
 - `src/ui.ts` 不再承載大段未型別化 browser JS。
 - CSP report-only 無預期外 violation 後再 enforcement。
 - 模組拆分不改 API contract；每一小步都可獨立部署／回滾。
+
+> 2026-07-11 setup 頁腳本外移結果:commit `90f0b81` 已部署為 `372af754-1939-416d-aeec-8e3a2bf2677d`(100%),前一版 `88a9ba3b-…` 可直接回滾。`/setup` 的路線/方向/站牌 picker、常用站牌 CRUD、BYOK 憑證 UI 從 `src/ui.ts` 裡一段未型別化的 template literal 搬到 `web/setup/main.ts`,由 Vite 建成 `/assets/setup.js`;`src/ui.ts` 現在只吐 script 標籤。過程中發現 `worker-configuration.d.ts` 為 HTMLRewriter API 宣告的全域 `Element` 會跟 lib.dom 的 `Element` 合併,汙染任何用到 `querySelector<T>()`/`.append(...)` 的檔案——改用 `as` cast 與 `.replaceChildren()`/`.appendChild()`,跟既有 `web/map/main.ts` 同一套規避方式。用 Playwright 對著 `wrangler dev` 實際跑過 picker→方向→站牌→建議的完整流程時,抓到一個真實存在(非本次引入)的競態:`hidePicker()`/`backToRoutes()` 只清空 `selectedRoute`、沒有搶新 epoch,使用者在 `loadSuggestions` 的 fetch 還沒回來前關掉 picker,fetch 回來後會通過「沒有更新」的舊檢查卻讀到已清空的 `selectedRoute`,丟出 `TypeError`;已補上 `requestId += 1` 修正,並用刻意延遲 fetch 的 Playwright 測試證實修正前會重現、修正後不會。新增 `@playwright/test` 作為手動的 `npm run test:e2e`(不進 `npm test`/`check`/CI,瀏覽器安裝成本要不要攤進每次 push 是另一個決定),含這次的競態回歸測試與一個 golden path 測試。30 個測試檔、196/196 tests、typegen、TypeScript、build、dry-run 與 `npm audit`(0 vulnerabilities)全數通過,Playwright e2e 2/2 通過。Production 首頁、`/setup`、`/assets/setup.js` 均回 200,頁面內確認新的 script 標籤,HSTS/CSP 正常。ARCH-001 標記 In Progress:setup 頁完成,ETA 頁(`renderETAPage`)的 inline script 因帶有伺服器端注入資料(`initialBoard`/`tdxWarningMessages`),需要額外的資料傳遞機制才能同樣外移,加上 `web/map/main.ts` 本身的模組拆分,都留給下一輪。
 
 #### P5-3：錯誤恢復與 accessibility
 
