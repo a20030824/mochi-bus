@@ -166,6 +166,8 @@
 
 > 2026-07-11 Nearby correctness 結果：commit `47e72b8` 已 100% 部署為 `f6c08bfb-4b45-4f24-a1bb-d62c5ba77d1e`，前一版 `19229db5-4894-42ed-b674-1a32c6cf9ed2` 可直接回滾。bbox SQL 移除無序的前置 `LIMIT 100`，保留 `(version, city_code, latitude, longitude)` 複合索引縮小候選，Worker 再以 Haversine 精確距離過濾、穩定排序並於最後取最近 100。新增 101 筆高密度 regression fixture，確認排在資料庫第 101 筆的最近站不會遺漏。Production D1 `EXPLAIN QUERY PLAN` 確認使用 `stop_places_geo_idx`；台北 2 公里樣本 bbox 有 271 候選、SQL 約 2.01 ms。22 個測試檔、152/152 tests、typegen、TypeScript、build、dry-run 全數通過；線上 nearby 回 200／100 筆／距離遞增／全在半徑內，約 0.33 秒，首頁與 HSTS/CSP 正常。QUERY-001 標記 Verified。
 
+> 2026-07-11 Transfer grid correctness 結果：commit `eef83a9` 已 100% 部署為 `ffbbe463-31ab-43f2-9c89-98368b80b63a`，前一版 `f6c08bfb-4b45-4f24-a1bb-d62c5ba77d1e` 可直接回滾。固定角度網格改為依緯度與 350 m 球面半徑動態計算鄰格跨度；約北緯 26.4° 時會掃到相隔兩個 longitude cells 的候選，最終仍以 Haversine 嚴格排除超過 350 m 的配對。新增北部兩格內／外邊界 regression tests；台灣北端每個 forward candidate 的 bucket lookup 由 9 格增至最多 15 格，整體仍為網格索引的近線性成本。22 個測試檔、154/154 tests、typegen、TypeScript、build、dry-run 全數通過；production「嘉義火車站 → 慈濟靜思堂」轉乘 API 回 200／5 個方案／約 0.56 秒，首頁與 HSTS/CSP 正常。P2-4 的 grid 子項完成，COR-004 的 ETA 呈現仍維持 Open。
+
 #### P1-1：API 輸入與資源保護
 
 **修改範圍**
@@ -404,7 +406,7 @@ interface RoutePatternRef {
 - 高密度與 grid 邊界測試都不漏最近候選。
 - UI 不會把固定 `2 min/stop`、`+20 min` 包裝成精確預測。
 
-> 2026-07-11 Nearby 子項完成：完整 bbox 候選經精確距離排序後才 limit，高密度第 101 筆最近站 regression test、production query plan 與線上 smoke 均通過。轉乘 grid 與 ETA 呈現仍保留在 P2-4 後續工作。
+> 2026-07-11 Nearby 與 grid 子項完成：完整 bbox 候選經精確距離排序後才 limit，高密度第 101 筆最近站 regression test 通過；轉乘候選格數依緯度動態擴張，北部兩格邊界的 350 m 內／外測試通過。Production query plan、nearby／transfer smoke 均正常。ETA 呈現誠實化仍保留在 P2-4 後續工作。
 
 ### Phase 3 — 快照供應鏈安全（第 3 週）
 
