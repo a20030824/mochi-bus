@@ -1,8 +1,15 @@
 import type { RouteMapVariant } from '../../domain/map/map-model'
+import type { LonLat } from '../../domain/map/network-pick'
+import { simplifyLine } from '../../domain/map/simplify'
 import { pairTransferLegs, type TransferLegCandidate } from '../../domain/map/transfer'
 import { classifyRouteName } from '../../domain/route-category'
 import type { ScheduleItem } from '../../domain/schedule'
 import { memoryCacheGet, memoryCacheSet } from '../../lib/memory-cache'
+
+// 全路網鳥瞰不需要單一路線的完整精度,跟 sync 腳本產出 network.json 用
+// 同一個容差(見 scripts/sync-chiayi-snapshot.mjs 的 NETWORK_LOD_TOLERANCE_METERS);
+// 這裡是小城市(<=40 patterns,沒有預生成 network.json)即時組裝的 fallback 路徑。
+const NETWORK_LOD_TOLERANCE_METERS = 50
 
 type ActiveVersion = { active_version: string }
 type PatternRow = {
@@ -252,11 +259,18 @@ export async function getCityNetwork(env: TransitBindings, city: string): Promis
   const routes = (await Promise.all(patterns.results.map(async (pattern) => {
     const object = await env.TRANSIT_SHAPES.get(pattern.shape_key)
     if (!object) return null
+    const shape = await object.json<ShapeFeature>()
     return {
       routeName: pattern.route_name,
       variantKey: pattern.pattern_id,
       label: `${pattern.departure_name} → ${pattern.destination_name}`,
-      shape: await object.json<ShapeFeature>(),
+      shape: {
+        ...shape,
+        geometry: {
+          ...shape.geometry,
+          coordinates: simplifyLine(shape.geometry.coordinates as LonLat[], NETWORK_LOD_TOLERANCE_METERS),
+        },
+      },
     }
   }))).filter((route): route is NonNullable<typeof route> => route !== null)
 
