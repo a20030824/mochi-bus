@@ -4,6 +4,12 @@ import { createViewBackController } from '../../src/domain/map/view-back'
 import { matchStopsToShape } from '../../src/domain/map/shape-matcher'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import {
+  describeTransferEstimate,
+  estimateTransfer,
+  transferEstimateSortKey,
+  type TransferEstimate,
+} from '../../src/domain/map/transfer-estimate'
+import {
   getActiveCity,
   isFavoriteDirection,
   readBoards,
@@ -97,9 +103,7 @@ type TransferPlan = {
   second: TransferLeg
   firstEtaMinutes?: number | null
   secondEtaMinutes?: number | null
-  transferWaitMinutes?: number | null
-  estimatedTotalMinutes?: number | null
-  connectionStatus?: 'comfortable' | 'tight' | 'unknown'
+  transferEstimate?: TransferEstimate
 }
 
 type CityNetwork = {
@@ -1491,29 +1495,21 @@ async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPl
   return plans.map((plan, index) => {
     const firstEta = estimates.get(`transfer:${index}:first`) ?? null
     const secondEta = estimates.get(`transfer:${index}:second`) ?? null
-    const firstRide = plan.first.stopCount * 2
-    const secondRide = plan.second.stopCount * 2
-    const arrivalAtTransfer = firstEta === null ? null : firstEta + firstRide
-    const rawTransferWait = arrivalAtTransfer === null || secondEta === null ? null : secondEta - arrivalAtTransfer
-    const transferWait = rawTransferWait !== null && rawTransferWait >= 0 ? rawTransferWait : null
-    const connectionStatus = rawTransferWait === null
-      ? 'unknown' as const
-      : rawTransferWait >= 4
-        ? 'comfortable' as const
-        : 'tight' as const
-    const estimatedTotal = firstEta === null
-      ? null
-      : firstEta + firstRide + (connectionStatus === 'comfortable' ? transferWait ?? 0 : 20) + secondRide
+    const estimate = estimateTransfer({
+      firstStopCount: plan.first.stopCount,
+      secondStopCount: plan.second.stopCount,
+      walkMeters: plan.transferWalkMeters ?? 0,
+      firstEtaMinutes: firstEta,
+      secondEtaMinutes: secondEta,
+    })
     return {
       ...plan,
       firstEtaMinutes: firstEta,
       secondEtaMinutes: secondEta,
-      transferWaitMinutes: transferWait,
-      estimatedTotalMinutes: estimatedTotal,
-      connectionStatus,
+      transferEstimate: estimate,
     }
   }).sort((a, b) =>
-    (a.estimatedTotalMinutes ?? Number.POSITIVE_INFINITY) - (b.estimatedTotalMinutes ?? Number.POSITIVE_INFINITY)
+    transferEstimateSortKey(a.transferEstimate) - transferEstimateSortKey(b.transferEstimate)
     || a.totalStops - b.totalStops,
   )
 }
@@ -1585,15 +1581,20 @@ function renderTransferPlans(plans: TransferPlan[]) {
     const transfer = document.createElement('strong')
     transfer.textContent = `${plan.transferName} 轉乘${plan.transferWalkMeters ? ` · 步行 ${plan.transferWalkMeters} m` : ''}`
     const count = document.createElement('span')
-    count.textContent = plan.estimatedTotalMinutes === null || plan.estimatedTotalMinutes === undefined
-      ? `共 ${plan.totalStops} 站`
-      : plan.connectionStatus === 'tight'
-        ? `轉乘銜接較趕`
-        : `約 ${plan.estimatedTotalMinutes} 分`
+    const estimatePresentation = plan.transferEstimate
+      ? describeTransferEstimate(plan.transferEstimate)
+      : null
+    count.textContent = estimatePresentation?.label ?? `共 ${plan.totalStops} 站`
     title.appendChild(transfer)
     title.appendChild(count)
-    if (plan.connectionStatus === 'tight') card.classList.add('connection-tight')
+    if (plan.transferEstimate?.connectionStatus === 'tight' || plan.transferEstimate?.connectionStatus === 'missed') {
+      card.classList.add('connection-tight')
+    }
     card.appendChild(title)
+    const assumption = document.createElement('small')
+    assumption.className = 'transfer-assumption'
+    assumption.textContent = estimatePresentation?.note ?? '未取得足夠資料，請以現場資訊為準'
+    card.appendChild(assumption)
     const legColors = transferLegColors(plan.first.routeName, plan.second.routeName)
     ;[plan.first, plan.second].forEach((leg, legIndex) => {
       const color = legColors[legIndex]
