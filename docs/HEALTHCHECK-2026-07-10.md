@@ -1,7 +1,7 @@
 # Mochi Bus 健檢紀錄與整改計畫 — 2026-07-10
 
 > 本文件是 2026-07-10 深度健檢的可追蹤紀錄，也是後續修改的執行藍圖。
-> 狀態：**整改進行中；Phase 0 已部署驗證，Phase 1 tooling 已提交，API input protection 已部署**。
+> 狀態：**整改進行中；Phase 0、核心 Phase 1 護欄與 Phase 2 route/journey correctness 已部署驗證**。
 
 ## 1. 紀錄資訊
 
@@ -78,7 +78,7 @@
 | ID | 等級 | 問題 | 主要證據／位置 | 目標階段 | 狀態 |
 | --- | --- | --- | --- | --- | --- |
 | SEC-001 | P0 | HTTP 未跳 HTTPS、無 HSTS、仍接受 TLS 1.0/1.1 | 線上實測；`web/boards/store.ts:137-153`、`src/routes/bus.ts:184-192`、`src/routes/map.ts:99-103` 會傳遞 BYOK | Phase 0 | Verified：deployment `a564a2f5-…`；HSTS Stage 1 觀察中 |
-| COR-001 | P0 | 子路線識別遺失，可能混用 ETA／班表／收藏 | `src/lib/tdx.ts:22-35,580-634`、`src/domain/favorite-board.ts:65-66`、`src/routes/bus.ts:43-103` | Phase 2 | Open |
+| COR-001 | P0 | 子路線識別遺失，可能混用 ETA／班表／收藏 | `src/domain/route-pattern.ts`、`src/lib/tdx.ts`、`src/domain/favorite-board.ts`、`src/routes/bus.ts` | Phase 2 | Verified：RouteUID/SubRouteUID/pattern identity 全鏈路已部署 `28b347d8-…` |
 | COR-002 | P0 | Journey ETA 用第一筆而非最佳 ETA，班表跨 route flatten | `src/domain/map/journey-estimate.ts`、`src/routes/map.ts`、`src/infrastructure/transit/snapshot-repository.ts` | Phase 2 | Verified：route/subroute-scoped ETA 與 schedule 聚合已部署 `91b1bdfc-…` |
 | DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/sync-chiayi-snapshot.mjs:117-220,293,337-355` | Phase 3 | Open |
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | Open |
@@ -171,6 +171,8 @@
 > 2026-07-11 Honest transfer estimate 結果：commit `2bd6dd1` 已 100% 部署為 `c298089c-7ca4-4005-8715-09a2048c1484`，前一版 `ffbbe463-31ab-43f2-9c89-98368b80b63a` 可直接回滾。移除每站固定 2 分鐘與接不上就加 20 分鐘的單點假精度；新純 domain model 以站數區間與 60–90 m/min 步行速度產生「車程＋步行」範圍，並將 2 分鐘 ETA uncertainty 與 2 分鐘安全轉乘 buffer 納入銜接判斷。只有兩段即時 ETA 足以支持安全銜接時才顯示總時間範圍；偏趕、可能錯過或缺資料時明確標示未推測下一班候車，且所有粗估都揭露未含路況。可銜接方案優先排序，不再以武斷魔法數字排序。23 個測試檔、160/160 tests、typegen、TypeScript、build、dry-run 全數通過；production deployment 100%，map asset 已確認含新範圍／不確定性文案且不含舊 `+20`／`comfortable` 邏輯，transfer API、地圖頁與 HSTS/CSP 正常。COR-004 標記 Verified，P2-4 完成。
 
 > 2026-07-11 Journey identity correctness 結果：commit `ca924b0` 已 100% 部署為 `91b1bdfc-0e43-442a-800e-1572e2a2b89c`，前一版 `c298089c-7ca4-4005-8715-09a2048c1484` 可直接回滾。Journey realtime 不再對混合陣列取第一筆，改用既有 best-ETA ranking 並以 `RouteUID + SubRouteUID + direction + stopUid` 篩選；TDX fetch 與 schedule fallback 均按 `RouteUID` 去重／分桶，同名不同路線不再互借。repository 直接查出 `subroute_uid`，移除從 `patternId` 字串猜 identity；snapshot schedule 在提供 `RouteUID` 時會先向 active D1 version 驗證，再讀對應 R2 object。單一路線 realtime 或 schedule 失敗會結構化記錄並只讓該 leg 回 `source:none`，其他路線繼續。24 個測試檔、164/164 tests、typegen、TypeScript、build、dry-run 全數通過；production 真實兩段轉乘 Journey ETA 回 200／2 estimates，一段 `none`、另一段 `schedule:57`，證明部分缺資料不互相污染，地圖頁與 HSTS/CSP 正常。COR-002 標記 Verified。Response-level `partial/degraded` 摘要與 `updatedAt` 仍可在後續 API contract 強化時新增，目前每個 estimate 已有 `source`。
+
+> 2026-07-11 Route pattern identity 結果：commit `c92f5dc` 已 100% 部署為 `28b347d8-9fc2-4073-98e5-c336c1813645`，前一版 `91b1bdfc-0e43-442a-800e-1572e2a2b89c` 可直接回滾。新增共用 `RoutePatternRef`／穩定 key，將 `RouteUID + SubRouteUID + patternId + direction` 傳過 TDX catalog/stop groups、snapshot D1/R2 repository、API、canonical URL、地圖變體與 favorites；同名不同 RouteUID 不再被 catalog/realtime batch 合併，同站序不同 SubRouteUID 也保留為不同選項。舊 favorite 採 dual-read，缺 RouteUID 或地圖 patternId 時標記 `legacy-ambiguous`，只有唯一候選才自動補齊，否則提示重新選擇。25 個測試檔、171/171 tests、typegen、TypeScript、build、dry-run 與 npm audit（0 vulnerabilities）全數通過。Production 100%；首頁、setup、boards asset、routes/stops API 與 HSTS/CSP 正常。真實嘉義中山幹線回傳 `CYI071401`、`CYI0714A1`、`CYI0714B1` 等獨立變體；同方向共站但缺 SubRouteUID 的舊 URL 回 409，不再任意取第一條，補上 SubRouteUID 後 canonical redirect 302 → 200。COR-001 標記 Verified。
 
 #### P1-1：API 輸入與資源保護
 
@@ -630,7 +632,7 @@ interface RoutePatternRef {
 - [x] 將 GitHub workflow secrets 收斂到 step scope。
 - [x] 新增 PR/push CI，鎖住 tests、typecheck、build 與 dry-run 基線。
 - [x] 修好 `wrangler types --check`，再開始 schema 重構。
-- [ ] 為 route pattern identity 先建立失敗 fixture，不先改 production 邏輯。
+- [x] route pattern identity 與收藏 migration fixtures 已建立，production smoke 已通過。
 - [ ] 把 snapshot validator 設計成 publish 的必要條件，而不是只發 warning。
 
 ## 10. 產品方向建議
