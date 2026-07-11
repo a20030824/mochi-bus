@@ -4,6 +4,7 @@
 import {
   busKey,
   migrateLegacyPresets,
+  normalizeFavoriteBoards,
   pruneOtherMapBoards,
   sameFavoriteDirection,
   type FavoriteBoard,
@@ -24,8 +25,7 @@ const TDX_DEVICE_AUTH_KEY = 'mochi.bus.tdxAuth.device.v2'
 const TDX_MIGRATION_NOTICE_KEY = 'mochi.bus.tdxAuth.migrated.v2'
 
 export function readBoards(): FavoriteBoard[] {
-  const value = readJSON(BOARDS_KEY)
-  return Array.isArray(value) ? value as FavoriteBoard[] : []
+  return normalizeFavoriteBoards(readJSON(BOARDS_KEY))
 }
 
 export function writeBoards(boards: FavoriteBoard[]): void {

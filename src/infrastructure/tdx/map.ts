@@ -55,9 +55,10 @@ export async function getRouteMapVariants(
 
     const positionedStops = group.stops.filter((stop) => stop.position)
     variants.push({
-      variantKey: `${identity}:${candidateIndex}`,
+      variantKey: `${group.subRouteUid ?? group.routeUid}:${group.direction}:${candidateIndex}`,
       routeName,
       routeUid: group.routeUid,
+      subRouteUid: group.subRouteUid,
       direction: group.direction,
       label: group.label,
       subRouteName: group.subRouteName,

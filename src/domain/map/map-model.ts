@@ -9,6 +9,7 @@ export type RouteMapVariant = {
   variantKey: string
   routeName: string
   routeUid: string
+  subRouteUid?: string
   direction: Direction
   label: string
   subRouteName: string

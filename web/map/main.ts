@@ -38,6 +38,7 @@ type RouteMapVariant = {
   variantKey: string
   routeName: string
   routeUid: string
+  subRouteUid?: string
   direction: 0 | 1
   label: string
   subRouteName: string
@@ -1888,6 +1889,7 @@ function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLBu
     routeName: route.routeName,
     routeUid: route.routeUid,
     subRouteUid: route.subRouteUid,
+    patternId: route.variantKey,
     stopName: route.stopName,
     stopUid: route.stopUid,
     direction: route.direction,

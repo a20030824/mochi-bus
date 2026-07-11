@@ -1,4 +1,5 @@
 import type { Direction } from './bus-query'
+import { routePatternKey, sameRoutePattern } from './route-pattern'
 
 // 常用站牌實際儲存在瀏覽器 localStorage(mochi.bus.boards.v2)。
 // 舊資料可能缺 city/stopUid/stopName,讀取端必須容忍缺欄位。
@@ -8,6 +9,9 @@ export type FavoriteBus = {
   routeUid?: string
   // 同一站牌可能有多條支線共用同一個 stopUid;有這個欄位時 ETA 才能分辨是哪一班。
   subRouteUid?: string
+  // snapshot 的穩定 variant identity；TDX-only 舊資料可暫時缺少。
+  patternId?: string
+  identityStatus?: 'legacy-ambiguous'
   stopName?: string
   stopUid?: string
   direction: Direction
@@ -33,6 +37,8 @@ type LegacyPreset = {
   city?: string
   routeName?: string
   routeUid?: string
+  subRouteUid?: string
+  patternId?: string
   stopName?: string
   stopUid?: string
   direction?: number
@@ -53,6 +59,9 @@ export function migrateLegacyPresets(presets: unknown, now: string): FavoriteBoa
         city: preset.city,
         routeName: preset.routeName,
         routeUid: preset.routeUid,
+        subRouteUid: preset.subRouteUid,
+        patternId: preset.patternId,
+        identityStatus: preset.routeUid ? undefined : 'legacy-ambiguous',
         stopName: preset.stopName,
         stopUid: preset.stopUid,
         direction: preset.direction === 1 ? 1 : 0,
@@ -62,8 +71,8 @@ export function migrateLegacyPresets(presets: unknown, now: string): FavoriteBoa
     }))
 }
 
-export function busKey(bus: Pick<FavoriteBus, 'routeUid' | 'routeName' | 'stopUid' | 'direction'>): string {
-  return `${bus.routeUid || bus.routeName}:${bus.stopUid}:${bus.direction}`
+export function busKey(bus: Pick<FavoriteBus, 'routeUid' | 'subRouteUid' | 'patternId' | 'routeName' | 'stopUid' | 'direction'>): string {
+  return `${routePatternKey(bus, bus.routeName)}|stop:${bus.stopUid ?? ''}`
 }
 
 // 封面只留一個地圖站點:保留 setup 頁手動建立的 board(無 placeId)與目前站點,其餘地圖收藏移除。
@@ -71,10 +80,25 @@ export function pruneOtherMapBoards(boards: FavoriteBoard[], city: string, place
   return boards.filter((board) => !board.placeId || (board.city === city && board.placeId === placeId))
 }
 
-// 同名路線可能有不同支線行駛方向,因此比對必須連 directionLabel 一起看。
+// 收藏比對以穩定路線身分為準；directionLabel 只是可能變動的顯示文字。
 export function sameFavoriteDirection(a: FavoriteBus, b: FavoriteBus): boolean {
-  return a.routeUid === b.routeUid
+  return sameRoutePattern(a, b)
     && a.stopUid === b.stopUid
-    && a.direction === b.direction
-    && (a.directionLabel ?? '') === (b.directionLabel ?? '')
+}
+
+export function normalizeFavoriteBoards(value: unknown): FavoriteBoard[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((board): board is FavoriteBoard => Boolean(
+      board && typeof board === 'object' && Array.isArray((board as FavoriteBoard).buses),
+    ))
+    .map((board) => ({
+      ...board,
+      buses: board.buses.map((bus) => ({
+        ...bus,
+        identityStatus: bus.routeUid && (!board.placeId || bus.patternId)
+          ? undefined
+          : 'legacy-ambiguous' as const,
+      })),
+    }))
 }

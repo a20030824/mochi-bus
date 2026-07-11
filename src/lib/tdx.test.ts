@@ -384,11 +384,15 @@ describe('TDX upstream failures', () => {
 })
 
 describe('route variants', () => {
-  const group = (name: string, stops: string[]): StopGroup => ({
+  const group = (name: string, stops: string[], subRouteUid = name): StopGroup => ({
     direction: 0,
     label: `${stops[0]} → ${stops.at(-1)}`,
+    routeUid: 'R1',
+    subRouteUid,
     subRouteName: name,
     stops: stops.map((stopName, index) => ({
+      routeUid: 'R1',
+      subRouteUid,
       subRouteName: name,
       stopUid: `${name}-${index}`,
       stopName,
@@ -397,14 +401,23 @@ describe('route variants', () => {
     })),
   })
 
-  it('merges variants with the same complete stop sequence', () => {
+  it('merges duplicate rows with the same identity and complete stop sequence', () => {
     const merged = mergeEquivalentStopGroups([
-      group('A支線', ['起點', '中間', '終點']),
-      group('B支線', ['起點', '中間', '終點']),
+      group('A支線', ['起點', '中間', '終點'], 'SUB-1'),
+      group('A區間', ['起點', '中間', '終點'], 'SUB-1'),
     ])
 
     expect(merged).toHaveLength(1)
-    expect(merged[0].subRouteName).toBe('A支線／B支線')
+    expect(merged[0].subRouteName).toBe('A支線／A區間')
+  })
+
+  it('keeps different SubRouteUIDs even when their stop sequences match', () => {
+    const merged = mergeEquivalentStopGroups([
+      group('A支線', ['起點', '中間', '終點'], 'SUB-A'),
+      group('B支線', ['起點', '中間', '終點'], 'SUB-B'),
+    ])
+
+    expect(merged).toHaveLength(2)
   })
 
   it('keeps variants that take different paths', () => {

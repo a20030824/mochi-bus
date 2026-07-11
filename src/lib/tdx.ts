@@ -558,7 +558,7 @@ export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<Res
       : stop.stopName === query.stopName)
     // 同一站牌可能有多條支線共用同一個 stopUid(例如共站的幹線與支線變體)；
     // 有 subRouteUid 時用它排除其他支線，避免撞到錯誤的班次。
-    .filter((stop) => !query.subRouteUid || !stop.subRouteUid || stop.subRouteUid === query.subRouteUid)
+    .filter((stop) => !query.subRouteUid || stop.subRouteUid === query.subRouteUid)
 
   const unique = dedupeStops(candidates)
   if (unique.length === 0) {
@@ -714,8 +714,13 @@ export async function getRouteStopGroups(
 export function mergeEquivalentStopGroups(groups: StopGroup[]): StopGroup[] {
   const merged = new Map<string, StopGroup>()
   for (const group of groups) {
-    // StopUID 可能因支線而不同；以完整站名序列判斷是否真的是同一路徑。
-    const signature = `${group.direction}:${group.stops.map((stop) => stop.stopName).join('>')}`
+    // 相同站序不代表相同支線；RouteUID/SubRouteUID 不同時必須保留為獨立選項。
+    const signature = [
+      group.routeUid ?? '',
+      group.subRouteUid ?? '',
+      group.direction,
+      group.stops.map((stop) => stop.stopName).join('>'),
+    ].join(':')
     const existing = merged.get(signature)
     if (!existing) {
       merged.set(signature, group)
@@ -746,8 +751,12 @@ export async function getRouteCatalog(env: TDXEnv, city: string): Promise<RouteC
       category: classifyRouteName(item.RouteName.Zh_tw, item.RouteUID),
     }))
 
-  return [...new Map(routes.map((route) => [route.routeName, route])).values()]
-    .sort((a, b) => a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }))
+  return [...new Map(routes.map((route) => [
+    route.routeUid ?? `${route.routeName}:${route.departure ?? ''}:${route.destination ?? ''}`,
+    route,
+  ])).values()]
+    .sort((a, b) => a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true })
+      || (a.routeUid ?? '').localeCompare(b.routeUid ?? ''))
 }
 
 // 公路客運全目錄(約 500 條、全台一份)。只取方向標籤用得到的欄位,$select 之後
@@ -809,6 +818,7 @@ export async function getStopRouteSuggestions(
         city,
         routeName: item.RouteName?.Zh_tw ?? '未知路線',
         routeUid: item.RouteUID,
+        subRouteUid: item.SubRouteUID,
         stopName: item.StopName.Zh_tw,
         stopUid: item.StopUID,
         direction: item.Direction,
@@ -821,7 +831,7 @@ export async function getStopRouteSuggestions(
     })
 
   return [...new Map(suggestions.map((item) => [
-    `${item.routeUid ?? item.routeName}:${item.stopUid}:${item.direction}`,
+    `${item.routeUid ?? item.routeName}:${item.subRouteUid ?? ''}:${item.stopUid}:${item.direction}`,
     item,
   ])).values()]
     .sort((a, b) => a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }))
@@ -837,19 +847,24 @@ export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Prom
   const group = groups.find((candidate) =>
     candidate.direction === query.direction
     && candidate.stops.some((stop) => stop.stopUid === query.stopUid)
-    && (!query.routeUid || candidate.routeUid === query.routeUid),
-  ) ?? groups.find((candidate) =>
+    && (!query.routeUid || candidate.routeUid === query.routeUid)
+    && (!query.subRouteUid || candidate.subRouteUid === query.subRouteUid)
+  ) ?? (!query.subRouteUid ? groups.find((candidate) =>
     candidate.direction === query.direction
     && candidate.stops.some((stop) => stop.stopUid === query.stopUid),
-  )
+  ) : undefined)
 
   if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
-  const etaByStop = new Map(
-    etaItems
-      .filter((item) => item.Direction === query.direction && (!query.routeUid || item.RouteUID === query.routeUid))
-      .filter((item): item is BusETAItem & { StopUID: string } => Boolean(item.StopUID))
-      .map((item) => [item.StopUID, item]),
-  )
+  const stopUids = new Set(group.stops.map((stop) => stop.stopUid))
+  const etaByStop = new Map([...stopUids].map((stopUid) => [
+    stopUid,
+    selectBestEta(etaItems, {
+      routeUid: query.routeUid,
+      subRouteUid: query.subRouteUid ?? group.subRouteUid,
+      stopUid,
+      direction: query.direction,
+    }),
+  ]))
 
   return {
     routeName: query.routeName,
@@ -957,7 +972,12 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
 }
 
 function dedupeStops(stops: RouteStop[]): RouteStop[] {
-  return [...new Map(stops.map((stop) => [stop.stopUid, stop])).values()]
+  return [...new Map(stops.map((stop) => [[
+    stop.routeUid ?? '',
+    stop.subRouteUid ?? '',
+    stop.direction,
+    stop.stopUid,
+  ].join(':'), stop])).values()]
 }
 
 function findNearbyStopUids(stops: StopItem[], anchorStopUid?: string): Set<string> {

@@ -127,6 +127,10 @@ async function writeLastRealtime(env: TDXEnv, city: string, routeName: string, i
   }), 'arrivals_last', env.TDX_BACKGROUND_TASKS)
 }
 
+function routeIdentity(routeName: string, routeUid?: string): string {
+  return routeUid ? `uid:${routeUid}` : `name:${routeName}`
+}
+
 map.get('/map', (c) => {
   // 深連結的標題直接從 query 組(路線名就在網址裡,不用查庫);
   // place 深連結要查 DB 才有名字,不值得為標題多一次往返,維持通用標題。
@@ -358,26 +362,28 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       && (!focusSubRouteUid || route.subRouteUid === focusSubRouteUid),
     ) : undefined
     const candidates = includeFocusedCandidate(selectRealtimeCandidates(scheduledRoutes), focused)
-    const candidateRouteNames = [...new Set(candidates.map((route) => route.routeName))]
-    // 公路客運(THB)的即時查詢走 InterCity 端點,查之前要能從路名找回 routeUid
-    const routeUidByName = new Map(candidates.map((route) => [route.routeName, route.routeUid]))
+    const candidateRouteRefs = [...new Map(candidates.map((route) => [
+      routeIdentity(route.routeName, route.routeUid),
+      { routeName: route.routeName, routeUid: route.routeUid },
+    ])).values()]
     const etaItems: BusETAItem[] = []
-    const staleRouteNames = new Set<string>()
+    const staleRouteIdentities = new Set<string>()
     let rateLimited = await hasRealtimeCooldown(env, city, scope)
     let realtimeQueries = 0
-    for (const routeName of candidateRouteNames) {
+    for (const { routeName, routeUid } of candidateRouteRefs) {
+      const identity = routeIdentity(routeName, routeUid)
       if (rateLimited) {
-        const staleItems = await readLastRealtime(env, city, routeName)
+        const staleItems = await readLastRealtime(env, city, identity)
         if (staleItems.length) {
           etaItems.push(...staleItems)
-          staleRouteNames.add(routeName)
+          staleRouteIdentities.add(identity)
         }
         continue
       }
       try {
-        const items = await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName, routeUidByName.get(routeName)), 15)
+        const items = await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName, routeUid), 15)
         etaItems.push(...items)
-        await writeLastRealtime(env, city, routeName, items)
+        await writeLastRealtime(env, city, identity, items)
         realtimeQueries += 1
       } catch (error) {
         rateLimited = error instanceof TDXServiceError && error.rateLimited
@@ -386,10 +392,10 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
           error: error instanceof Error ? error.message : String(error),
         }))
         if (rateLimited) await setRealtimeCooldown(env, city, scope)
-        const staleItems = await readLastRealtime(env, city, routeName)
+        const staleItems = await readLastRealtime(env, city, identity)
         if (staleItems.length) {
           etaItems.push(...staleItems)
-          staleRouteNames.add(routeName)
+          staleRouteIdentities.add(identity)
         }
       }
     }
@@ -398,7 +404,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       const realtimeSeconds = typeof realtime?.EstimateTime === 'number' ? Math.max(0, realtime.EstimateTime) : null
       const estimateSeconds = realtimeSeconds ?? (route.scheduleMinutes === null ? null : route.scheduleMinutes * 60)
       const source = realtimeSeconds !== null
-        ? staleRouteNames.has(route.routeName) ? 'stale-realtime' as const : 'realtime' as const
+        ? staleRouteIdentities.has(routeIdentity(route.routeName, route.routeUid)) ? 'stale-realtime' as const : 'realtime' as const
         : route.scheduleMinutes !== null ? 'schedule' as const
           : 'none' as const
       return {

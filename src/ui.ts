@@ -125,16 +125,21 @@ export function renderETAPage(view: ETAView): string {
       if (bus.directionLabel) return;
       try {
         const params = new URLSearchParams({ city: bus.city, route: bus.routeName });
+        if (bus.routeUid) params.set('routeUid', bus.routeUid);
         const response = await fetch('/api/v1/stops?' + params, { headers: tdxHeaders() });
         const body = await response.json();
-        const group = body.groups?.find(group => group.direction === bus.direction && group.stops?.some(stop => stop.stopUid === bus.stopUid));
+        const group = body.groups?.find(group =>
+          group.direction === bus.direction
+          && (!bus.subRouteUid || group.subRouteUid === bus.subRouteUid)
+          && group.stops?.some(stop => stop.stopUid === bus.stopUid));
         if (group?.label) bus.directionLabel = group.label;
       } catch {}
     }
 
     let placeRoutesPromise;
     async function repairBusFromPlace(bus) {
-      if (bus.stopName && bus.stopUid) return true;
+      // 地圖舊收藏即使已有站牌，也要補齊 patternId，避免同路線變體誤配。
+      if (bus.stopName && bus.stopUid && (!currentBoard.placeId || bus.patternId)) return true;
       const city = bus.city || currentBoard.city;
       if (!city) return false;
       try {
@@ -147,12 +152,19 @@ export function renderETAPage(view: ETAView): string {
           const candidates = (body.routes || []).filter(route =>
             route.routeName === bus.routeName
             && route.direction === bus.direction
-            && (!bus.routeUid || route.routeUid === bus.routeUid));
-          const match = candidates.find(route => !bus.directionLabel || route.label === bus.directionLabel) || candidates[0];
+            && (!bus.routeUid || route.routeUid === bus.routeUid)
+            && (!bus.subRouteUid || !route.subRouteUid || route.subRouteUid === bus.subRouteUid)
+            && (!bus.patternId || route.variantKey === bus.patternId));
+          const labeled = bus.directionLabel
+            ? candidates.filter(route => route.label === bus.directionLabel)
+            : candidates;
+          const match = labeled.length === 1 ? labeled[0] : undefined;
           if (match) {
             bus.city = city;
             bus.routeUid = match.routeUid;
             bus.subRouteUid = match.subRouteUid;
+            bus.patternId = match.variantKey;
+            delete bus.identityStatus;
             bus.stopName = match.stopName;
             bus.stopUid = match.stopUid;
             bus.directionLabel = match.label;
@@ -160,6 +172,7 @@ export function renderETAPage(view: ETAView): string {
           }
         }
         const params = new URLSearchParams({ city, route: bus.routeName });
+        if (bus.routeUid) params.set('routeUid', bus.routeUid);
         const response = await fetch('/api/v1/stops?' + params, { headers: tdxHeaders() });
         const body = await response.json();
         if (!response.ok) return false;
@@ -173,6 +186,7 @@ export function renderETAPage(view: ETAView): string {
         bus.city = city;
         bus.routeUid = matches[0].stop.routeUid || bus.routeUid;
         bus.subRouteUid = matches[0].stop.subRouteUid || bus.subRouteUid;
+        delete bus.identityStatus;
         bus.stopName = matches[0].stop.stopName;
         bus.stopUid = matches[0].stop.stopUid;
         bus.directionLabel = matches[0].group.label;
@@ -212,7 +226,8 @@ export function renderETAPage(view: ETAView): string {
             route.routeUid === bus.routeUid
             && route.stopUid === bus.stopUid
             && route.direction === bus.direction
-            && (!bus.subRouteUid || !route.subRouteUid || route.subRouteUid === bus.subRouteUid));
+            && (!bus.subRouteUid || !route.subRouteUid || route.subRouteUid === bus.subRouteUid)
+            && (!bus.patternId || route.variantKey === bus.patternId));
           if (!arrival) return { bus, failed: true };
           return { bus, data: {
             label: arrival.etaLabel,
@@ -380,24 +395,24 @@ function setupScript(): string {
   return `<script type="module">
   import {activeBoardId,busKey,clearLocalData,clearTdxAuth,consumeTdxAuthMigrationNotice,getTdxAuthState,migrateBoards,newBoardId,setActiveBoard,setTdxAuth,syncActiveBoard,tdxHeaders,writeBoards} from '/assets/boards.js';
   const city=document.querySelector('#city'),filter=document.querySelector('#route-filter'),grid=document.querySelector('#route-grid'),categories=document.querySelector('#categories'),message=document.querySelector('#message'),directionStep=document.querySelector('#direction-step'),suggestionStep=document.querySelector('#suggestion-step'),boardList=document.querySelector('#board-list'),pickerPanel=document.querySelector('#picker-panel'),routePicker=document.querySelector('#route-picker'),addBoardButton=document.querySelector('#add-board-button'),closePicker=document.querySelector('#close-picker');
-  let routes=[],category='全部',selectedRoute='';
+  let routes=[],category='全部',selectedRoute=null;
   const boards=()=>migrateBoards();
   function saveBoards(value){writeBoards(value);renderBoards()}
-  function params(bus){const p=new URLSearchParams({city:bus.city,route:bus.routeName,stop:bus.stopName,stopUid:bus.stopUid,direction:String(bus.direction)});if(bus.routeUid)p.set('routeUid',bus.routeUid);return p}
+  function params(bus){const p=new URLSearchParams({city:bus.city,route:bus.routeName,stop:bus.stopName,stopUid:bus.stopUid,direction:String(bus.direction)});if(bus.routeUid)p.set('routeUid',bus.routeUid);if(bus.subRouteUid)p.set('subRouteUid',bus.subRouteUid);return p}
   function showInlineUndo(card,board,index,wasActive){card.classList.add('deleted');const text=document.createElement('span');text.textContent='已刪除 '+board.title;const undo=document.createElement('button');undo.className='inline-undo';undo.textContent='復原';card.replaceChildren(text,undo);let timer=setTimeout(()=>{card.classList.add('collapsing');setTimeout(renderBoards,260)},5000);undo.onclick=()=>{clearTimeout(timer);const value=boards();if(!value.some(x=>x.id===board.id))value.splice(Math.min(index,value.length),0,board);writeBoards(value);if(wasActive)setActiveBoard(board.id);card.classList.add('restoring');setTimeout(renderBoards,180)}}
-  function renderBoards(){const value=boards(),active=activeBoardId();boardList.replaceChildren();if(!value.length){boardList.innerHTML='<p class="empty">這裡還空著，加一塊常用站牌吧。</p>';return}value.forEach((board,index)=>{const card=document.createElement('article');card.className='board-item';const copy=document.createElement('div');const title=document.createElement('strong');title.textContent=board.title+(board.id===active?' · 封面':'');const detail=document.createElement('span');detail.textContent=board.buses.map(x=>x.routeName).join('、');copy.append(title,detail);const actions=document.createElement('div');actions.className='item-actions';const show=document.createElement('button');show.textContent='顯示在封面';show.disabled=board.id===active;show.onclick=()=>{setActiveBoard(board.id);renderBoards()};const remove=document.createElement('button');remove.textContent='刪除';remove.onclick=()=>{const current=boards(),wasActive=board.id===activeBoardId(),next=current.filter(x=>x.id!==board.id);writeBoards(next);if(wasActive)syncActiveBoard(next);showInlineUndo(card,board,index,wasActive)};actions.append(show,remove);card.append(copy,actions);boardList.append(card)})}
+  function renderBoards(){const value=boards(),active=activeBoardId();boardList.replaceChildren();if(!value.length){boardList.innerHTML='<p class="empty">這裡還空著，加一塊常用站牌吧。</p>';return}value.forEach((board,index)=>{const card=document.createElement('article');card.className='board-item';const copy=document.createElement('div');const title=document.createElement('strong');title.textContent=board.title+(board.id===active?' · 封面':'');const detail=document.createElement('span');const ambiguous=board.buses.some(x=>x.identityStatus==='legacy-ambiguous');detail.textContent=board.buses.map(x=>x.routeName).join('、')+(ambiguous?' · 需重新選擇路線':'');copy.append(title,detail);const actions=document.createElement('div');actions.className='item-actions';const show=document.createElement('button');show.textContent='顯示在封面';show.disabled=board.id===active;show.onclick=()=>{setActiveBoard(board.id);renderBoards()};const remove=document.createElement('button');remove.textContent='刪除';remove.onclick=()=>{const current=boards(),wasActive=board.id===activeBoardId(),next=current.filter(x=>x.id!==board.id);writeBoards(next);if(wasActive)syncActiveBoard(next);showInlineUndo(card,board,index,wasActive)};actions.append(show,remove);card.append(copy,actions);boardList.append(card)})}
   function openPicker(){pickerPanel.hidden=false;routePicker.hidden=false;directionStep.hidden=true;suggestionStep.hidden=true;pickerPanel.scrollIntoView({behavior:'smooth',block:'start'});if(!routes.length)loadRoutes()}
-  function hidePicker(){pickerPanel.hidden=true;selectedRoute=''}
-  function backToRoutes(){directionStep.hidden=true;suggestionStep.hidden=true;routePicker.hidden=false;selectedRoute='';routePicker.scrollIntoView({behavior:'smooth',block:'start'})}
+  function hidePicker(){pickerPanel.hidden=true;selectedRoute=null}
+  function backToRoutes(){directionStep.hidden=true;suggestionStep.hidden=true;routePicker.hidden=false;selectedRoute=null;routePicker.scrollIntoView({behavior:'smooth',block:'start'})}
   function backToStops(){suggestionStep.hidden=true;directionStep.hidden=false;directionStep.scrollIntoView({behavior:'smooth',block:'start'})}
   function categoryOf(item){if(item.category)return item.category;if((item.routeUid||'').startsWith('THB'))return'公路客運';const name=item.routeName||'',first=name.charAt(0);if(name.includes('台灣好行')||name.includes('觀光'))return'觀光';if(name.includes('幸福')||name.includes('樂活')||name.includes('社區'))return'幸福／社區';if(name.includes('小黃'))return'小黃';if(name.includes('幹線'))return'幹線';if('紅藍綠棕橘黃小F'.includes(first))return'接駁';if('0123456789０１２３４５６７８９'.includes(first))return'數字';return'其他'}
   function renderCategories(){const order=['數字','幹線','接駁','幸福／社區','觀光','小黃','公路客運','其他'],counts={};routes.forEach(item=>{const name=categoryOf(item);counts[name]=(counts[name]||0)+1});const names=['全部',...order.filter(name=>counts[name])];if(!names.includes(category))category='全部';categories.replaceChildren(...names.map(name=>{const b=document.createElement('button');b.className='chip'+(name===category?' active':'');b.textContent=name==='全部'?'全部 '+routes.length:name+' '+counts[name];b.onclick=()=>{category=name;renderCategories();renderRoutes()};return b}))}
-  function renderRoutes(){const q=filter.value.trim().toLowerCase();const visible=routes.filter(x=>(category==='全部'||categoryOf(x)===category)&&(!q||x.routeName.toLowerCase().includes(q))).slice(0,120);grid.replaceChildren(...visible.map(item=>{const b=document.createElement('button');b.className='route-choice';b.textContent=item.routeName;b.onclick=()=>chooseRoute(item.routeName);return b}));message.textContent=visible.length?'':'沒有符合的路線'}
+  function renderRoutes(){const q=filter.value.trim().toLowerCase();const visible=routes.filter(x=>(category==='全部'||categoryOf(x)===category)&&(!q||x.routeName.toLowerCase().includes(q))).slice(0,120);grid.replaceChildren(...visible.map(item=>{const b=document.createElement('button');b.className='route-choice';b.textContent=item.departure&&item.destination?item.routeName+' · '+item.departure+' → '+item.destination:item.routeName;b.onclick=()=>chooseRoute(item);return b}));message.textContent=visible.length?'':'沒有符合的路線'}
   async function loadRoutes(){grid.replaceChildren();message.textContent='正在載入路線…';directionStep.hidden=true;suggestionStep.hidden=true;try{const r=await fetch('/api/v1/routes?schema=2&city='+encodeURIComponent(city.value),{cache:'no-store',headers:tdxHeaders()});const body=await r.json();if(!r.ok)throw Error(body.error);routes=body.routes;message.textContent='共 '+routes.length+' 條路線';renderCategories();renderRoutes()}catch(e){message.textContent=e.message||'路線載入失敗'}}
-  async function chooseRoute(routeName){selectedRoute=routeName;message.textContent='正在載入 '+routeName+' 的站牌…';directionStep.hidden=true;suggestionStep.hidden=true;const p=new URLSearchParams({city:city.value,route:routeName});try{const r=await fetch('/api/v1/stops?'+p,{headers:tdxHeaders()}),body=await r.json();if(!r.ok)throw Error(body.error);routePicker.hidden=true;renderDirections(body.groups)}catch(e){message.textContent=e.message||'站牌載入失敗'}}
-  function renderDirections(groups){directionStep.replaceChildren();const head=document.createElement('div');head.className='step-head';const back=document.createElement('button');back.className='back-button';back.textContent='← 返回路線';back.onclick=backToRoutes;const title=document.createElement('strong');title.textContent='已選路線 '+selectedRoute;head.append(back,title);directionStep.append(head);groups.forEach(group=>{const card=document.createElement('article');card.className='result-card';const h=document.createElement('h2');h.textContent=group.label;const meta=document.createElement('p');meta.textContent=group.subRouteName;const select=document.createElement('select');group.stops.forEach(stop=>{const o=document.createElement('option');o.value=stop.stopUid;o.textContent=stop.sequence+'. '+stop.stopName;select.append(o)});const b=document.createElement('button');b.className='primary';b.textContent='選這個站牌';b.onclick=()=>{const stop=group.stops.find(x=>x.stopUid===select.value);loadSuggestions(group,stop)};card.append(h,meta,select,b);directionStep.append(card)});directionStep.hidden=false;directionStep.scrollIntoView({behavior:'smooth',block:'start'})}
+  async function chooseRoute(route){selectedRoute=route;message.textContent='正在載入 '+route.routeName+' 的站牌…';directionStep.hidden=true;suggestionStep.hidden=true;const p=new URLSearchParams({city:city.value,route:route.routeName});if(route.routeUid)p.set('routeUid',route.routeUid);try{const r=await fetch('/api/v1/stops?'+p,{headers:tdxHeaders()}),body=await r.json();if(!r.ok)throw Error(body.error);routePicker.hidden=true;renderDirections(body.groups)}catch(e){message.textContent=e.message||'站牌載入失敗'}}
+  function renderDirections(groups){directionStep.replaceChildren();const head=document.createElement('div');head.className='step-head';const back=document.createElement('button');back.className='back-button';back.textContent='← 返回路線';back.onclick=backToRoutes;const title=document.createElement('strong');title.textContent='已選路線 '+selectedRoute.routeName;head.append(back,title);directionStep.append(head);groups.forEach(group=>{const card=document.createElement('article');card.className='result-card';const h=document.createElement('h2');h.textContent=group.label;const meta=document.createElement('p');meta.textContent=group.subRouteName;const select=document.createElement('select');group.stops.forEach(stop=>{const o=document.createElement('option');o.value=stop.stopUid;o.textContent=stop.sequence+'. '+stop.stopName;select.append(o)});const b=document.createElement('button');b.className='primary';b.textContent='選這個站牌';b.onclick=()=>{const stop=group.stops.find(x=>x.stopUid===select.value);loadSuggestions(group,stop)};card.append(h,meta,select,b);directionStep.append(card)});directionStep.hidden=false;directionStep.scrollIntoView({behavior:'smooth',block:'start'})}
   function etaRank(label){if(!label)return 9999;if(label.includes('即將'))return 0;const value=Number.parseInt(label,10);return Number.isFinite(value)?value:9998}
-  async function loadSuggestions(group,stop){directionStep.hidden=true;suggestionStep.hidden=false;suggestionStep.innerHTML='<p>正在找同站其他公車…</p>';let suggestions=[];try{const p=new URLSearchParams({city:city.value,stop:stop.stopName,stopUid:stop.stopUid});const r=await fetch('/api/v1/stop-routes?'+p,{headers:tdxHeaders()}),body=await r.json();if(r.ok)suggestions=body.buses}catch{}const selected={city:city.value,routeName:selectedRoute,routeUid:group.routeUid,stopName:stop.stopName,stopUid:stop.stopUid,direction:group.direction,directionLabel:group.label},selectedKey=busKey(selected),frequency={};boards().flatMap(board=>board.buses).forEach(bus=>{frequency[bus.routeUid||bus.routeName]=(frequency[bus.routeUid||bus.routeName]||0)+1});const all=[selected,...suggestions].filter((x,i,a)=>a.findIndex(y=>busKey(y)===busKey(x))===i).sort((a,b)=>{const selectedDiff=Number(busKey(b)===selectedKey)-Number(busKey(a)===selectedKey);if(selectedDiff)return selectedDiff;const frequentDiff=(frequency[b.routeUid||b.routeName]||0)-(frequency[a.routeUid||a.routeName]||0);if(frequentDiff)return frequentDiff;const etaDiff=etaRank(a.label)-etaRank(b.label);return etaDiff||a.routeName.localeCompare(b.routeName,'zh-Hant',{numeric:true})}).slice(0,12);renderSuggestions(stop.stopName,all,selectedKey,frequency)}
+  async function loadSuggestions(group,stop){directionStep.hidden=true;suggestionStep.hidden=false;suggestionStep.innerHTML='<p>正在找同站其他公車…</p>';let suggestions=[];try{const p=new URLSearchParams({city:city.value,stop:stop.stopName,stopUid:stop.stopUid});const r=await fetch('/api/v1/stop-routes?'+p,{headers:tdxHeaders()}),body=await r.json();if(r.ok)suggestions=body.buses}catch{}const selected={city:city.value,routeName:selectedRoute.routeName,routeUid:group.routeUid,subRouteUid:group.subRouteUid,stopName:stop.stopName,stopUid:stop.stopUid,direction:group.direction,directionLabel:group.label},selectedKey=busKey(selected),frequency={};boards().flatMap(board=>board.buses).forEach(bus=>{frequency[bus.routeUid||bus.routeName]=(frequency[bus.routeUid||bus.routeName]||0)+1});const all=[selected,...suggestions].filter((x,i,a)=>a.findIndex(y=>busKey(y)===busKey(x))===i).sort((a,b)=>{const selectedDiff=Number(busKey(b)===selectedKey)-Number(busKey(a)===selectedKey);if(selectedDiff)return selectedDiff;const frequentDiff=(frequency[b.routeUid||b.routeName]||0)-(frequency[a.routeUid||a.routeName]||0);if(frequentDiff)return frequentDiff;const etaDiff=etaRank(a.label)-etaRank(b.label);return etaDiff||a.routeName.localeCompare(b.routeName,'zh-Hant',{numeric:true})}).slice(0,12);renderSuggestions(stop.stopName,all,selectedKey,frequency)}
   function renderSuggestions(stopName,items,selectedKey,frequency){suggestionStep.replaceChildren();const head=document.createElement('div');head.className='step-head';const back=document.createElement('button');back.className='back-button';back.textContent='← 返回方向與站牌';back.onclick=backToStops;const title=document.createElement('strong');title.textContent=stopName;head.append(back,title);const p=document.createElement('p');p.textContent='已依目前選擇、常搭與到站時間排序';const list=document.createElement('div');list.className='suggestion-list';items.forEach((bus,index)=>{const selected=busKey(bus)===selectedKey,isFrequent=(frequency[bus.routeUid||bus.routeName]||0)>0;const row=document.createElement('label');row.className='check-row'+(selected?' selected':'');const check=document.createElement('input');check.type='checkbox';check.checked=selected;check.disabled=selected;check.value=index;const copy=document.createElement('span');copy.className='suggestion-copy';const top=document.createElement('span');top.className='suggestion-main';const route=document.createElement('strong');route.textContent=bus.routeName;const eta=document.createElement('b');eta.textContent=bus.label||'';top.append(route,eta);const direction=document.createElement('small');direction.textContent=bus.directionLabel||'';copy.append(top,direction);const badge=document.createElement('em');badge.textContent=selected?'目前選擇':isFrequent?'常搭':'';row.append(check,copy);if(badge.textContent)row.append(badge);list.append(row)});const save=document.createElement('button');save.className='primary sticky-save';save.textContent='加入常用站牌';save.onclick=()=>{const chosen=[...list.querySelectorAll('input:checked')].map(x=>items[Number(x.value)]);if(!chosen.length)return;const now=new Date().toISOString(),board={version:2,id:newBoardId(),title:stopName,buses:chosen.map(({label,directionLabel,...bus})=>bus),createdAt:now,updatedAt:now};const value=boards();value.push(board);setActiveBoard(board.id);saveBoards(value);location.href='/'};suggestionStep.append(head,p,list,save);suggestionStep.scrollIntoView({behavior:'smooth',block:'start'})}
   const tdxId=document.querySelector('#tdx-client-id'),tdxSecret=document.querySelector('#tdx-client-secret'),tdxRemember=document.querySelector('#tdx-remember'),tdxSave=document.querySelector('#tdx-save'),tdxRemove=document.querySelector('#tdx-remove'),tdxMessage=document.querySelector('#tdx-message');
   function renderTdx(message){const state=getTdxAuthState(),auth=state.auth;tdxRemove.hidden=!auth;tdxRemember.checked=state.persistence==='device';if(auth&&!tdxId.value)tdxId.value=auth.clientId;tdxSecret.placeholder=auth?'留空沿用目前的 Client Secret':'Client Secret';const mode=state.persistence==='device'?'已記住於此裝置':'只保留在此分頁';tdxMessage.textContent=message??(auth?'目前使用你的憑證（'+auth.clientId.slice(0,10)+'…，'+mode+'）':'')}

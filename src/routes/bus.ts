@@ -62,7 +62,10 @@ bus.get('/bus', async (c) => {
   try {
     const query = parseRequestQuery(c)
     const resolved = await resolveBusQuery(tdxEnv(c), query)
-    if (!query.stopUid || query.stopName !== resolved.stopName || query.routeUid !== resolved.routeUid) {
+    if (!query.stopUid
+      || query.stopName !== resolved.stopName
+      || query.routeUid !== resolved.routeUid
+      || query.subRouteUid !== resolved.subRouteUid) {
       return c.redirect(canonicalBusPath(resolved), 302)
     }
     return renderETA(c, resolved, false, true)
@@ -110,15 +113,20 @@ bus.get('/route', async (c) => {
 async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQuery) {
   if (!query.stopUid) return null
   const variants = await getSnapshotRouteVariants(env, query.city, query.routeName)
-  const variant = variants.find((candidate) =>
+  const matchingVariants = variants.filter((candidate) =>
     candidate.direction === query.direction
+    && (!query.routeUid || candidate.routeUid === query.routeUid)
+    && (!query.subRouteUid || candidate.subRouteUid === query.subRouteUid)
     && candidate.stops.features.some((stop) => stop.properties.stopUid === query.stopUid),
   )
-  if (!variant) return null
+  // 舊網址缺少支線身分時，只有唯一結果才能安全回退，禁止任意挑第一條。
+  if (matchingVariants.length !== 1) return null
+  const variant = matchingVariants[0]
   const selectedStop = variant.stops.features.find((stop) => stop.properties.stopUid === query.stopUid)!
   const resolved = {
     ...query,
     routeUid: query.routeUid ?? variant.routeUid,
+    subRouteUid: query.subRouteUid ?? variant.subRouteUid,
     stopUid: selectedStop.properties.stopUid,
     stopName: selectedStop.properties.stopName,
   }
@@ -157,10 +165,11 @@ bus.get('/api/v1/stops', async (c) => {
   try {
     const city = c.req.query('city')?.trim() || defaultBusQuery.city
     const routeName = requiredQueryString(c.req.query('route'), '公車路線', 40)
+    const routeUid = optionalQueryString(c.req.query('routeUid'), 'RouteUID', 100)
     if (!supportedCityCodes.has(city)) throw new QueryValidationError(`不支援的縣市：${city}`)
 
-    const groups = await getRouteStopGroups(tdxEnv(c), city, routeName)
-    return c.json({ city, routeName, groups }, 200, {
+    const groups = await getRouteStopGroups(tdxEnv(c), city, routeName, routeUid)
+    return c.json({ schemaVersion: 2, city, routeName, routeUid: routeUid ?? null, groups }, 200, {
       'Cache-Control': 'public, max-age=300',
     })
   } catch (error) {

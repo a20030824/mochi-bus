@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { busKey, migrateLegacyPresets, pruneOtherMapBoards, sameFavoriteDirection, type FavoriteBoard, type FavoriteBus } from './favorite-board'
+import { busKey, migrateLegacyPresets, normalizeFavoriteBoards, pruneOtherMapBoards, sameFavoriteDirection, type FavoriteBoard, type FavoriteBus } from './favorite-board'
 
 const now = '2026-07-04T00:00:00.000Z'
 
@@ -24,6 +24,7 @@ describe('migrateLegacyPresets', () => {
         city: 'Taipei',
         routeName: '307',
         routeUid: 'TPE19108',
+        identityStatus: undefined,
         stopName: '捷運西門站',
         stopUid: 'TPE213044',
         direction: 1,
@@ -70,11 +71,15 @@ describe('sameFavoriteDirection', () => {
     directionLabel: 'A → B',
   }
 
-  it('matches on routeUid, stopUid, direction and label', () => {
+  it('matches on route pattern identity and stopUid', () => {
     expect(sameFavoriteDirection(base, { ...base })).toBe(true)
     expect(sameFavoriteDirection(base, { ...base, direction: 1 })).toBe(false)
     expect(sameFavoriteDirection(base, { ...base, stopUid: 'TPE9' })).toBe(false)
-    expect(sameFavoriteDirection(base, { ...base, directionLabel: 'B → A' })).toBe(false)
+    expect(sameFavoriteDirection(base, { ...base, subRouteUid: 'OTHER' })).toBe(true)
+    expect(sameFavoriteDirection(
+      { ...base, subRouteUid: 'SUB-1' },
+      { ...base, subRouteUid: 'SUB-2' },
+    )).toBe(false)
   })
 
   it('treats missing labels as equal to empty', () => {
@@ -103,8 +108,51 @@ describe('pruneOtherMapBoards', () => {
 })
 
 describe('busKey', () => {
-  it('prefers routeUid and falls back to routeName', () => {
-    expect(busKey({ routeUid: 'TPE1', routeName: '307', stopUid: 'S1', direction: 0 })).toBe('TPE1:S1:0')
-    expect(busKey({ routeName: '307', stopUid: 'S1', direction: 1 })).toBe('307:S1:1')
+  it('includes route, subroute, pattern, direction and stop identity', () => {
+    const base = { routeUid: 'TPE1', routeName: '307', stopUid: 'S1', direction: 0 as const }
+    expect(busKey(base)).not.toBe(busKey({ ...base, subRouteUid: 'SUB-1' }))
+    expect(busKey({ ...base, subRouteUid: 'SUB-1' })).not.toBe(busKey({ ...base, subRouteUid: 'SUB-2' }))
+    expect(busKey({ ...base, patternId: 'P1' })).not.toBe(busKey({ ...base, patternId: 'P2' }))
+  })
+
+  it('falls back to routeName for legacy records without RouteUID', () => {
+    expect(busKey({ routeName: '307', stopUid: 'S1', direction: 1 })).toContain('name:307')
+  })
+})
+
+describe('normalizeFavoriteBoards', () => {
+  it('marks only records without RouteUID as legacy ambiguous', () => {
+    const boards = normalizeFavoriteBoards([{
+      version: 2,
+      id: 'b1',
+      title: '常用站牌',
+      buses: [
+        { routeName: '203', stopUid: 'S1', direction: 0 },
+        { routeName: '203', routeUid: 'R1', stopUid: 'S1', direction: 0 },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    }])
+
+    expect(boards[0].buses[0].identityStatus).toBe('legacy-ambiguous')
+    expect(boards[0].buses[1].identityStatus).toBeUndefined()
+  })
+
+  it('marks old map favorites without a pattern identity for repair', () => {
+    const boards = normalizeFavoriteBoards([{
+      version: 2,
+      id: 'map-1',
+      title: '捷運站',
+      placeId: 'place-1',
+      buses: [
+        { routeName: '203', routeUid: 'R1', stopUid: 'S1', direction: 0 },
+        { routeName: '203', routeUid: 'R1', patternId: 'P1', stopUid: 'S1', direction: 0 },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    }])
+
+    expect(boards[0].buses[0].identityStatus).toBe('legacy-ambiguous')
+    expect(boards[0].buses[1].identityStatus).toBeUndefined()
   })
 })

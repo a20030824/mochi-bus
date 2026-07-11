@@ -8,6 +8,7 @@ type ActiveVersion = { active_version: string }
 type PatternRow = {
   pattern_id: string
   route_uid: string
+  subroute_uid: string | null
   route_name: string
   subroute_name: string
   direction: 0 | 1
@@ -108,7 +109,7 @@ export async function getSnapshotRouteVariants(
   if (!version) return []
 
   const patterns = await env.TRANSIT_DB.prepare(`
-    SELECT p.pattern_id, p.route_uid, r.route_name, p.subroute_name, p.direction,
+    SELECT p.pattern_id, p.route_uid, p.subroute_uid, r.route_name, p.subroute_name, p.direction,
            p.departure_name, p.destination_name, p.shape_key, p.updated_at
     FROM patterns p
     JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
@@ -130,10 +131,11 @@ export async function getSnapshotRouteVariants(
     ])
     if (!shapeObject) return null
     const shape = await shapeObject.json<ShapeFeature>()
-    return {
+    const variant: RouteMapVariant = {
       variantKey: pattern.pattern_id,
       routeName: pattern.route_name,
       routeUid: pattern.route_uid,
+      subRouteUid: pattern.subroute_uid ?? undefined,
       direction: pattern.direction,
       label: `${pattern.departure_name} → ${pattern.destination_name}`,
       subRouteName: pattern.subroute_name,
@@ -154,7 +156,8 @@ export async function getSnapshotRouteVariants(
         })),
       },
       updatedAt: pattern.updated_at,
-    } satisfies RouteMapVariant
+    }
+    return variant
   }))).filter((variant): variant is RouteMapVariant => variant !== null)
 }
 
@@ -216,7 +219,7 @@ export async function getCityNetwork(env: TransitBindings, city: string): Promis
 
   const [patterns, places] = await Promise.all([
     env.TRANSIT_DB.prepare(`
-      SELECT p.pattern_id, p.route_uid, r.route_name, p.subroute_name, p.direction,
+      SELECT p.pattern_id, p.route_uid, p.subroute_uid, r.route_name, p.subroute_name, p.direction,
         p.departure_name, p.destination_name, p.shape_key, p.updated_at
       FROM patterns p
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
