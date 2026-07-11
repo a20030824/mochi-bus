@@ -276,7 +276,6 @@ export async function findNearbyStopPlaces(
     FROM stop_places
     WHERE version = ? AND city_code = ?
       AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
-    LIMIT 100
   `).bind(
     version, city,
     latitude - latitudeDelta, latitude + latitudeDelta,
@@ -292,7 +291,8 @@ export async function findNearbyStopPlaces(
       distanceMeters: distanceMeters(latitude, longitude, place.latitude, place.longitude),
     }))
     .filter((place) => place.distanceMeters <= radiusMeters)
-    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters || a.placeId.localeCompare(b.placeId))
+    .slice(0, 100)
 }
 
 // 必須跟 scripts/sync-chiayi-snapshot.mjs 的 normalizeName 完全一致,
