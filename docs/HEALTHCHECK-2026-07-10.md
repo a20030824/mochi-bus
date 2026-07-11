@@ -86,7 +86,7 @@
 | SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/rate-limit.ts`、`src/lib/tdx.ts`、`src/routes/map.ts:450-532` | Phase 1 | Verified：input boundaries、per-location edge rate limit、single-flight 與 credential-scoped circuit breaker 已部署 `8fa1fd3d-…` |
 | SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts`、`web/boards/store.ts:135-305`、`src/ui.ts:331-407` | Phase 1 | Verified：server fingerprint/LRU 與 session-first browser lifecycle 已部署 `b71d9105-…` |
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
-| TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | Open |
+| TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | In Progress：`@cloudflare/vitest-pool-workers` 已納入 CI 覆蓋 middleware/body-limit；瀏覽器 Playwright／axe 仍 Open |
 | COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `src/domain/map/transfer-estimate.ts`、`web/map/main.ts` | Phase 2 | Verified：時間範圍、步行與候車不確定性已部署 `c298089c-…` |
 | ARCH-001 | P2 | 大量 browser JS 內嵌字串未被完整 typecheck/lint，地圖主檔過大 | `src/ui.ts:63-285,379-408`、`web/map/main.ts` | Phase 5 | Open |
 | QUERY-001 | P2 | nearby 先在 bbox 無排序 `LIMIT 100`，高密度區可能漏掉真正最近站牌 | `src/infrastructure/transit/snapshot-repository.ts`、`src/infrastructure/transit/snapshot-repository.test.ts` | Phase 2 | Verified：完整 bbox 候選經 Haversine 排序後才取最近 100；已部署 `f6c08bfb-…` |
@@ -527,6 +527,8 @@ interface RoutePatternRef {
 4. Playwright：城市／路線快速切換、BYOK setup、收藏 migration、空資料／500／429、分享 URL reload。
 5. Accessibility：axe + keyboard smoke；手動測 screen reader announcement 與 reduced motion。
 6. Performance budget：snapshot size／coordinates／parse/index reference、bundle budget；部署後另做真機 CWV。
+
+> 2026-07-11 Cloudflare Workers runtime 整合測試結果：commit `50223c8` 已推送並在 GitHub Actions CI 通過。新增 `@cloudflare/vitest-pool-workers` 作為第二個 Vitest project(`test/workers/**`,透過根目錄 `vitest.config.ts` 的 `test.projects` 分流,vitest 4 已移除獨立 `vitest.workspace.ts`,改用單一 config 內的 `projects` 陣列),既有 domain/lib 純邏輯測試留在原本的 Node 環境專案,互不拖慢也互不影響環境限制。新測試用 `SELF.fetch()` 在真正的 workerd runtime 裡驗證 HTTP→HTTPS 308 redirect、HSTS/CSP/X-Frame-Options 安全標頭、靜態 `/api/v1/map/cities`,以及 `journey-eta` 的 Hono `bodyLimit` 413——這些 middleware 語意在純 Node 環境從來測不到。安裝這個套件把 `wrangler`／`workerd` 透過依賴解析帶到更新版本,連帶讓 `wrangler types --check` 偵測到落差,已重新產生 `worker-configuration.d.ts`(diff 只是 Email reply builder、Workflow dynamic delay 等跟本專案 bindings 無關的環境型別新增)。30 個測試檔、195/195 tests(新增 6 個 workers-runtime 測試)、typegen、TypeScript、build、dry-run 與 `npm audit`（0 vulnerabilities）全數通過,CI 在 ubuntu-latest 上一樣綠燈,不需要修改 `.github/workflows/ci.yml`(`npm run check` 已經涵蓋兩個 project)。這是 dev/test 工具鏈變更,沒有新增或修改服務給使用者的 runtime 行為,因此沒有另外執行 production deploy。TEST-001 標記 In Progress：Workers runtime 整合測試已落地,API contract dual-read 測試、Playwright 瀏覽器整合(城市/路線切換、BYOK setup、收藏 migration、out-of-order response)、axe accessibility 與 performance budget 仍是 Open,留待下一輪——Playwright 需要安裝瀏覽器並起 dev server 跑真實互動,這輪沒有嘗試。
 
 #### P5-2：把內嵌腳本外移並拆分地圖模組
 
