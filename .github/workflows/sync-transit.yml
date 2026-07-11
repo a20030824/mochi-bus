@@ -64,6 +64,13 @@ jobs:
             echo "今天沒有排程的城市"
             exit 0
           fi
+          failed=""
           for city in $cities; do
-            npm run snapshot:city -- "$city"
+            if ! npm run snapshot:city -- "$city"; then
+              failed="$failed $city"
+            fi
           done
+          if [ -n "$failed" ]; then
+            echo "Snapshot publication failed for:$failed" >&2
+            exit 1
+          fi

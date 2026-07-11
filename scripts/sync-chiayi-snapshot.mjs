@@ -2,6 +2,8 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { validateSnapshot } from './transit-snapshot/validate.mjs'
+import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 
 const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
@@ -98,8 +100,8 @@ const LOCATION_CITY_CODES = {
 // 多數縣市的路線資料幾週才變一次,沒必要每次全量重匯。
 const stateKey = `snapshots/state/${CITY}.json`
 const contentHash = hashContent([routeItems, stopOfRouteItems, shapeItems, scheduleItems])
-if (r2 && process.env.SNAPSHOT_FORCE !== '1') {
-  const previousState = await s3GetJson(stateKey)
+const previousState = r2 ? await s3GetJson(stateKey) : null
+if (previousState && process.env.SNAPSHOT_FORCE !== '1') {
   if (previousState?.contentHash === contentHash) {
     console.log(JSON.stringify({ city: CITY, skipped: true, reason: 'unchanged', version: previousState.version }))
     process.exit(0)
@@ -145,7 +147,9 @@ for (const item of scheduleItems) {
   schedulesByRouteUid.set(item.RouteUID, list)
 }
 for (const route of routeByUid.values()) {
-  await writeFile(join(scheduleDir, `${route.uid}.json`), JSON.stringify(schedulesByRouteUid.get(route.uid) ?? []))
+  const schedules = schedulesByRouteUid.get(route.uid) ?? []
+  schedulesByRouteUid.set(route.uid, schedules)
+  await writeFile(join(scheduleDir, `${route.uid}.json`), JSON.stringify(schedules))
 }
 
 const patterns = []
@@ -288,17 +292,11 @@ for (const bundle of placeBundles.values()) {
 
 const sql = []
 sql.push('PRAGMA foreign_keys=OFF;')
-for (const route of routeByUid.values()) sql.push(`INSERT INTO routes VALUES (${values(version, CITY, route.uid, route.name, route.departure, route.destination)});`)
-for (const pattern of patterns) sql.push(`INSERT INTO patterns VALUES (${values(version, pattern.id, CITY, pattern.routeUid, pattern.subrouteUid, pattern.subrouteName, pattern.direction, pattern.departure, pattern.destination, pattern.shapeKey, pattern.updatedAt)});`)
-for (const place of places.values()) sql.push(`INSERT INTO stop_places VALUES (${values(version, place.id, CITY, place.name, place.lat, place.lon)});`)
-for (const stop of stops.values()) sql.push(`INSERT INTO stops VALUES (${values(version, stop.uid, CITY, stop.name, stop.normalized, stop.lat, stop.lon, stop.placeId)});`)
-for (const item of patternStops) sql.push(`INSERT INTO pattern_stops VALUES (${values(version, item.patternId, item.stopUid, item.placeId, item.sequence)});`)
-sql.push(`INSERT INTO dataset_versions(city_code, active_version, source_updated_at, imported_at) VALUES (${values(CITY, version, new Date().toISOString(), new Date().toISOString())}) ON CONFLICT(city_code) DO UPDATE SET active_version=excluded.active_version, source_updated_at=excluded.source_updated_at, imported_at=excluded.imported_at;`)
-sql.push(`DELETE FROM pattern_stops WHERE version IN (SELECT DISTINCT version FROM patterns WHERE city_code=${sqlValue(CITY)}) AND version NOT IN (SELECT version FROM patterns WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
-sql.push(`DELETE FROM stops WHERE city_code=${sqlValue(CITY)} AND version NOT IN (SELECT version FROM stops WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
-sql.push(`DELETE FROM stop_places WHERE city_code=${sqlValue(CITY)} AND version NOT IN (SELECT version FROM stop_places WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
-sql.push(`DELETE FROM patterns WHERE city_code=${sqlValue(CITY)} AND version NOT IN (SELECT version FROM patterns WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
-sql.push(`DELETE FROM routes WHERE city_code=${sqlValue(CITY)} AND version NOT IN (SELECT version FROM routes WHERE city_code=${sqlValue(CITY)} GROUP BY version ORDER BY version DESC LIMIT 2);`)
+for (const route of routeByUid.values()) sql.push(`INSERT OR REPLACE INTO routes VALUES (${values(version, CITY, route.uid, route.name, route.departure, route.destination)});`)
+for (const pattern of patterns) sql.push(`INSERT OR REPLACE INTO patterns VALUES (${values(version, pattern.id, CITY, pattern.routeUid, pattern.subrouteUid, pattern.subrouteName, pattern.direction, pattern.departure, pattern.destination, pattern.shapeKey, pattern.updatedAt)});`)
+for (const place of places.values()) sql.push(`INSERT OR REPLACE INTO stop_places VALUES (${values(version, place.id, CITY, place.name, place.lat, place.lon)});`)
+for (const stop of stops.values()) sql.push(`INSERT OR REPLACE INTO stops VALUES (${values(version, stop.uid, CITY, stop.name, stop.normalized, stop.lat, stop.lon, stop.placeId)});`)
+for (const item of patternStops) sql.push(`INSERT OR REPLACE INTO pattern_stops VALUES (${values(version, item.patternId, item.stopUid, item.placeId, item.sequence)});`)
 // 大城市單檔數萬條 statement 會觸發 D1 大交易的內部錯誤(object reset),
 // 分塊依序執行。安全性:啟用新版本的 dataset_versions upsert 在最後一塊,
 // 中途失敗只會留下未啟用的孤兒列,線上仍由舊版本服務,重跑即可。
@@ -316,7 +314,7 @@ const networkFile = join(outputRoot, 'network.json')
 // (雙北 35MB+ 在 Worker 內 parse+stringify 會撞記憶體上限),不再有機會補欄位。
 // 全路網圖層是 0.34 透明度的 2.6px 背景淡線,shape 用 ~8m 容差簡化就夠,
 // 檔案可縮小數倍;細節路線圖用的 shapes/*.json 不動,維持原始線形。
-await writeFile(networkFile, JSON.stringify({
+const network = {
   schemaVersion: 1,
   city: CITY,
   version,
@@ -335,9 +333,16 @@ await writeFile(networkFile, JSON.stringify({
   places: [...places.values()].map((place) => ({
     placeId: place.id, name: place.name, latitude: place.lat, longitude: place.lon,
   })),
-}))
+}
+await writeFile(networkFile, JSON.stringify(network))
 
-await putObjects([
+const validation = validateSnapshot({
+  city: CITY, version, routes: routeByUid, patterns, stops, places, patternStops,
+  schedules: schedulesByRouteUid, placeBundles, network,
+}, previousState)
+console.log(JSON.stringify({ city: CITY, version, phase: 'local-validation', ...validation }))
+
+const artifactTasks = [
   ...patterns.map((pattern) => ({
     key: pattern.shapeKey,
     file: join(shapeDir, `${encodeURIComponent(pattern.id)}.json`),
@@ -354,14 +359,35 @@ await putObjects([
     contentType: 'application/json',
   })),
   { key: networkKey, file: networkFile, contentType: 'application/json' },
-])
-for (const file of sqlFiles) await runD1(file)
+]
+const manifestKey = `snapshots/${version}/cities/${CITY}/manifest.json`
+const manifestFile = join(outputRoot, 'manifest.json')
+const manifest = await createArtifactManifest(artifactTasks, validation.counts)
+await writeFile(manifestFile, JSON.stringify(manifest))
+artifactTasks.push({ key: manifestKey, file: manifestFile, contentType: 'application/json' })
+
+const previousVersion = existingRows.active[0]?.active_version ?? null
+const importedAt = new Date().toISOString()
+const activationFile = join(outputRoot, 'activate.sql')
+await writeFile(activationFile,
+  `INSERT INTO dataset_versions(city_code, active_version, source_updated_at, imported_at) VALUES (${values(CITY, version, importedAt, importedAt)}) ON CONFLICT(city_code) DO UPDATE SET active_version=excluded.active_version, source_updated_at=excluded.source_updated_at, imported_at=excluded.imported_at;`)
 const allVersions = [
   ...existingRows.routes, ...existingRows.patterns, ...existingRows.places,
 ].map((row) => row.version)
-const previousVersion = [...new Set(allVersions)].sort().at(-1)
-const versionsToDelete = new Set(allVersions.filter((item) => item !== previousVersion))
-await deleteObjects([...new Set([
+const retainedPreviousVersion = previousVersion ?? [...new Set(allVersions)].sort().at(-1)
+const versionsToDelete = new Set(allVersions.filter((item) => item !== retainedPreviousVersion))
+const cleanupFile = versionsToDelete.size ? join(outputRoot, 'cleanup.sql') : null
+if (versionsToDelete.size) {
+  const cleanupSql = [
+    `DELETE FROM pattern_stops WHERE version IN (${[...versionsToDelete].map(sqlValue).join(',')});`,
+    `DELETE FROM stops WHERE city_code=${sqlValue(CITY)} AND version IN (${[...versionsToDelete].map(sqlValue).join(',')});`,
+    `DELETE FROM stop_places WHERE city_code=${sqlValue(CITY)} AND version IN (${[...versionsToDelete].map(sqlValue).join(',')});`,
+    `DELETE FROM patterns WHERE city_code=${sqlValue(CITY)} AND version IN (${[...versionsToDelete].map(sqlValue).join(',')});`,
+    `DELETE FROM routes WHERE city_code=${sqlValue(CITY)} AND version IN (${[...versionsToDelete].map(sqlValue).join(',')});`,
+  ]
+  await writeFile(cleanupFile, cleanupSql.join('\n'))
+}
+const obsoleteObjectKeys = [...new Set([
   ...existingRows.patterns.filter((item) => versionsToDelete.has(item.version))
     .map((item) => `snapshots/${item.version}/cities/${CITY}/shapes/${item.pattern_id}.json`),
   ...existingRows.routes.filter((item) => versionsToDelete.has(item.version))
@@ -369,13 +395,45 @@ await deleteObjects([...new Set([
   ...existingRows.places.filter((item) => versionsToDelete.has(item.version))
     .map((item) => `snapshots/${item.version}/cities/${CITY}/places/${item.place_id}.json`),
   ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/network.json`),
-])])
-if (r2) {
-  await s3Request('PUT', stateKey, JSON.stringify({
-    contentHash, version, updatedAt: new Date().toISOString(),
-  }), 'application/json')
-}
-console.log(JSON.stringify({ city: CITY, version, routes: routeByUid.size, patterns: patterns.length, stops: stops.size, places: places.size, schedules: schedulesByRouteUid.size, placeBundles: placeBundles.size }))
+  ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/manifest.json`),
+])]
+await publishWithRollback({
+  targetVersion: version,
+  previousVersion,
+  stage: async () => {
+    await putObjects(artifactTasks)
+    for (const file of sqlFiles) await runD1(file)
+  },
+  validate: () => validateRemoteSnapshot(version, validation.counts, manifestKey),
+  activate: () => runD1(activationFile),
+  smoke: () => smokePublishedSnapshot(version),
+  rollback: async (targetVersion) => {
+    const rollbackFile = join(outputRoot, 'rollback.sql')
+    await writeFile(rollbackFile,
+      `UPDATE dataset_versions SET active_version=${sqlValue(targetVersion)}, imported_at=${sqlValue(new Date().toISOString())} WHERE city_code=${sqlValue(CITY)};`)
+    await runD1(rollbackFile)
+    console.error(JSON.stringify({ city: CITY, version, phase: 'rollback', restoredVersion: targetVersion }))
+  },
+  cleanup: async () => {
+    if (r2) {
+      await s3Request('PUT', stateKey, JSON.stringify({
+        schemaVersion: 1,
+        contentHash,
+        version,
+        previousVersion,
+        manifestKey,
+        counts: validation.counts,
+        generatedAt: importedAt,
+        publishedAt: new Date().toISOString(),
+        source: 'TDX',
+        workflowRun: process.env.GITHUB_RUN_ID ?? null,
+      }), 'application/json')
+    }
+    if (cleanupFile) await runD1(cleanupFile)
+    await deleteObjects(obsoleteObjectKeys)
+  },
+})
+console.log(JSON.stringify({ city: CITY, version, previousVersion, phase: 'published', ...validation.counts }))
 
 function values(...items) { return items.map(sqlValue).join(', ') }
 function sqlValue(value) {
@@ -510,6 +568,79 @@ function hashContent(payloads) {
   const stable = JSON.stringify(payloads, (key, value) => volatileKeys.has(key) ? undefined : value)
   return createHash('sha256').update(`format:${SNAPSHOT_FORMAT}\n`).update(stable).digest('hex')
 }
+async function createArtifactManifest(tasks, counts) {
+  const artifacts = []
+  for (const task of tasks) {
+    const body = await readFile(task.file)
+    artifacts.push({
+      key: task.key,
+      bytes: body.byteLength,
+      sha256: createHash('sha256').update(body).digest('hex'),
+      contentType: task.contentType,
+    })
+  }
+  return {
+    schemaVersion: 1, city: CITY, version, contentHash,
+    generatedAt: new Date().toISOString(), source: 'TDX',
+    workflowRun: process.env.GITHUB_RUN_ID ?? null,
+    counts, artifacts,
+  }
+}
+async function validateRemoteSnapshot(targetVersion, expectedCounts, manifestKey) {
+  const result = queryRemoteD1([
+    `SELECT COUNT(*) AS count FROM routes WHERE version=${sqlValue(targetVersion)} AND city_code=${sqlValue(CITY)}`,
+    `SELECT COUNT(*) AS count FROM patterns WHERE version=${sqlValue(targetVersion)} AND city_code=${sqlValue(CITY)}`,
+    `SELECT COUNT(*) AS count FROM stops WHERE version=${sqlValue(targetVersion)} AND city_code=${sqlValue(CITY)}`,
+    `SELECT COUNT(*) AS count FROM stop_places WHERE version=${sqlValue(targetVersion)} AND city_code=${sqlValue(CITY)}`,
+    `SELECT COUNT(*) AS count FROM pattern_stops WHERE version=${sqlValue(targetVersion)}`,
+    `SELECT
+      (SELECT COUNT(*) FROM patterns p LEFT JOIN routes r ON r.version=p.version AND r.route_uid=p.route_uid WHERE p.version=${sqlValue(targetVersion)} AND r.route_uid IS NULL)
+      + (SELECT COUNT(*) FROM stops s LEFT JOIN stop_places sp ON sp.version=s.version AND sp.place_id=s.place_id WHERE s.version=${sqlValue(targetVersion)} AND sp.place_id IS NULL)
+      + (SELECT COUNT(*) FROM pattern_stops ps LEFT JOIN patterns p ON p.version=ps.version AND p.pattern_id=ps.pattern_id LEFT JOIN stops s ON s.version=ps.version AND s.stop_uid=ps.stop_uid LEFT JOIN stop_places sp ON sp.version=ps.version AND sp.place_id=ps.place_id WHERE ps.version=${sqlValue(targetVersion)} AND (p.pattern_id IS NULL OR s.stop_uid IS NULL OR sp.place_id IS NULL)) AS count`,
+  ].join(';'))
+  const actual = {
+    routes: Number(result[0]?.results?.[0]?.count),
+    patterns: Number(result[1]?.results?.[0]?.count),
+    stops: Number(result[2]?.results?.[0]?.count),
+    places: Number(result[3]?.results?.[0]?.count),
+    patternStops: Number(result[4]?.results?.[0]?.count),
+  }
+  for (const [name, expected] of Object.entries(expectedCounts)) {
+    if (name in actual && actual[name] !== expected) {
+      throw new Error(`Remote D1 ${name} count mismatch: ${actual[name]} != ${expected}`)
+    }
+  }
+  const dangling = Number(result[5]?.results?.[0]?.count)
+  if (dangling !== 0) throw new Error(`Remote D1 contains ${dangling} dangling snapshot references`)
+  if (r2) {
+    const remoteManifest = await s3GetJson(manifestKey)
+    if (remoteManifest?.version !== targetVersion || remoteManifest?.contentHash !== contentHash) {
+      throw new Error('Remote R2 manifest does not match the staged snapshot')
+    }
+  }
+  console.log(JSON.stringify({ city: CITY, version: targetVersion, phase: 'remote-validation', counts: actual }))
+}
+async function smokePublishedSnapshot(targetVersion) {
+  const baseUrl = process.env.SNAPSHOT_SMOKE_BASE_URL ?? 'https://bus.moc96336.com'
+  const url = `${baseUrl}/api/v1/map/routes?city=${encodeURIComponent(CITY)}&snapshot=${encodeURIComponent(targetVersion)}`
+  let lastError
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(10_000), cache: 'no-store' })
+      const body = await response.json()
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (body.source !== 'snapshot' || body.snapshotVersion !== targetVersion || !Array.isArray(body.routes) || body.routes.length === 0) {
+        throw new Error(`unexpected active snapshot ${body.snapshotVersion ?? 'missing'}`)
+      }
+      console.log(JSON.stringify({ city: CITY, version: targetVersion, phase: 'public-smoke', routes: body.routes.length }))
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt < 12) await new Promise((resolve) => setTimeout(resolve, 10_000))
+    }
+  }
+  throw new Error(`Public snapshot smoke failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+}
 async function s3GetJson(key) {
   const response = await r2.client.fetch(objectUrl(key))
   if (response.status === 404) {
@@ -584,17 +715,22 @@ function queryExistingSnapshots() {
     `SELECT DISTINCT version, route_uid FROM routes WHERE city_code=${cityLiteral}`,
     `SELECT DISTINCT version, pattern_id FROM patterns WHERE city_code=${cityLiteral}`,
     `SELECT DISTINCT version, place_id FROM stop_places WHERE city_code=${cityLiteral}`,
+    `SELECT active_version FROM dataset_versions WHERE city_code=${cityLiteral}`,
   ].join(';')
+  const payload = queryRemoteD1(sql)
+  return {
+    routes: payload[0]?.results ?? [],
+    patterns: payload[1]?.results ?? [],
+    places: payload[2]?.results ?? [],
+    active: payload[3]?.results ?? [],
+  }
+}
+function queryRemoteD1(sql) {
   const result = spawnSync(process.execPath, [
     'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE,
     '--remote', '--json', '--command', sql,
   // 大城市的既有列表 JSON 會超過 spawnSync 預設 1MB 的 maxBuffer,截斷會讓 JSON.parse 爆掉
   ], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-  if (result.status !== 0) throw new Error(`Unable to inspect existing snapshots: ${result.stderr}`)
-  const payload = JSON.parse(result.stdout)
-  return {
-    routes: payload[0]?.results ?? [],
-    patterns: payload[1]?.results ?? [],
-    places: payload[2]?.results ?? [],
-  }
+  if (result.status !== 0) throw new Error(`Unable to query remote D1: ${result.stderr}`)
+  return JSON.parse(result.stdout)
 }

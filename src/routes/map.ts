@@ -15,6 +15,7 @@ import { getRouteMapVariants } from '../infrastructure/tdx/map'
 import {
   findNearbyStopPlaces,
   getCityNetwork,
+  getActiveSnapshotVersion,
   getDirectRoutes,
   getJourneyLegStopRefs,
   getOneTransferRoutes,
@@ -170,7 +171,14 @@ map.get('/api/v1/map/routes', async (c) => {
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
     const snapshotRoutes = await getSnapshotRouteCatalog(c.env, city)
     const routes = snapshotRoutes.length ? snapshotRoutes : await getRouteCatalog(tdxEnv(c), city)
-    return c.json({ schemaVersion: 2, city, source: snapshotRoutes.length ? 'snapshot' : 'tdx', routes }, 200, {
+    const snapshotVersion = snapshotRoutes.length ? await getActiveSnapshotVersion(c.env, city) : null
+    return c.json({
+      schemaVersion: 2,
+      city,
+      source: snapshotRoutes.length ? 'snapshot' : 'tdx',
+      snapshotVersion,
+      routes,
+    }, 200, {
       'Cache-Control': `public, max-age=${snapshotRoutes.length ? 86400 : 300}`,
     })
   } catch (error) {

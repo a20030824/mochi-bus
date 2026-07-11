@@ -45,6 +45,10 @@ async function getActiveVersion(env: TransitBindings, city: string): Promise<str
   return row.active_version
 }
 
+export function getActiveSnapshotVersion(env: TransitBindings, city: string): Promise<string | null> {
+  return getActiveVersion(env, city)
+}
+
 export async function getSnapshotSchedule(
   env: TransitBindings,
   city: string,
