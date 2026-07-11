@@ -2,6 +2,7 @@ import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
 import { createViewBackController } from '../../src/domain/map/view-back'
 import { matchStopsToShape } from '../../src/domain/map/shape-matcher'
+import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import {
   describeTransferEstimate,
@@ -231,6 +232,16 @@ let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = '
 let routeReturnsToTrip = false
 let activeRouteColor = '#b85f49'
 let previewRequest = 0
+// 城市/路線/路網/附近站牌/地點/行程結果是互斥的 drawer 主視圖,各自的
+// fetch 都可能被使用者的下一個動作超車;用共用 coordinator 讓「慢的舊回應」
+// 安靜作廢,不覆蓋 store、DOM、URL,也不彈錯誤(詳見 nav-request.ts)。
+const navRequests = createNavRequestCoordinator()
+function beginNavRequest(): { requestId: number; signal: AbortSignal } {
+  return navRequests.begin()
+}
+function isStaleNav(requestId: number): boolean {
+  return navRequests.isStale(requestId)
+}
 let selectedTransferIndex = 0
 let routeBackAction: (() => void) | undefined
 // 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
@@ -401,6 +412,7 @@ map.on('click', (event) => {
 
 function showTaiwan() {
   stopVehicleRefresh()
+  beginNavRequest()
   activeCity = undefined
   networkButton.hidden = true
   setNetworkVisible(false)
@@ -533,6 +545,7 @@ async function chooseCity(city: MapCity) {
   stopVehicleRefresh()
   activeCity = city
   setActiveCity(city.code)
+  const { requestId, signal } = beginNavRequest()
   networkButton.hidden = false
   setNetworkVisible(false)
   selectionLayer.clearLayers()
@@ -553,15 +566,17 @@ async function chooseCity(city: MapCity) {
   setViewBack(() => showRegion(city.region))
 
   try {
-    const response = await tdxFetch(`/api/v1/map/routes?city=${encodeURIComponent(city.code)}`)
+    const response = await tdxFetch(`/api/v1/map/routes?city=${encodeURIComponent(city.code)}`, { signal })
     const data = await response.json() as { routes?: RouteItem[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
+    if (isStaleNav(requestId)) return
     routes = data.routes
     routesCityCode = city.code
     category = '全部'
     renderRoutePicker()
     setStatus(`${city.name} · ${routes.length} 條路線`)
   } catch {
+    if (isStaleNav(requestId)) return
     setStatus('目前無法載入這個縣市的路線。', true)
   }
 }
@@ -886,14 +901,16 @@ async function loadRoute(
   // 退路是候選清單;指到 renderRoutePicker 會把整趟規劃清掉。
   const loading = routeLoadingBack({ returnToTrip, hasStopBackAction: Boolean(backAction) })
   const loadingBack = backActionFor(loading.target)
+  const { requestId, signal } = beginNavRequest()
   setStatus(`${routeName} · 正在讀取城市裡的路徑…`)
   drawer.replaceChildren(drawerBack(loading.label, loadingBack), heading(routeName, '正在拼起路線與站牌…'))
   setViewBack(loadingBack)
   try {
     const params = new URLSearchParams({ city: activeCity.code, route: routeName })
-    const response = await tdxFetch(`/api/v1/map/route?${params}`)
+    const response = await tdxFetch(`/api/v1/map/route?${params}`, { signal })
     const data = await response.json() as { variants?: RouteMapVariant[]; error?: string }
     if (!response.ok || !data.variants?.length) throw new Error(data.error)
+    if (isStaleNav(requestId)) return
     const preferred = data.variants.find((variant) => variant.variantKey === preferredVariant)
     lastVariantChoices = { routeName, variants: data.variants }
     variantPickerUsed = !preferred && data.variants.length > 1
@@ -906,6 +923,7 @@ async function loadRoute(
       setStatus(`${routeName} · 選擇行駛方向`)
     }
   } catch (error) {
+    if (isStaleNav(requestId)) return
     setStatus(error instanceof Error && error.message ? error.message : '目前無法取得這條路線。', true)
   }
 }
@@ -1112,10 +1130,11 @@ async function toggleCityNetwork() {
     setNetworkVisible(false)
     return
   }
+  const { requestId, signal } = beginNavRequest()
   setStatus('正在展開整個城市路網…')
   try {
     if (!networkCache || networkCache.city !== activeCity.code) {
-      const response = await fetch(`/api/v1/map/network?city=${encodeURIComponent(activeCity.code)}`)
+      const response = await fetch(`/api/v1/map/network?city=${encodeURIComponent(activeCity.code)}`, { signal })
       const data = await response.json() as CityNetwork & { error?: string }
       if (!response.ok) throw new Error(data.error)
       // 圖層全部 non-interactive,hover/click 的命中由網格索引回答;跟資料一起快取
@@ -1125,9 +1144,11 @@ async function toggleCityNetwork() {
       )
       networkCache = { city: activeCity.code, data, index }
     }
+    if (isStaleNav(requestId)) return
     drawCityNetwork(networkCache.data)
     setStatus(`全路網 · ${networkCache.data.routes.length} 個方向 · ${networkCache.data.places.length} 個站點`)
   } catch (error) {
+    if (isStaleNav(requestId)) return
     setStatus(error instanceof Error && error.message ? error.message : '全路網讀取失敗', true)
   }
 }
@@ -1290,6 +1311,7 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
   const radius = map.getZoom() >= 15 ? 300 : 500
   unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(nearbyLayer)
   setStatus('正在找這附近的站牌…')
+  const { requestId, signal } = beginNavRequest()
 
   try {
     const params = new URLSearchParams({
@@ -1298,13 +1320,15 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
       lon: String(longitude),
       radius: String(radius),
     })
-    const response = await fetch(`/api/v1/map/nearby?${params}`)
+    const response = await fetch(`/api/v1/map/nearby?${params}`, { signal })
     const data = await response.json() as { places?: NearbyPlace[]; error?: string }
     if (!response.ok || !data.places) throw new Error(data.error)
+    if (isStaleNav(requestId)) return
     lastNearbyPlaces = data.places.slice(0, 12)
     renderNearbyPlaces()
     if (autoPreview && lastNearbyPlaces[0]) await showPlaceRoutes(lastNearbyPlaces[0])
   } catch (error) {
+    if (isStaleNav(requestId)) return
     setStatus(error instanceof Error && error.message ? error.message : '附近站牌讀取失敗', true)
   }
 }
@@ -1416,14 +1440,17 @@ async function loadDirectRoutes() {
   if (!activeCity || !selectedFrom || !selectedTo) return
   const from = selectedFrom
   const to = selectedTo
+  const { requestId, signal } = beginNavRequest()
   setStatus(`正在找 ${from.name} → ${to.name} 的直達車…`)
   try {
     const params = new URLSearchParams({ city: activeCity.code, from: from.placeId, to: to.placeId })
-    const response = await fetch(`/api/v1/map/direct?${params}`)
+    const response = await fetch(`/api/v1/map/direct?${params}`, { signal })
     const data = await response.json() as { routes?: DirectRoute[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
+    if (isStaleNav(requestId)) return
     if (data.routes.length) {
       const rankedRoutes = await rankDirectRoutesByEta(data.routes)
+      if (isStaleNav(requestId)) return
       lastDirectRoutes = rankedRoutes
       lastTransferPlans = []
       renderDirectRoutes(rankedRoutes)
@@ -1431,16 +1458,19 @@ async function loadDirectRoutes() {
       return
     }
     setStatus('沒有直達車，正在找一次轉乘…')
-    const transferResponse = await fetch(`/api/v1/map/transfer?${params}`)
+    const transferResponse = await fetch(`/api/v1/map/transfer?${params}`, { signal })
     const transferData = await transferResponse.json() as { plans?: TransferPlan[]; error?: string }
     if (!transferResponse.ok || !transferData.plans) throw new Error(transferData.error)
+    if (isStaleNav(requestId)) return
     lastDirectRoutes = []
     const rankedPlans = await rankTransferPlansByEta(transferData.plans)
+    if (isStaleNav(requestId)) return
     lastTransferPlans = rankedPlans
     selectedTransferIndex = 0
     renderTransferPlans(rankedPlans)
     await previewTransferPlans(rankedPlans)
   } catch (error) {
+    if (isStaleNav(requestId)) return
     setStatus(error instanceof Error && error.message ? error.message : '直達路線查詢失敗', true)
     // 這時 tripStage 已回 idle(點地圖會變成逛附近站牌),不能把使用者
     // 留在「再點一下目的地」的殘局:給重試,退路則回到重新選目的地。
@@ -1944,11 +1974,12 @@ async function showPlaceRoutes(place: NearbyPlace) {
   )
   setViewBack(renderNearbyPlaces)
   setStatus(`正在讀取 ${place.name} 的路線…`)
+  const { requestId, signal } = beginNavRequest()
   try {
-    const response = await tdxFetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/arrivals?city=${encodeURIComponent(activeCity.code)}`)
+    const response = await tdxFetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/arrivals?city=${encodeURIComponent(activeCity.code)}`, { signal })
     const data = await response.json() as { routes?: PlaceRoute[]; error?: string }
     if (!response.ok || !data.routes) throw new Error(data.error)
-    if (placeRequest !== previewRequest) return
+    if (placeRequest !== previewRequest || isStaleNav(requestId)) return
     const frequency = new Map<string, number>()
     readBoards().flatMap((board) => board.buses).forEach((bus) => {
       const routeUid = typeof bus.routeUid === 'string' ? bus.routeUid : ''
@@ -2004,12 +2035,14 @@ async function showPlaceRoutes(place: NearbyPlace) {
       list,
     )
     await previewPlaceRoutes(sortedRoutes, place)
+    if (!activeCity || isStaleNav(requestId)) return
     drawTripEndpoints()
     map.panTo([place.latitude, place.longitude])
     history.replaceState(null, '', `/map?city=${activeCity.code}&place=${encodeURIComponent(place.placeId)}`)
     setDocumentTitle(`${place.name} 到站時間`)
     setStatus(`${place.name} · ${data.routes.length} 個行車方向`)
   } catch (error) {
+    if (isStaleNav(requestId)) return
     setStatus(error instanceof Error && error.message ? error.message : '站牌路線讀取失敗', true)
   }
 }
