@@ -90,7 +90,7 @@
 | COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `web/map/main.ts:1494-1506,1588-1592` | Phase 2 | Open |
 | ARCH-001 | P2 | 大量 browser JS 內嵌字串未被完整 typecheck/lint，地圖主檔過大 | `src/ui.ts:63-285,379-408`、`web/map/main.ts` | Phase 5 | Open |
 | QUERY-001 | P2 | nearby 先在 bbox 無排序 `LIMIT 100`，高密度區可能漏掉真正最近站牌 | `src/infrastructure/transit/snapshot-repository.ts:274-295` | Phase 2 | Open |
-| CACHE-001 | P2 | Cache API write 位於回應關鍵路徑，cache failure 可能拖累或弄壞主請求 | `src/lib/tdx.ts:666-701`、`src/routes/map.ts:65-86` | Phase 1 | Open |
+| CACHE-001 | P2 | Cache API write 位於回應關鍵路徑，cache failure 可能拖累或弄壞主請求 | `src/lib/edge-cache.ts`、`src/lib/tdx.ts`、`src/routes/map.ts` | Phase 1 | Verified：背景寫入與 read/write fail-open 已部署 `19229db5-…` |
 | PIPE-001 | P2 | token fetch 無 timeout/retry，Retry-After 解析有陷阱，單城失敗中止整批 | `scripts/sync-chiayi-snapshot.mjs:22-54`、`.github/workflows/sync-transit.yml:72-74` | Phase 3 | Open |
 | DX-001 | P2 | Node 版本文件與 Wrangler 要求不一致，bindings typegen 不可重現 | `README.md`、`.dev.vars`、`worker-configuration.d.ts` | Phase 1 | Verified：Node ≥22／CI 24 LTS；deterministic typegen check 通過 |
 | A11Y-001 | P2 | 表單 label、錯誤恢復、focus、live region、對比與 reduced motion 不完整 | `src/ui.ts:332-335`、`src/map-page.ts:39-40`、`web/map/style.css` | Phase 5 | Open |
@@ -161,6 +161,8 @@
 > 2026-07-10 edge rate limit／circuit breaker 結果：commit `508ee92` 已 100% 部署為 `8fa1fd3d-3621-4c9e-a7cb-0bcfb351b93a`，前一版 `1f8ec17c-3ce4-496d-ba19-bfe6e4b1839b` 可直接回滾。Wrangler 新增 standard（120/60s）、expensive（30/60s）、TDX verify（5/60s）三個 Rate Limiting bindings；頁面、cities 與 locate 不計量，其餘 API 預設受保護。公開免登入服務沒有穩定 user ID，因此 counter key 使用 Cloudflare 寫入的來源 IP；IP 不進 log／analytics／response，binding 失敗時結構化記錄且 fail-open。TDX token/data circuit 分開按 credential fingerprint 管理：60 秒內三次 timeout／5xx 開路 30 秒，429 立即開路並遵守 bounded `Retry-After`，quota 開路 5 分鐘，冷卻後只放一個 half-open probe，狀態表 hard cap 128。19 個測試檔、136/136 tests、typegen、TypeScript、build、dry-run 全數通過；production smoke 的首頁、cities、routes、nearby、vehicle path 均為 200，單一 keep-alive verify 測試由 400 收斂為 429，並確認 `Retry-After: 60`、`Cache-Control: no-store`、HSTS/CSP。注意 Workers Rate Limiting binding 官方語意是每個 Cloudflare location 的 permissive／eventually-consistent 防濫用機制，不是全球精準配額；若未來需要跨 PoP 強一致計數，應另以 Durable Object 實作。SEC-002 在此威脅模型下標記 Verified。
 
 > 2026-07-10 BYOK browser lifecycle 結果：commit `b580dd4` 已 100% 部署為 `b71d9105-4ff8-45ea-92e0-3759f4ccabb9`，前一版 `8fa1fd3d-3621-4c9e-a7cb-0bcfb351b93a` 可直接回滾。新憑證預設只寫 `sessionStorage`，該 API 被拒絕時再退回頁面記憶體；只有 setup 頁明確勾選「記住於此裝置」才寫 `localStorage`。舊 `mochi.bus.tdxAuth.v1` 首次讀取會搬到 session、刪除長期副本並顯示一次 migration 提示；模式切換會先確認舊副本已移除，不能清除時不會假裝成功。Stored value 重新驗證型別、空白與 120/240 長度界線，清除功能同時移除 legacy/session/device/notice；UI 補上 input labels、保存期限說明，既有 Client ID 可在不把 secret 回填到畫面的情況下切換模式。20 個測試檔、146/146 tests、typegen、TypeScript、build、dry-run 全數通過；production setup HTML、stable boards entry 與 hashed store chunk 一致，首頁/cities/assets 為 200，HSTS/CSP 等安全標頭正常。SEC-003 標記 Verified。
+
+> 2026-07-11 Cache API resilience 結果：commit `9b41401` 已 100% 部署為 `19229db5-4894-42ed-b674-1a32c6cf9ed2`，前一版 `b71d9105-4ff8-45ea-92e0-3759f4ccabb9` 可直接回滾。TDX 與即時到站的 Cache API 寫入改由 request-scoped `executionCtx.waitUntil()` 背景完成，且不變更或保存共用 bindings；無 execution context 的測試路徑則安全等待。所有 cache read/write rejection 與損壞 JSON 都會結構化記錄並 fail-open，不能再把有效 upstream 資料變成 5xx；既有 credential-scoped single-flight 保留。21 個測試檔、151/151 tests、typegen、TypeScript、build、dry-run 全數通過，並新增「未完成 cache write 不阻塞 TDX 回傳」與 read/write/scheduler failure regression tests。Production 首頁、cities、Chiayi routes/nearby 與 cache-busted vehicle path 均回 200，vehicle 同 URL 第二次由 0.72 秒降至 0.23 秒；HSTS/CSP 等安全標頭正常。CACHE-001 標記 Verified。
 
 #### P1-1：API 輸入與資源保護
 
@@ -243,6 +245,8 @@
 
 - 模擬 `cache.put` reject 時主請求仍成功。
 - 同 key 20 個並發 miss 只產生一次 upstream fetch。
+
+> 2026-07-11 完成：以共用 fail-open adapter 統一 Cache API read/write；production 使用 `waitUntil` 背景寫入。延遲寫入、read/write rejection、scheduler failure 與 TDX 主回應不阻塞測試均通過，部署與線上 smoke 證據見風險登錄下方紀錄。既有 single-flight regression test 持續通過。
 
 #### P1-4：CI、secret scope、Node 與 typegen
 
