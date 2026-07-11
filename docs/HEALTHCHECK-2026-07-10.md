@@ -80,7 +80,7 @@
 | SEC-001 | P0 | HTTP 未跳 HTTPS、無 HSTS、仍接受 TLS 1.0/1.1 | 線上實測；`web/boards/store.ts:137-153`、`src/routes/bus.ts:184-192`、`src/routes/map.ts:99-103` 會傳遞 BYOK | Phase 0 | Verified：deployment `a564a2f5-…`；HSTS Stage 1 觀察中 |
 | COR-001 | P0 | 子路線識別遺失，可能混用 ETA／班表／收藏 | `src/domain/route-pattern.ts`、`src/lib/tdx.ts`、`src/domain/favorite-board.ts`、`src/routes/bus.ts` | Phase 2 | Verified：RouteUID/SubRouteUID/pattern identity 全鏈路已部署 `28b347d8-…` |
 | COR-002 | P0 | Journey ETA 用第一筆而非最佳 ETA，班表跨 route flatten | `src/domain/map/journey-estimate.ts`、`src/routes/map.ts`、`src/infrastructure/transit/snapshot-repository.ts` | Phase 2 | Verified：route/subroute-scoped ETA 與 schedule 聚合已部署 `91b1bdfc-…` |
-| DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/sync-chiayi-snapshot.mjs:117-220,293,337-355` | Phase 3 | Open |
+| DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/transit-snapshot/*`、`scripts/sync-chiayi-snapshot.mjs`、`docs/operations/transit-snapshot-publishing.md` | Phase 3 | Verified：gated publish 與 rollback 往返已用 Chiayi production snapshot 驗證 |
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | Open |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Open |
 | SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/rate-limit.ts`、`src/lib/tdx.ts`、`src/routes/map.ts:450-532` | Phase 1 | Verified：input boundaries、per-location edge rate limit、single-flight 與 credential-scoped circuit breaker 已部署 `8fa1fd3d-…` |
@@ -173,6 +173,8 @@
 > 2026-07-11 Journey identity correctness 結果：commit `ca924b0` 已 100% 部署為 `91b1bdfc-0e43-442a-800e-1572e2a2b89c`，前一版 `c298089c-7ca4-4005-8715-09a2048c1484` 可直接回滾。Journey realtime 不再對混合陣列取第一筆，改用既有 best-ETA ranking 並以 `RouteUID + SubRouteUID + direction + stopUid` 篩選；TDX fetch 與 schedule fallback 均按 `RouteUID` 去重／分桶，同名不同路線不再互借。repository 直接查出 `subroute_uid`，移除從 `patternId` 字串猜 identity；snapshot schedule 在提供 `RouteUID` 時會先向 active D1 version 驗證，再讀對應 R2 object。單一路線 realtime 或 schedule 失敗會結構化記錄並只讓該 leg 回 `source:none`，其他路線繼續。24 個測試檔、164/164 tests、typegen、TypeScript、build、dry-run 全數通過；production 真實兩段轉乘 Journey ETA 回 200／2 estimates，一段 `none`、另一段 `schedule:57`，證明部分缺資料不互相污染，地圖頁與 HSTS/CSP 正常。COR-002 標記 Verified。Response-level `partial/degraded` 摘要與 `updatedAt` 仍可在後續 API contract 強化時新增，目前每個 estimate 已有 `source`。
 
 > 2026-07-11 Route pattern identity 結果：commit `c92f5dc` 已 100% 部署為 `28b347d8-9fc2-4073-98e5-c336c1813645`，前一版 `91b1bdfc-0e43-442a-800e-1572e2a2b89c` 可直接回滾。新增共用 `RoutePatternRef`／穩定 key，將 `RouteUID + SubRouteUID + patternId + direction` 傳過 TDX catalog/stop groups、snapshot D1/R2 repository、API、canonical URL、地圖變體與 favorites；同名不同 RouteUID 不再被 catalog/realtime batch 合併，同站序不同 SubRouteUID 也保留為不同選項。舊 favorite 採 dual-read，缺 RouteUID 或地圖 patternId 時標記 `legacy-ambiguous`，只有唯一候選才自動補齊，否則提示重新選擇。25 個測試檔、171/171 tests、typegen、TypeScript、build、dry-run 與 npm audit（0 vulnerabilities）全數通過。Production 100%；首頁、setup、boards asset、routes/stops API 與 HSTS/CSP 正常。真實嘉義中山幹線回傳 `CYI071401`、`CYI0714A1`、`CYI0714B1` 等獨立變體；同方向共站但缺 SubRouteUID 的舊 URL 回 409，不再任意取第一條，補上 SubRouteUID 後 canonical redirect 302 → 200。COR-001 標記 Verified。
+
+> 2026-07-11 Snapshot publication safety 結果：commit `d3ebada`（rollback legacy credential follow-up `a595cd7`）的 Worker 觀測欄位已 100% 部署為 `be88a657-ce9c-4d7a-b3e0-389de1fb7c51`。發布流程改為 generate → local validate → immutable R2/D1 stage → remote counts/reference/manifest validate → 單一 D1 statement activate → cache-busted public API smoke → state/cleanup；pointer 切換前不刪舊版，smoke 失敗會自動恢復 previous，跨城市 workflow 會收集所有失敗再結束。Validator 拒絕空資料、超過 40% 數量暴跌、非法台灣座標、破損 shape、重複站序及所有 route/pattern/stop/place/network 懸空引用；每版 manifest 記錄 checksum、bytes、source、generatedAt、workflow run 與 counts。27 個測試檔、178/178 tests、typegen、TypeScript、build、dry-run 與 npm audit（0 vulnerabilities）全數通過。受控 Chiayi production publish `20260711T120518025Z` 通過 66 routes、273 patterns、3,106 stops、1,170 places、11,844 pattern-stop references 的 local/remote gate 與 66-route public smoke；previous `20260708T233947672Z` 保留。隨後執行新 → 舊 → 新 rollback 往返，兩次 smoke 均成功，最終 D1 與公開 API active version 都是 `20260711T120518025Z`。DATA-001 標記 Verified；操作與故障處理見 `docs/operations/transit-snapshot-publishing.md`。
 
 #### P1-1：API 輸入與資源保護
 
@@ -633,7 +635,7 @@ interface RoutePatternRef {
 - [x] 新增 PR/push CI，鎖住 tests、typecheck、build 與 dry-run 基線。
 - [x] 修好 `wrangler types --check`，再開始 schema 重構。
 - [x] route pattern identity 與收藏 migration fixtures 已建立，production smoke 已通過。
-- [ ] 把 snapshot validator 設計成 publish 的必要條件，而不是只發 warning。
+- [x] snapshot validator 已成為 publish 必要條件，並完成 production publish／rollback 往返演練。
 
 ## 10. 產品方向建議
 
