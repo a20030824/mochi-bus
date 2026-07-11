@@ -93,7 +93,7 @@
 | CACHE-001 | P2 | Cache API write 位於回應關鍵路徑，cache failure 可能拖累或弄壞主請求 | `src/lib/edge-cache.ts`、`src/lib/tdx.ts`、`src/routes/map.ts` | Phase 1 | Verified：背景寫入與 read/write fail-open 已部署 `19229db5-…` |
 | PIPE-001 | P2 | token fetch 無 timeout/retry，Retry-After 解析有陷阱，單城失敗中止整批 | `scripts/sync-chiayi-snapshot.mjs:22-54`、`.github/workflows/sync-transit.yml:72-74` | Phase 3 | Open |
 | DX-001 | P2 | Node 版本文件與 Wrangler 要求不一致，bindings typegen 不可重現 | `README.md`、`.dev.vars`、`worker-configuration.d.ts` | Phase 1 | Verified：Node ≥22／CI 24 LTS；deterministic typegen check 通過 |
-| A11Y-001 | P2 | 表單 label、錯誤恢復、focus、live region、對比與 reduced motion 不完整 | `src/ui.ts:332-335`、`src/map-page.ts:39-40`、`web/map/style.css` | Phase 5 | Open |
+| A11Y-001 | P2 | 表單 label、錯誤恢復、focus、live region、對比與 reduced motion 不完整 | `src/ui.ts:332-335`、`src/map-page.ts:39-40`、`web/map/style.css` | Phase 5 | In Progress:live region／reduced motion／setup picker 的 Escape+focus 已修;primary button 對比與錯誤恢復 retry action 仍 Open |
 | SEO-001 | P3 | canonical／OG image／Twitter card／setup noindex 等仍可補強 | `src/seo.ts`、`src/ui.ts`、`src/map-page.ts` | Phase 5 | Open |
 
 ## 5. 詳細整改計畫
@@ -570,6 +570,8 @@ interface RoutePatternRef {
 - 鍵盤可完成主要使用流程；axe 無 critical/serious violations。
 - 失敗不會留下無限 loading；使用者能理解發生什麼並重試。
 - 文字與控制項符合 WCAG AA 對比目標。
+
+> 2026-07-11 A11Y-001 第一輪結果:commit `dc1dfd5` 已部署為 `ee7003b7-53fe-441b-bf15-f8464638640e`(100%),前一版 `372af754-…` 可直接回滾。三個具體缺口:(1)`#map-status` 每次切城市/路線都會更新文字,卻沒有 `aria-live`,螢幕報讀者完全聽不到狀態變化(`#map-drawer` 早有,`#map-status` 沒有),已補上 `aria-live="polite"`。(2)`prefers-reduced-motion` 只關掉 `transition`,沒關 `animation`——`web/map/style.css` 的 route-loading shimmer 與 ETA/setup 頁所有 hover/collapse transition 對「已明確要求減少動態效果」的使用者仍持續播放,已在兩處補上 `animation:none!important`。(3)`/setup` 的路線 picker 行為上等同全頁 modal,原本沒有鍵盤退出路徑也不管理 focus:新增 Escape 關閉、開啟時 focus 移進 picker(`#city`)、關閉時 focus 還給觸發按鈕(`#add-board-button`),並用 Playwright 測試鎖住這個行為。30 個 vitest 測試檔、196/196 vitest tests,加上 3 個 Playwright e2e(golden path、race regression、新增的 Escape/focus 測試)全數通過,typegen、TypeScript、build、dry-run 與 `npm audit`(0 vulnerabilities)也過。Production 首頁、`/map`、`/setup` 均回 200,`#map-status` 的 `aria-live` 與 `map.css` 的 `animation:none!important` 都在線上確認存在,HSTS/CSP 正常。A11Y-001 標記 In Progress:primary button(白字在 `#df7357` 上)量測約 3.1:1,低於 WCAG AA 一般文字要求的 4.5:1——這是品牌色的視覺決定,沒有在未經設計覆核下自行改色;skeleton 的 retry action、BYOK 錯誤關聯、全站 axe 掃描與 focus-visible 逐一盤點仍是 Open。
 
 ## 6. 建議的 PR 切分與依賴順序
 
