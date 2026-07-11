@@ -1,7 +1,7 @@
 # Mochi Bus 健檢紀錄與整改計畫 — 2026-07-10
 
 > 本文件是 2026-07-10 深度健檢的可追蹤紀錄，也是後續修改的執行藍圖。
-> 狀態：**整改進行中；Phase 0、核心 Phase 1 護欄與 Phase 2 route/journey correctness 已部署驗證**。
+> 狀態：**整改進行中；Phase 0、Phase 1 護欄、Phase 2 route/journey correctness 與 Phase 3 快照發布安全已部署驗證，Phase 4（全路網效能）與 Phase 5（測試金字塔／模組拆分／可用性）待展開**。
 
 ## 1. 紀錄資訊
 
@@ -82,7 +82,7 @@
 | COR-002 | P0 | Journey ETA 用第一筆而非最佳 ETA，班表跨 route flatten | `src/domain/map/journey-estimate.ts`、`src/routes/map.ts`、`src/infrastructure/transit/snapshot-repository.ts` | Phase 2 | Verified：route/subroute-scoped ETA 與 schedule 聚合已部署 `91b1bdfc-…` |
 | DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/transit-snapshot/*`、`scripts/sync-chiayi-snapshot.mjs`、`docs/operations/transit-snapshot-publishing.md` | Phase 3 | Verified：gated publish 與 rollback 往返已用 Chiayi production snapshot 驗證 |
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | Open |
-| COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Open |
+| COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Verified：共用 nav-request coordinator 已部署 `ef8eefaf-…` |
 | SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/rate-limit.ts`、`src/lib/tdx.ts`、`src/routes/map.ts:450-532` | Phase 1 | Verified：input boundaries、per-location edge rate limit、single-flight 與 credential-scoped circuit breaker 已部署 `8fa1fd3d-…` |
 | SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts`、`web/boards/store.ts:135-305`、`src/ui.ts:331-407` | Phase 1 | Verified：server fingerprint/LRU 與 session-first browser lifecycle 已部署 `b71d9105-…` |
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
@@ -396,6 +396,8 @@ interface RoutePatternRef {
 - Vitest fake timers 驗證 coordinator。
 - Playwright route interception 模擬 out-of-order response。
 - 先逐 flow 導入，不一次重寫整個 map state。
+
+> 2026-07-11 stale response 防護結果：commit `a4e47ac` 已部署為 `ef8eefaf-4e98-4d49-8626-14c57989057c`（100%），前一版 `19229db5-…` 可直接回滾。新增純邏輯 `src/domain/map/nav-request.ts` 共用 coordinator：每次呼叫 `begin()` 換發新 epoch 並 `abort()` 前一輪還沒完成的 fetch,`isStale(requestId)` 讓任何比目前 epoch 舊的回應安靜作廢。`chooseCity`、`loadRoute`、`toggleCityNetwork`、`findNearbyPlaces`、`showPlaceRoutes`、`loadDirectRoutes`、`showTaiwan` 皆已接上,fetch 傳入對應 `signal`；stale 分支不更新 `routes`／`lastNearbyPlaces`／drawer／`history.replaceState`／document title,catch 內同樣先判斷 stale 才顯示錯誤,不會為使用者已經離開的請求彈錯誤 toast。全路網 fetch(單城市可達 35 MiB)在超車時會被真的 `abort()`,不只是忽略結果,同時省頻寬。`src/ui.ts` 的 `/setup` 城市／路線／站牌三段式選擇也補上同款 request id 防護。28 個測試檔、182/182 tests(新增 4 個 coordinator 單元測試,包含「A 慢、B 快」情境)、typegen、TypeScript、build、dry-run 與 `npm audit`（0 vulnerabilities）全數通過。Production 首頁、cities、Chiayi routes/nearby 均回 200,部署後的 `map.js` 已確認含新 coordinator 邏輯,HSTS/CSP/`X-Frame-Options` 正常。COR-003 標記 Verified；尚未補 Playwright out-of-order response 的瀏覽器整合測試,留給 TEST-001。
 
 #### P2-4：Nearby 查詢與轉乘呈現誠實化
 
