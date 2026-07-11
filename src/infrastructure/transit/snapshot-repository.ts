@@ -48,15 +48,24 @@ export async function getSnapshotSchedule(
   env: TransitBindings,
   city: string,
   routeName: string,
+  routeUid?: string,
 ): Promise<ScheduleItem[] | null> {
   const version = await getActiveVersion(env, city)
   if (!version) return null
-  const route = await env.TRANSIT_DB.prepare(`
-    SELECT route_uid
-    FROM routes
-    WHERE version = ? AND city_code = ? AND route_name = ?
-    LIMIT 1
-  `).bind(version, city, routeName).first<{ route_uid: string }>()
+  const route = routeUid
+    ? await env.TRANSIT_DB.prepare(`
+      SELECT route_uid
+      FROM routes
+      WHERE version = ? AND city_code = ? AND route_uid = ?
+      LIMIT 1
+    `).bind(version, city, routeUid).first<{ route_uid: string }>()
+    : await env.TRANSIT_DB.prepare(`
+      SELECT route_uid
+      FROM routes
+      WHERE version = ? AND city_code = ? AND route_name = ?
+      ORDER BY route_uid
+      LIMIT 1
+    `).bind(version, city, routeName).first<{ route_uid: string }>()
   if (!route) return null
   const key = `snapshots/${version}/cities/${city}/schedules/${route.route_uid}.json`
   const object = await env.TRANSIT_SHAPES.get(key)
@@ -581,7 +590,7 @@ export async function getJourneyLegStopRefs(
   if (!version || !legs.length) return []
 
   const results = await env.TRANSIT_DB.batch(legs.map((leg) => env.TRANSIT_DB.prepare(`
-    SELECT p.route_uid, p.direction, r.route_name, ps.stop_uid
+    SELECT p.route_uid, p.subroute_uid, p.direction, r.route_name, ps.stop_uid
     FROM patterns p
     JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
     JOIN pattern_stops ps ON ps.version = p.version AND ps.pattern_id = p.pattern_id
@@ -592,6 +601,7 @@ export async function getJourneyLegStopRefs(
   return results.flatMap((result, index) => {
     const row = result.results[0] as {
       route_uid: string
+      subroute_uid: string | null
       direction: 0 | 1
       route_name: string
       stop_uid: string
@@ -600,6 +610,7 @@ export async function getJourneyLegStopRefs(
       key: legs[index].key,
       patternId: legs[index].patternId,
       routeUid: row.route_uid,
+      subRouteUid: row.subroute_uid ?? undefined,
       direction: row.direction,
       routeName: row.route_name,
       stopUid: row.stop_uid,

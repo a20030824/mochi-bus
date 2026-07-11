@@ -4,6 +4,11 @@ import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
 import { selectBestEta } from '../domain/map/eta'
+import {
+  realtimeJourneyEstimate,
+  scheduledJourneyEstimates,
+  type JourneyEstimate,
+} from '../domain/map/journey-estimate'
 import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
@@ -485,10 +490,14 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
     // 逐路線查 ETA(legs ≤ 12,去重後更少),與站牌到站查詢共用同一份快取。
     // 不抓整縣市:雙北的全城 ETA 一包可達數十 MB,快取只有幾秒,
     // 每次規劃都重抓一次,還會把 isolate 記憶體快取撐爆。
-    const uniqueRouteRefs = [...new Map(refs.map((ref) => [ref.routeName, ref])).values()]
-    const etaItems = (await Promise.all(uniqueRouteRefs.map(async (ref) => {
+    const uniqueRouteRefs = [...new Map(refs.map((ref) => [ref.routeUid, ref])).values()]
+    const etaItemsByRouteUid = new Map(await Promise.all(uniqueRouteRefs.map(async (ref) => {
       try {
-        return await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, ref.routeName, ref.routeUid), 15)
+        return [ref.routeUid, await fetchTDXJson<BusETAItem[]>(
+          env,
+          routeEtaUrl(city, ref.routeName, ref.routeUid),
+          15,
+        )] as const
       } catch (error) {
         console.error(JSON.stringify({
           message: 'journey_eta_upstream_failed',
@@ -496,36 +505,35 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
           routeName: ref.routeName,
           error: error instanceof Error ? error.message : String(error),
         }))
-        return [] as BusETAItem[]
+        return [ref.routeUid, [] as BusETAItem[]] as const
       }
-    }))).flat()
+    })))
     const realtimeEstimates = new Map<string, JourneyEstimate>(refs.map((ref) => {
-      const item = etaItems.find((candidate) =>
-        candidate.RouteUID === ref.routeUid
-        && candidate.StopUID === ref.stopUid
-        && candidate.Direction === ref.direction,
-      )
-      const estimateSeconds = typeof item?.EstimateTime === 'number' ? Math.max(0, item.EstimateTime) : null
-      return [ref.key, {
-        key: ref.key,
-        routeName: ref.routeName,
-        stopUid: ref.stopUid,
-        estimateSeconds,
-        minutes: estimateSeconds === null ? null : Math.ceil(estimateSeconds / 60),
-        stopStatus: item?.StopStatus ?? null,
-        source: estimateSeconds === null ? 'none' as const : 'realtime' as const,
-      }] as const
+      return [ref.key, realtimeJourneyEstimate(ref, etaItemsByRouteUid.get(ref.routeUid) ?? [])] as const
     }))
 
     const missingRefs = refs.filter((ref) => realtimeEstimates.get(ref.key)?.minutes === null)
     if (missingRefs.length) {
       try {
-        const missingRouteRefs = [...new Map(missingRefs.map((ref) => [ref.routeName, ref])).values()]
-        const schedules = (await Promise.all(missingRouteRefs.map(async (ref) =>
-          await getSnapshotSchedule(env, city, ref.routeName)
-          ?? await getBusSchedule(env, city, ref.routeName, ref.routeUid),
-        ))).flat()
-        const scheduled = getScheduledEstimates(missingRefs, schedules)
+        const missingRouteRefs = [...new Map(missingRefs.map((ref) => [ref.routeUid, ref])).values()]
+        const schedulesByRouteUid = new Map(await Promise.all(missingRouteRefs.map(async (ref) => {
+          try {
+            return [
+              ref.routeUid,
+              await getSnapshotSchedule(env, city, ref.routeName, ref.routeUid)
+                ?? await getBusSchedule(env, city, ref.routeName, ref.routeUid),
+            ] as const
+          } catch (error) {
+            console.error(JSON.stringify({
+              message: 'journey_schedule_route_failed',
+              city,
+              routeUid: ref.routeUid,
+              error: error instanceof Error ? error.message : String(error),
+            }))
+            return [ref.routeUid, [] as ScheduleItem[]] as const
+          }
+        })))
+        const scheduled = scheduledJourneyEstimates(missingRefs, schedulesByRouteUid, new Date())
         scheduled.forEach((estimate, key) => realtimeEstimates.set(key, estimate))
       } catch (error) {
         console.error(JSON.stringify({
@@ -549,43 +557,6 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
     return mapJsonError(c, error, 'ETA 排序資料讀取失敗')
   }
 })
-
-type JourneyEstimate = {
-  key: string
-  routeName: string
-  stopUid: string
-  estimateSeconds: number | null
-  minutes: number | null
-  stopStatus: number | null
-  source: 'none' | 'realtime' | 'schedule'
-}
-
-function getScheduledEstimates(
-  refs: Awaited<ReturnType<typeof getJourneyLegStopRefs>>,
-  schedules: ScheduleItem[],
-) {
-  const now = new Date()
-  const result = new Map<string, JourneyEstimate>()
-
-  refs.forEach((ref) => {
-    const scheduled = nextScheduledMinutes(schedules, {
-      stopUid: ref.stopUid, direction: ref.direction, subRouteUid: ref.patternId.split(':')[0],
-    }, now)
-    // 明天才有車的班次對「現在出發」的行程排序沒有意義(會顯示成幾百分鐘到站),
-    // 當作沒有估計,讓候選清單退回站數排序。
-    const estimate = scheduled?.nextDay ? null : scheduled
-    result.set(ref.key, {
-      key: ref.key,
-      routeName: ref.routeName,
-      stopUid: ref.stopUid,
-      estimateSeconds: estimate === null ? null : estimate.minutes * 60,
-      minutes: estimate?.minutes ?? null,
-      stopStatus: null,
-      source: 'schedule',
-    })
-  })
-  return result
-}
 
 // 把 domain 的估計攤成回應欄位;departureBased/headway 只有伺服器端組 label 會用。
 function scheduleFields(schedules: ScheduleItem[], query: ScheduleQuery, now: Date) {

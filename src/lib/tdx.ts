@@ -611,7 +611,7 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
   // 即時回報不穩定時整面板一直卡在「暫無資料」。
   try {
     const schedules = env.TRANSIT_DB && env.TRANSIT_SHAPES
-      ? await getSnapshotSchedule(env as TDXEnv & TransitBindings, query.city, query.routeName)
+      ? await getSnapshotSchedule(env as TDXEnv & TransitBindings, query.city, query.routeName, query.routeUid)
         ?? await getBusSchedule(env, query.city, query.routeName, query.routeUid)
       : await getBusSchedule(env, query.city, query.routeName, query.routeUid)
     const now = new Date()
