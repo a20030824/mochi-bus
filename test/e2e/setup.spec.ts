@@ -44,4 +44,16 @@ test.describe('/setup page', () => {
 
     expect(pageErrors).toEqual([])
   })
+
+  test('Escape closes the picker and returns focus to the trigger button (A11Y-001)', async ({ page }) => {
+    await page.goto('/setup')
+    await page.click('#add-board-button')
+    await expect(page.locator('#picker-panel')).toBeVisible()
+    await expect(page.locator('#city')).toBeFocused()
+
+    await page.keyboard.press('Escape')
+
+    await expect(page.locator('#picker-panel')).toBeHidden()
+    await expect(page.locator('#add-board-button')).toBeFocused()
+  })
 })

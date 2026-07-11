@@ -41,7 +41,7 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
       <a id="map-brand" href="/map" class="map-brand" title="回到全台總覽">MOCHI <span>MAP</span></a>
       <a class="quiet-button map-home" href="/">首頁</a>
     </header>
-    <div id="map-status" class="map-status">選一個區域，看看公車如何穿過城市。</div>
+    <div id="map-status" class="map-status" aria-live="polite">選一個區域，看看公車如何穿過城市。</div>
     <aside id="map-drawer" class="map-drawer" aria-live="polite"></aside>
   </div>
   <script type="module" src="/assets/map.js"></script>

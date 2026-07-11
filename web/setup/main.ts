@@ -137,12 +137,16 @@ function openPicker() {
   directionStep.hidden = true
   suggestionStep.hidden = true
   pickerPanel.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  // Esc 關閉、焦點還回觸發它的按鈕,picker 展開時是整頁唯一可互動的區塊,
+  // 行為上等同 modal。
+  city.focus()
   if (!routes.length) void loadRoutes()
 }
 
 function hidePicker() {
   pickerPanel.hidden = true
   selectedRoute = null
+  addBoardButton.focus()
   // 清掉 selectedRoute 的同時要搶新 epoch:不這樣做,還在等 fetch 的
   // chooseRoute/loadSuggestions 回來後會通過「沒有更新」的檢查,
   // 卻讀到剛被清空的 selectedRoute 而炸掉。
@@ -496,6 +500,9 @@ renderTdx(consumeTdxAuthMigrationNotice()
 
 addBoardButton.onclick = openPicker
 closePicker.onclick = hidePicker
+pickerPanel.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') hidePicker()
+})
 filter.addEventListener('input', renderRoutes)
 city.addEventListener('change', () => void loadRoutes())
 renderBoards()
