@@ -47,7 +47,15 @@ describe('SEO metadata', () => {
     expect(html).toContain('<label for="tdx-client-secret">Client Secret</label>')
     expect(html).toContain('id="tdx-remember" type="checkbox"')
     expect(html).toContain('否則關閉本分頁後即移除')
-    expect(html).toContain("tdxRemember.checked?'device':'session'")
-    expect(html).toContain('舊版長期保存的憑證已改為只保留在此分頁')
+  })
+
+  // 互動邏輯(記住於此裝置 vs 只保留在此分頁、legacy migration 提示)已搬到
+  // web/setup/main.ts,交給 Vite 建置與 TypeScript 檢查(ARCH-001);伺服器只
+  // 負責掛上建好的 script,不再把行為字串直接嵌進 HTML 裡斷言。
+  it('loads the setup page interactivity as a built module script, not an inline literal', () => {
+    const html = renderSetupPage([['Taipei', '臺北']])
+
+    expect(html).toContain('<script type="module" src="/assets/setup.js"></script>')
+    expect(html).not.toContain("tdxRemember.checked?'device':'session'")
   })
 })

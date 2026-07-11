@@ -11,7 +11,9 @@ export default defineConfig({
         extends: './vite.config.ts',
         test: {
           name: 'node',
-          exclude: ['**/node_modules/**', 'test/workers/**'],
+          // test/workers 走獨立的 workers pool project;test/e2e 是 Playwright
+          // 的瀏覽器整合測試,只用 `npm run test:e2e` 手動跑,不吃 vitest。
+          exclude: ['**/node_modules/**', 'test/workers/**', 'test/e2e/**'],
         },
       },
       'test/workers/vitest.config.ts',

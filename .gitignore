@@ -34,3 +34,8 @@ lerna-debug.log*
 # misc
 .DS_Store
 /.transit-snapshot/
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
