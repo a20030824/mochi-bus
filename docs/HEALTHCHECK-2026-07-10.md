@@ -87,7 +87,7 @@
 | SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts`、`web/boards/store.ts:135-305`、`src/ui.ts:331-407` | Phase 1 | Verified：server fingerprint/LRU 與 session-first browser lifecycle 已部署 `b71d9105-…` |
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
 | TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | Open |
-| COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `web/map/main.ts:1494-1506,1588-1592` | Phase 2 | Open |
+| COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `src/domain/map/transfer-estimate.ts`、`web/map/main.ts` | Phase 2 | Verified：時間範圍、步行與候車不確定性已部署 `c298089c-…` |
 | ARCH-001 | P2 | 大量 browser JS 內嵌字串未被完整 typecheck/lint，地圖主檔過大 | `src/ui.ts:63-285,379-408`、`web/map/main.ts` | Phase 5 | Open |
 | QUERY-001 | P2 | nearby 先在 bbox 無排序 `LIMIT 100`，高密度區可能漏掉真正最近站牌 | `src/infrastructure/transit/snapshot-repository.ts`、`src/infrastructure/transit/snapshot-repository.test.ts` | Phase 2 | Verified：完整 bbox 候選經 Haversine 排序後才取最近 100；已部署 `f6c08bfb-…` |
 | CACHE-001 | P2 | Cache API write 位於回應關鍵路徑，cache failure 可能拖累或弄壞主請求 | `src/lib/edge-cache.ts`、`src/lib/tdx.ts`、`src/routes/map.ts` | Phase 1 | Verified：背景寫入與 read/write fail-open 已部署 `19229db5-…` |
@@ -167,6 +167,8 @@
 > 2026-07-11 Nearby correctness 結果：commit `47e72b8` 已 100% 部署為 `f6c08bfb-4b45-4f24-a1bb-d62c5ba77d1e`，前一版 `19229db5-4894-42ed-b674-1a32c6cf9ed2` 可直接回滾。bbox SQL 移除無序的前置 `LIMIT 100`，保留 `(version, city_code, latitude, longitude)` 複合索引縮小候選，Worker 再以 Haversine 精確距離過濾、穩定排序並於最後取最近 100。新增 101 筆高密度 regression fixture，確認排在資料庫第 101 筆的最近站不會遺漏。Production D1 `EXPLAIN QUERY PLAN` 確認使用 `stop_places_geo_idx`；台北 2 公里樣本 bbox 有 271 候選、SQL 約 2.01 ms。22 個測試檔、152/152 tests、typegen、TypeScript、build、dry-run 全數通過；線上 nearby 回 200／100 筆／距離遞增／全在半徑內，約 0.33 秒，首頁與 HSTS/CSP 正常。QUERY-001 標記 Verified。
 
 > 2026-07-11 Transfer grid correctness 結果：commit `eef83a9` 已 100% 部署為 `ffbbe463-31ab-43f2-9c89-98368b80b63a`，前一版 `f6c08bfb-4b45-4f24-a1bb-d62c5ba77d1e` 可直接回滾。固定角度網格改為依緯度與 350 m 球面半徑動態計算鄰格跨度；約北緯 26.4° 時會掃到相隔兩個 longitude cells 的候選，最終仍以 Haversine 嚴格排除超過 350 m 的配對。新增北部兩格內／外邊界 regression tests；台灣北端每個 forward candidate 的 bucket lookup 由 9 格增至最多 15 格，整體仍為網格索引的近線性成本。22 個測試檔、154/154 tests、typegen、TypeScript、build、dry-run 全數通過；production「嘉義火車站 → 慈濟靜思堂」轉乘 API 回 200／5 個方案／約 0.56 秒，首頁與 HSTS/CSP 正常。P2-4 的 grid 子項完成，COR-004 的 ETA 呈現仍維持 Open。
+
+> 2026-07-11 Honest transfer estimate 結果：commit `2bd6dd1` 已 100% 部署為 `c298089c-7ca4-4005-8715-09a2048c1484`，前一版 `ffbbe463-31ab-43f2-9c89-98368b80b63a` 可直接回滾。移除每站固定 2 分鐘與接不上就加 20 分鐘的單點假精度；新純 domain model 以站數區間與 60–90 m/min 步行速度產生「車程＋步行」範圍，並將 2 分鐘 ETA uncertainty 與 2 分鐘安全轉乘 buffer 納入銜接判斷。只有兩段即時 ETA 足以支持安全銜接時才顯示總時間範圍；偏趕、可能錯過或缺資料時明確標示未推測下一班候車，且所有粗估都揭露未含路況。可銜接方案優先排序，不再以武斷魔法數字排序。23 個測試檔、160/160 tests、typegen、TypeScript、build、dry-run 全數通過；production deployment 100%，map asset 已確認含新範圍／不確定性文案且不含舊 `+20`／`comfortable` 邏輯，transfer API、地圖頁與 HSTS/CSP 正常。COR-004 標記 Verified，P2-4 完成。
 
 #### P1-1：API 輸入與資源保護
 
@@ -406,7 +408,7 @@ interface RoutePatternRef {
 - 高密度與 grid 邊界測試都不漏最近候選。
 - UI 不會把固定 `2 min/stop`、`+20 min` 包裝成精確預測。
 
-> 2026-07-11 Nearby 與 grid 子項完成：完整 bbox 候選經精確距離排序後才 limit，高密度第 101 筆最近站 regression test 通過；轉乘候選格數依緯度動態擴張，北部兩格邊界的 350 m 內／外測試通過。Production query plan、nearby／transfer smoke 均正常。ETA 呈現誠實化仍保留在 P2-4 後續工作。
+> 2026-07-11 P2-4 完成：完整 bbox 候選經精確距離排序後才 limit；轉乘候選格數依緯度動態擴張；時間改為納入步行的可解釋範圍，候車或路況未知時明確揭露，不再補固定 20 分鐘。高密度、北部 grid 邊界與估算資料品質測試，以及 production query plan、nearby／transfer／asset smoke 均通過。
 
 ### Phase 3 — 快照供應鏈安全（第 3 週）
 
