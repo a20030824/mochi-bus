@@ -89,7 +89,7 @@
 | TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | Open |
 | COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `web/map/main.ts:1494-1506,1588-1592` | Phase 2 | Open |
 | ARCH-001 | P2 | 大量 browser JS 內嵌字串未被完整 typecheck/lint，地圖主檔過大 | `src/ui.ts:63-285,379-408`、`web/map/main.ts` | Phase 5 | Open |
-| QUERY-001 | P2 | nearby 先在 bbox 無排序 `LIMIT 100`，高密度區可能漏掉真正最近站牌 | `src/infrastructure/transit/snapshot-repository.ts:274-295` | Phase 2 | Open |
+| QUERY-001 | P2 | nearby 先在 bbox 無排序 `LIMIT 100`，高密度區可能漏掉真正最近站牌 | `src/infrastructure/transit/snapshot-repository.ts`、`src/infrastructure/transit/snapshot-repository.test.ts` | Phase 2 | Verified：完整 bbox 候選經 Haversine 排序後才取最近 100；已部署 `f6c08bfb-…` |
 | CACHE-001 | P2 | Cache API write 位於回應關鍵路徑，cache failure 可能拖累或弄壞主請求 | `src/lib/edge-cache.ts`、`src/lib/tdx.ts`、`src/routes/map.ts` | Phase 1 | Verified：背景寫入與 read/write fail-open 已部署 `19229db5-…` |
 | PIPE-001 | P2 | token fetch 無 timeout/retry，Retry-After 解析有陷阱，單城失敗中止整批 | `scripts/sync-chiayi-snapshot.mjs:22-54`、`.github/workflows/sync-transit.yml:72-74` | Phase 3 | Open |
 | DX-001 | P2 | Node 版本文件與 Wrangler 要求不一致，bindings typegen 不可重現 | `README.md`、`.dev.vars`、`worker-configuration.d.ts` | Phase 1 | Verified：Node ≥22／CI 24 LTS；deterministic typegen check 通過 |
@@ -163,6 +163,8 @@
 > 2026-07-10 BYOK browser lifecycle 結果：commit `b580dd4` 已 100% 部署為 `b71d9105-4ff8-45ea-92e0-3759f4ccabb9`，前一版 `8fa1fd3d-3621-4c9e-a7cb-0bcfb351b93a` 可直接回滾。新憑證預設只寫 `sessionStorage`，該 API 被拒絕時再退回頁面記憶體；只有 setup 頁明確勾選「記住於此裝置」才寫 `localStorage`。舊 `mochi.bus.tdxAuth.v1` 首次讀取會搬到 session、刪除長期副本並顯示一次 migration 提示；模式切換會先確認舊副本已移除，不能清除時不會假裝成功。Stored value 重新驗證型別、空白與 120/240 長度界線，清除功能同時移除 legacy/session/device/notice；UI 補上 input labels、保存期限說明，既有 Client ID 可在不把 secret 回填到畫面的情況下切換模式。20 個測試檔、146/146 tests、typegen、TypeScript、build、dry-run 全數通過；production setup HTML、stable boards entry 與 hashed store chunk 一致，首頁/cities/assets 為 200，HSTS/CSP 等安全標頭正常。SEC-003 標記 Verified。
 
 > 2026-07-11 Cache API resilience 結果：commit `9b41401` 已 100% 部署為 `19229db5-4894-42ed-b674-1a32c6cf9ed2`，前一版 `b71d9105-4ff8-45ea-92e0-3759f4ccabb9` 可直接回滾。TDX 與即時到站的 Cache API 寫入改由 request-scoped `executionCtx.waitUntil()` 背景完成，且不變更或保存共用 bindings；無 execution context 的測試路徑則安全等待。所有 cache read/write rejection 與損壞 JSON 都會結構化記錄並 fail-open，不能再把有效 upstream 資料變成 5xx；既有 credential-scoped single-flight 保留。21 個測試檔、151/151 tests、typegen、TypeScript、build、dry-run 全數通過，並新增「未完成 cache write 不阻塞 TDX 回傳」與 read/write/scheduler failure regression tests。Production 首頁、cities、Chiayi routes/nearby 與 cache-busted vehicle path 均回 200，vehicle 同 URL 第二次由 0.72 秒降至 0.23 秒；HSTS/CSP 等安全標頭正常。CACHE-001 標記 Verified。
+
+> 2026-07-11 Nearby correctness 結果：commit `47e72b8` 已 100% 部署為 `f6c08bfb-4b45-4f24-a1bb-d62c5ba77d1e`，前一版 `19229db5-4894-42ed-b674-1a32c6cf9ed2` 可直接回滾。bbox SQL 移除無序的前置 `LIMIT 100`，保留 `(version, city_code, latitude, longitude)` 複合索引縮小候選，Worker 再以 Haversine 精確距離過濾、穩定排序並於最後取最近 100。新增 101 筆高密度 regression fixture，確認排在資料庫第 101 筆的最近站不會遺漏。Production D1 `EXPLAIN QUERY PLAN` 確認使用 `stop_places_geo_idx`；台北 2 公里樣本 bbox 有 271 候選、SQL 約 2.01 ms。22 個測試檔、152/152 tests、typegen、TypeScript、build、dry-run 全數通過；線上 nearby 回 200／100 筆／距離遞增／全在半徑內，約 0.33 秒，首頁與 HSTS/CSP 正常。QUERY-001 標記 Verified。
 
 #### P1-1：API 輸入與資源保護
 
@@ -401,6 +403,8 @@ interface RoutePatternRef {
 
 - 高密度與 grid 邊界測試都不漏最近候選。
 - UI 不會把固定 `2 min/stop`、`+20 min` 包裝成精確預測。
+
+> 2026-07-11 Nearby 子項完成：完整 bbox 候選經精確距離排序後才 limit，高密度第 101 筆最近站 regression test、production query plan 與線上 smoke 均通過。轉乘 grid 與 ETA 呈現仍保留在 P2-4 後續工作。
 
 ### Phase 3 — 快照供應鏈安全（第 3 週）
 
