@@ -79,7 +79,7 @@
 | --- | --- | --- | --- | --- | --- |
 | SEC-001 | P0 | HTTP 未跳 HTTPS、無 HSTS、仍接受 TLS 1.0/1.1 | 線上實測；`web/boards/store.ts:137-153`、`src/routes/bus.ts:184-192`、`src/routes/map.ts:99-103` 會傳遞 BYOK | Phase 0 | Verified：deployment `a564a2f5-…`；HSTS Stage 1 觀察中 |
 | COR-001 | P0 | 子路線識別遺失，可能混用 ETA／班表／收藏 | `src/lib/tdx.ts:22-35,580-634`、`src/domain/favorite-board.ts:65-66`、`src/routes/bus.ts:43-103` | Phase 2 | Open |
-| COR-002 | P0 | Journey ETA 用第一筆而非最佳 ETA，班表跨 route flatten | `src/routes/map.ts:469-510,545-567`、`src/infrastructure/transit/snapshot-repository.ts:47-63` | Phase 2 | Open |
+| COR-002 | P0 | Journey ETA 用第一筆而非最佳 ETA，班表跨 route flatten | `src/domain/map/journey-estimate.ts`、`src/routes/map.ts`、`src/infrastructure/transit/snapshot-repository.ts` | Phase 2 | Verified：route/subroute-scoped ETA 與 schedule 聚合已部署 `91b1bdfc-…` |
 | DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/sync-chiayi-snapshot.mjs:117-220,293,337-355` | Phase 3 | Open |
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | Open |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Open |
@@ -169,6 +169,8 @@
 > 2026-07-11 Transfer grid correctness 結果：commit `eef83a9` 已 100% 部署為 `ffbbe463-31ab-43f2-9c89-98368b80b63a`，前一版 `f6c08bfb-4b45-4f24-a1bb-d62c5ba77d1e` 可直接回滾。固定角度網格改為依緯度與 350 m 球面半徑動態計算鄰格跨度；約北緯 26.4° 時會掃到相隔兩個 longitude cells 的候選，最終仍以 Haversine 嚴格排除超過 350 m 的配對。新增北部兩格內／外邊界 regression tests；台灣北端每個 forward candidate 的 bucket lookup 由 9 格增至最多 15 格，整體仍為網格索引的近線性成本。22 個測試檔、154/154 tests、typegen、TypeScript、build、dry-run 全數通過；production「嘉義火車站 → 慈濟靜思堂」轉乘 API 回 200／5 個方案／約 0.56 秒，首頁與 HSTS/CSP 正常。P2-4 的 grid 子項完成，COR-004 的 ETA 呈現仍維持 Open。
 
 > 2026-07-11 Honest transfer estimate 結果：commit `2bd6dd1` 已 100% 部署為 `c298089c-7ca4-4005-8715-09a2048c1484`，前一版 `ffbbe463-31ab-43f2-9c89-98368b80b63a` 可直接回滾。移除每站固定 2 分鐘與接不上就加 20 分鐘的單點假精度；新純 domain model 以站數區間與 60–90 m/min 步行速度產生「車程＋步行」範圍，並將 2 分鐘 ETA uncertainty 與 2 分鐘安全轉乘 buffer 納入銜接判斷。只有兩段即時 ETA 足以支持安全銜接時才顯示總時間範圍；偏趕、可能錯過或缺資料時明確標示未推測下一班候車，且所有粗估都揭露未含路況。可銜接方案優先排序，不再以武斷魔法數字排序。23 個測試檔、160/160 tests、typegen、TypeScript、build、dry-run 全數通過；production deployment 100%，map asset 已確認含新範圍／不確定性文案且不含舊 `+20`／`comfortable` 邏輯，transfer API、地圖頁與 HSTS/CSP 正常。COR-004 標記 Verified，P2-4 完成。
+
+> 2026-07-11 Journey identity correctness 結果：commit `ca924b0` 已 100% 部署為 `91b1bdfc-0e43-442a-800e-1572e2a2b89c`，前一版 `c298089c-7ca4-4005-8715-09a2048c1484` 可直接回滾。Journey realtime 不再對混合陣列取第一筆，改用既有 best-ETA ranking 並以 `RouteUID + SubRouteUID + direction + stopUid` 篩選；TDX fetch 與 schedule fallback 均按 `RouteUID` 去重／分桶，同名不同路線不再互借。repository 直接查出 `subroute_uid`，移除從 `patternId` 字串猜 identity；snapshot schedule 在提供 `RouteUID` 時會先向 active D1 version 驗證，再讀對應 R2 object。單一路線 realtime 或 schedule 失敗會結構化記錄並只讓該 leg 回 `source:none`，其他路線繼續。24 個測試檔、164/164 tests、typegen、TypeScript、build、dry-run 全數通過；production 真實兩段轉乘 Journey ETA 回 200／2 estimates，一段 `none`、另一段 `schedule:57`，證明部分缺資料不互相污染，地圖頁與 HSTS/CSP 正常。COR-002 標記 Verified。Response-level `partial/degraded` 摘要與 `updatedAt` 仍可在後續 API contract 強化時新增，目前每個 estimate 已有 `source`。
 
 #### P1-1：API 輸入與資源保護
 
@@ -362,6 +364,8 @@ interface RoutePatternRef {
 - 亂序 ETA input 仍選出相同最佳結果。
 - 其中一條 route 失敗時，其餘結果仍回傳，並標記 partial。
 - schedule 不會跨 pattern 污染。
+
+> 2026-07-11 核心正確性完成：亂序 ETA、同名不同 route/subroute、跨 route schedule 污染與無 fallback source 測試均通過；production 部分缺資料時仍保留其他 leg。每筆 estimate 已提供 `source`，response-level `partial/degraded` 摘要與 `updatedAt` 留待 API schema additive change。
 
 #### P2-3：統一取消與 stale response 防護
 
