@@ -4,12 +4,17 @@ import { spawnSync } from 'node:child_process'
 const city = process.argv[2]
 if (!city) throw new Error('Usage: npm run snapshot:rollback -- <city> [version]')
 
-const vars = { ...(await readVars('.snapshot.env')), ...process.env }
+const snapshotVars = await readVars('.snapshot.env')
+const workerVars = await readVars('.dev.vars')
+const vars = { ...workerVars, ...snapshotVars, ...process.env }
 const accountId = vars.CLOUDFLARE_ACCOUNT_ID
 const accessKeyId = vars.R2_ACCESS_KEY_ID
 const secretAccessKey = vars.R2_SECRET_ACCESS_KEY
 if (!accountId || !accessKeyId || !secretAccessKey) {
   throw new Error('Rollback requires CLOUDFLARE_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY')
+}
+if (!snapshotVars.R2_ACCESS_KEY_ID && workerVars.R2_ACCESS_KEY_ID) {
+  console.warn('Snapshot publisher credentials in .dev.vars are deprecated; move them to .snapshot.env.')
 }
 
 const { AwsClient } = await import('aws4fetch')
