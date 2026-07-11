@@ -32,9 +32,8 @@ export type TransferPlanResult = {
 }
 
 const WALK_LIMIT_METERS = 350
-// 網格邊長要 ≥ 步行半徑(350m),3×3 鄰格掃描才涵蓋所有候選;
-// 0.0035° 緯度 ≈ 389m,台灣最北端的經度 ≈ 352m,兩軸都夠。
 const GRID_DEGREES = 0.0035
+const EARTH_RADIUS_METERS = 6_371_000
 
 // 一次轉乘的接合:前向可達集(從起點可直達的下車點)×反向可達集(可直達終點的上車點),
 // 以步行距離 ≤ 350m 的站位配對。舊版把這一步塞在 SQL 的經緯度 box join 裡,
@@ -59,8 +58,9 @@ export function pairTransferLegs(
   for (const first of forwardLegs) {
     const latCell = Math.floor(first.latitude / GRID_DEGREES)
     const lonCell = Math.floor(first.longitude / GRID_DEGREES)
-    for (let dLat = -1; dLat <= 1; dLat += 1) {
-      for (let dLon = -1; dLon <= 1; dLon += 1) {
+    const { latitude: latitudeCells, longitude: longitudeCells } = neighborCellSpan(first.latitude)
+    for (let dLat = -latitudeCells; dLat <= latitudeCells; dLat += 1) {
+      for (let dLon = -longitudeCells; dLon <= longitudeCells; dLon += 1) {
         for (const second of grid.get(`${latCell + dLat}:${lonCell + dLon}`) ?? []) {
           if (second.routeUid === first.routeUid) continue
           const walk = distanceMeters(first.latitude, first.longitude, second.latitude, second.longitude)
@@ -117,12 +117,24 @@ function gridKey(latitude: number, longitude: number): string {
   return `${Math.floor(latitude / GRID_DEGREES)}:${Math.floor(longitude / GRID_DEGREES)}`
 }
 
+// 固定角度網格的實際經度寬度會隨緯度縮小。用球面步行半徑推導候選圓的
+// 最大經緯度跨度，再決定要掃幾格；精確 350m 判斷仍由 Haversine 負責。
+function neighborCellSpan(latitude: number): { latitude: number; longitude: number } {
+  const angularRadius = WALK_LIMIT_METERS / EARTH_RADIUS_METERS
+  const latitudeDelta = angularRadius * 180 / Math.PI
+  const cosine = Math.max(0.01, Math.abs(Math.cos(latitude * Math.PI / 180)))
+  const longitudeDelta = Math.asin(Math.min(1, Math.sin(angularRadius) / cosine)) * 180 / Math.PI
+  return {
+    latitude: Math.ceil(latitudeDelta / GRID_DEGREES),
+    longitude: Math.ceil(longitudeDelta / GRID_DEGREES),
+  }
+}
+
 function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const radius = 6_371_000
   const toRadians = (value: number) => value * Math.PI / 180
   const deltaLat = toRadians(lat2 - lat1)
   const deltaLon = toRadians(lon2 - lon1)
   const a = Math.sin(deltaLat / 2) ** 2
     + Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(deltaLon / 2) ** 2
-  return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return 2 * EARTH_RADIUS_METERS * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }

@@ -41,6 +41,44 @@ describe('pairTransferLegs', () => {
     expect(plans[0].transferName).toBe('轉乘站 ↔ 對街站')
   })
 
+  it('pairs northern Taiwan places separated by two longitude cells', () => {
+    const latitude = 26.4
+    const cellStart = Math.floor(121.5 / 0.0035) * 0.0035
+    const firstLongitude = cellStart + 0.003499
+    const secondLongitude = firstLongitude + 0.0035105
+    expect(Math.floor(secondLongitude / 0.0035) - Math.floor(firstLongitude / 0.0035)).toBe(2)
+
+    const plans = pairTransferLegs(
+      [leg({ routeUid: 'R1', latitude, longitude: firstLongitude })],
+      [leg({
+        routeUid: 'R2',
+        patternId: 'P2',
+        placeId: 'place-north',
+        placeName: '北端轉乘站',
+        latitude,
+        longitude: secondLongitude,
+      })],
+    )
+
+    expect(plans).toHaveLength(1)
+    expect(plans[0].transferWalkMeters).toBeGreaterThan(340)
+    expect(plans[0].transferWalkMeters).toBeLessThanOrEqual(350)
+  })
+
+  it('still rejects two-cell northern candidates beyond 350 meters', () => {
+    const latitude = 26.4
+    const cellStart = Math.floor(121.5 / 0.0035) * 0.0035
+    const firstLongitude = cellStart + 0.003499
+    const secondLongitude = firstLongitude + 0.00362
+
+    const plans = pairTransferLegs(
+      [leg({ routeUid: 'R1', latitude, longitude: firstLongitude })],
+      [leg({ routeUid: 'R2', patternId: 'P2', placeId: 'place-too-far', latitude, longitude: secondLongitude })],
+    )
+
+    expect(plans).toHaveLength(0)
+  })
+
   it('rejects transfers beyond walking distance', () => {
     const plans = pairTransferLegs(
       [leg({ routeUid: 'R1' })],
