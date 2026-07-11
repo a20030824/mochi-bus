@@ -22,7 +22,7 @@ import {
   searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, TDXServiceError, tdxRouteScope, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, TDXServiceError, tdxRouteScope, withTDXBackgroundTasks, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
 import {
   ApiInputError,
   apiInputErrorBody,
@@ -37,6 +37,7 @@ import {
   requiredQueryString,
 } from '../lib/api-input'
 import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
+import { cacheMatchFailOpen, cachePutFailOpen } from '../lib/edge-cache'
 import { renderMapPage } from '../map-page'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
@@ -48,7 +49,13 @@ const tdxEnv = (c: Context<Env>) => {
     c.req.header('x-tdx-client-id'),
     c.req.header('x-tdx-client-secret'),
   )
-  return withUserTDX(c.env, credentials?.clientId, credentials?.clientSecret)
+  const env = withUserTDX(c.env, credentials?.clientId, credentials?.clientSecret)
+  try {
+    const executionCtx = c.executionCtx
+    return withTDXBackgroundTasks(env, (promise) => executionCtx.waitUntil(promise))
+  } catch {
+    return env
+  }
 }
 
 // 429 冷卻以「縣市+憑證來源」為範圍:共用池在冷卻時,自備憑證的人不必連坐,
@@ -76,33 +83,43 @@ function edgeCache(): Cache {
 
 // 記憶體層在前、Cache API 在後:Cache API 在 workers.dev 上是 no-op、
 // 自訂網域上也只限同機房,單靠它冷卻旗標常常寫了就不見。
-async function hasRealtimeCooldown(city: string, scope: string): Promise<boolean> {
+async function hasRealtimeCooldown(env: TDXEnv, city: string, scope: string): Promise<boolean> {
   if (memoryCacheGet<boolean>(`arrivals/cooldown/${city}/${scope}`)) return true
-  return Boolean(await edgeCache().match(arrivalCacheKey('cooldown', city, scope)))
+  return Boolean(await cacheMatchFailOpen(edgeCache(), arrivalCacheKey('cooldown', city, scope), 'arrivals_cooldown'))
 }
 
-async function setRealtimeCooldown(city: string, scope: string): Promise<void> {
+async function setRealtimeCooldown(env: TDXEnv, city: string, scope: string): Promise<void> {
   memoryCacheSet(`arrivals/cooldown/${city}/${scope}`, true, REALTIME_COOLDOWN_SECONDS)
-  await edgeCache().put(arrivalCacheKey('cooldown', city, scope), new Response('1', {
+  await cachePutFailOpen(edgeCache(), arrivalCacheKey('cooldown', city, scope), new Response('1', {
     headers: { 'Cache-Control': `public, max-age=${REALTIME_COOLDOWN_SECONDS}` },
-  }))
+  }), 'arrivals_cooldown', env.TDX_BACKGROUND_TASKS)
 }
 
-async function readLastRealtime(city: string, routeName: string): Promise<BusETAItem[]> {
+async function readLastRealtime(env: TDXEnv, city: string, routeName: string): Promise<BusETAItem[]> {
   const memoized = memoryCacheGet<BusETAItem[]>(`arrivals/last/${city}/${routeName}`)
   if (memoized) return memoized
-  const response = await edgeCache().match(arrivalCacheKey('last', city, routeName))
-  return response ? await response.json<BusETAItem[]>() : []
+  const response = await cacheMatchFailOpen(edgeCache(), arrivalCacheKey('last', city, routeName), 'arrivals_last')
+  if (!response) return []
+  try {
+    return await response.json<BusETAItem[]>()
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'edge_cache_payload_invalid',
+      context: 'arrivals_last',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return []
+  }
 }
 
-async function writeLastRealtime(city: string, routeName: string, items: BusETAItem[]): Promise<void> {
+async function writeLastRealtime(env: TDXEnv, city: string, routeName: string, items: BusETAItem[]): Promise<void> {
   memoryCacheSet(`arrivals/last/${city}/${routeName}`, items, LAST_REALTIME_SECONDS)
-  await edgeCache().put(arrivalCacheKey('last', city, routeName), new Response(JSON.stringify(items), {
+  await cachePutFailOpen(edgeCache(), arrivalCacheKey('last', city, routeName), new Response(JSON.stringify(items), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': `public, max-age=${LAST_REALTIME_SECONDS}`,
     },
-  }))
+  }), 'arrivals_last', env.TDX_BACKGROUND_TASKS)
 }
 
 map.get('/map', (c) => {
@@ -341,11 +358,11 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
     const routeUidByName = new Map(candidates.map((route) => [route.routeName, route.routeUid]))
     const etaItems: BusETAItem[] = []
     const staleRouteNames = new Set<string>()
-    let rateLimited = await hasRealtimeCooldown(city, scope)
+    let rateLimited = await hasRealtimeCooldown(env, city, scope)
     let realtimeQueries = 0
     for (const routeName of candidateRouteNames) {
       if (rateLimited) {
-        const staleItems = await readLastRealtime(city, routeName)
+        const staleItems = await readLastRealtime(env, city, routeName)
         if (staleItems.length) {
           etaItems.push(...staleItems)
           staleRouteNames.add(routeName)
@@ -355,7 +372,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       try {
         const items = await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName, routeUidByName.get(routeName)), 15)
         etaItems.push(...items)
-        await writeLastRealtime(city, routeName, items)
+        await writeLastRealtime(env, city, routeName, items)
         realtimeQueries += 1
       } catch (error) {
         rateLimited = error instanceof TDXServiceError && error.rateLimited
@@ -363,8 +380,8 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
           message: 'place_arrival_realtime_failed', city, routeName,
           error: error instanceof Error ? error.message : String(error),
         }))
-        if (rateLimited) await setRealtimeCooldown(city, scope)
-        const staleItems = await readLastRealtime(city, routeName)
+        if (rateLimited) await setRealtimeCooldown(env, city, scope)
+        const staleItems = await readLastRealtime(env, city, routeName)
         if (staleItems.length) {
           etaItems.push(...staleItems)
           staleRouteNames.add(routeName)

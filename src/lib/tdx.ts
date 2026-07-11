@@ -4,6 +4,7 @@ import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../
 import { selectBestEta } from '../domain/map/eta'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { memoryCacheGet, memoryCacheSet } from './memory-cache'
+import { cacheMatchFailOpen, cachePutFailOpen, type BackgroundTaskScheduler } from './edge-cache'
 
 export type TDXEnv = {
   TDX_CLIENT_ID: string
@@ -12,6 +13,11 @@ export type TDXEnv = {
   // 換不到 token 就靜默退回共用憑證。只掛在請求衍生的 env 物件上,絕不落地、絕不進 log。
   TDX_USER_CLIENT_ID?: string
   TDX_USER_CLIENT_SECRET?: string
+  TDX_BACKGROUND_TASKS?: BackgroundTaskScheduler
+}
+
+export function withTDXBackgroundTasks<E extends TDXEnv>(env: E, schedule?: BackgroundTaskScheduler): E {
+  return schedule ? { ...env, TDX_BACKGROUND_TASKS: schedule } : env
 }
 
 type LocalizedName = {
@@ -882,11 +888,19 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
 
   const edgeCache = (caches as CacheStorage & { default: Cache }).default
   const cacheKey = new Request(`https://mochi-cache.invalid/tdx/${encodeURIComponent(url.toString())}`)
-  const cached = await edgeCache.match(cacheKey)
+  const cached = await cacheMatchFailOpen(edgeCache, cacheKey, 'tdx')
   if (cached) {
-    const data = await cached.json() as T
-    memoryCacheSet(memoryKey, data, ttlSeconds)
-    return data
+    try {
+      const data = await cached.json() as T
+      memoryCacheSet(memoryKey, data, ttlSeconds)
+      return data
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: 'edge_cache_payload_invalid',
+        context: 'tdx',
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    }
   }
 
   const source: CredentialSource = env.TDX_USER_CLIENT_ID && env.TDX_USER_CLIENT_SECRET ? 'user' : 'shared'
@@ -931,12 +945,12 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
       }
       recordTDXCircuitSuccess(circuitKey)
       memoryCacheSet(memoryKey, data, ttlSeconds)
-      await edgeCache.put(cacheKey, new Response(JSON.stringify(data), {
+      await cachePutFailOpen(edgeCache, cacheKey, new Response(JSON.stringify(data), {
         headers: {
           'Content-Type': 'application/json; charset=utf-8',
           'Cache-Control': `public, max-age=${ttlSeconds}`,
         },
-      }))
+      }), 'tdx', env.TDX_BACKGROUND_TASKS)
       return data
     },
   )

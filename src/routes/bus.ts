@@ -19,6 +19,7 @@ import {
   tdxWarningFromError,
   tdxWarningMessages,
   verifyTDXCredentials,
+  withTDXBackgroundTasks,
   withUserTDX,
   type TDXEnv,
   type TDXWarning,
@@ -44,7 +45,13 @@ const tdxEnv = (c: Context<Env>) => {
     c.req.header('x-tdx-client-id'),
     c.req.header('x-tdx-client-secret'),
   )
-  return withUserTDX(c.env, credentials?.clientId, credentials?.clientSecret)
+  const env = withUserTDX(c.env, credentials?.clientId, credentials?.clientSecret)
+  try {
+    const executionCtx = c.executionCtx
+    return withTDXBackgroundTasks(env, (promise) => executionCtx.waitUntil(promise))
+  } catch {
+    return env
+  }
 }
 
 bus.get('/', async (c) => renderETA(c, defaultBusQuery, true, true, homeNotice(c)))
@@ -54,7 +61,7 @@ bus.get('/bus', async (c) => {
 
   try {
     const query = parseRequestQuery(c)
-    const resolved = await resolveBusQuery(c.env, query)
+    const resolved = await resolveBusQuery(tdxEnv(c), query)
     if (!query.stopUid || query.stopName !== resolved.stopName || query.routeUid !== resolved.routeUid) {
       return c.redirect(canonicalBusPath(resolved), 302)
     }
@@ -85,8 +92,9 @@ bus.get('/route', async (c) => {
     return renderPageError(c, error)
   }
   try {
-    const resolved = await resolveBusQuery(c.env, query)
-    const detail = await getRouteDetail(c.env, resolved)
+    const env = tdxEnv(c)
+    const resolved = await resolveBusQuery(env, query)
+    const detail = await getRouteDetail(env, resolved)
     return c.html(renderRoutePage(resolved, detail), 200, pageHeaders)
   } catch (error) {
     try {
@@ -212,8 +220,9 @@ bus.get('/api/v1/tdx/verify', async (c) => {
 // 舊版 API 相容端點。
 bus.get('/api/eta', async (c) => {
   try {
-    const resolved = await resolveBusQuery(c.env, defaultBusQuery)
-    return c.json(await getCommuteETA(c.env, resolved), 200, noStoreHeaders)
+    const env = tdxEnv(c)
+    const resolved = await resolveBusQuery(env, defaultBusQuery)
+    return c.json(await getCommuteETA(env, resolved), 200, noStoreHeaders)
   } catch (error) {
     return jsonError(c, error)
   }
@@ -222,8 +231,9 @@ bus.get('/api/eta', async (c) => {
 const shortcutHandler = async (c: Context<Env>) => {
   try {
     const query = hasBusQuery(c) ? parseRequestQuery(c) : defaultBusQuery
-    const resolved = await resolveBusQuery(c.env, query)
-    const result = await getCommuteETA(c.env, resolved)
+    const env = tdxEnv(c)
+    const resolved = await resolveBusQuery(env, query)
+    const result = await getCommuteETA(env, resolved)
     const staleText = result.stale ? '\n⚠️ 資料可能延遲' : ''
     return c.text(`${result.routeName}｜${result.stopName}\n${result.label}${staleText}`, 200, noStoreHeaders)
   } catch (error) {
@@ -311,15 +321,16 @@ async function renderETA(
     ? query as BusQuery & { stopUid: string; stopName: string }
     : undefined
   try {
-    const resolved = alreadyResolved && preResolved ? preResolved : await resolveBusQuery(c.env, query)
-    const result = await getCommuteETA(c.env, resolved)
+    const env = tdxEnv(c)
+    const resolved = alreadyResolved && preResolved ? preResolved : await resolveBusQuery(env, query)
+    const result = await getCommuteETA(env, resolved)
     return c.html(renderETAPage({ query: resolved, result, notice, useLocalBoard: useLocalPreset }), 200, pageHeaders)
   } catch (error) {
     console.error('eta_page_failed', error)
     // 出錯也盡量渲染頁面本體(帶錯誤訊息),別讓 TDX 故障把整頁打成錯誤頁;
     // query 帶齊識別碼就直接用,不再打一次注定失敗的 resolveBusQuery。
     try {
-      const resolved = preResolved ?? await resolveBusQuery(c.env, query)
+      const resolved = preResolved ?? await resolveBusQuery(tdxEnv(c), query)
       return c.html(renderETAPage({ query: resolved, error: toPublicError(error), notice, useLocalBoard: useLocalPreset }), 200, pageHeaders)
     } catch {
       return renderPageError(c, error)

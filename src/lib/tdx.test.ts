@@ -128,6 +128,44 @@ describe('TDX credential cache resilience', () => {
     expect(cachePut).toHaveBeenCalledTimes(1)
   })
 
+  it('returns TDX data before a scheduled edge-cache write finishes', async () => {
+    let finishWrite!: () => void
+    const pendingWrite = new Promise<void>((resolve) => { finishWrite = resolve })
+    const cachePut = vi.fn(() => pendingWrite)
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: cachePut,
+      },
+    })
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes('/openid-connect/token')) return tokenResponse('background-token')
+      return new Response(JSON.stringify([{ id: 'fast-result' }]), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    let scheduled: Promise<unknown> | undefined
+    const env: TDXEnv = {
+      TDX_CLIENT_ID: 'background-id',
+      TDX_CLIENT_SECRET: 'background-secret',
+      TDX_BACKGROUND_TASKS: (task) => { scheduled = task },
+    }
+
+    await expect(fetchTDXJson<Array<{ id: string }>>(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=background-cache'),
+      30,
+    )).resolves.toEqual([{ id: 'fast-result' }])
+
+    expect(cachePut).toHaveBeenCalledTimes(1)
+    expect(scheduled).toBeDefined()
+    finishWrite()
+    await scheduled
+  })
+
   it('does not share an in-flight data failure across different secrets', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     vi.stubGlobal('caches', {
