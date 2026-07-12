@@ -361,9 +361,15 @@ function hasBusQuery(c: Context<Env>): boolean {
 }
 
 // 導回首頁時用 ?notice= 帶原因(值就是 TDXWarning),首頁據此顯示服務橫幅。
+// `in` 會沿原型鏈找,`?notice=constructor` 這類使用者輸入會被誤判成合法 key,
+// 取出的是 Object/Function 之類的原型成員而非字串,後面 escapeHTML() 對它
+// 呼叫 .replaceAll 會直接丟 TypeError;改用 Object.hasOwn() 只認自身屬性。
+export function resolveTDXNotice(value: string | undefined): string | undefined {
+  return value && Object.hasOwn(tdxWarningMessages, value) ? tdxWarningMessages[value as TDXWarning] : undefined
+}
+
 function homeNotice(c: Context<Env>): string | undefined {
-  const notice = c.req.query('notice')
-  return notice && notice in tdxWarningMessages ? tdxWarningMessages[notice as TDXWarning] : undefined
+  return resolveTDXNotice(c.req.query('notice'))
 }
 
 function redirectHomeWithTDXNotice(c: Context<Env>, error: TDXServiceError) {
