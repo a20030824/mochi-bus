@@ -27,7 +27,9 @@ describe('HTTPS enforcement', () => {
 
 describe('security headers', () => {
   it('uses a staged HSTS policy only for HTTPS responses', () => {
-    expect(securityHeaders(true)['Strict-Transport-Security']).toBe('max-age=300')
+    expect(securityHeaders(true)['Strict-Transport-Security']).toBe('max-age=86400')
+    expect(securityHeaders(true)['Strict-Transport-Security']).not.toContain('includeSubDomains')
+    expect(securityHeaders(true)['Strict-Transport-Security']).not.toContain('preload')
     expect(securityHeaders(false)['Strict-Transport-Security']).toBeUndefined()
   })
 
@@ -35,7 +37,9 @@ describe('security headers', () => {
     const response = await app.request('https://bus.moc96336.com/api/v1/map/cities')
 
     expect(response.status).toBe(200)
-    expect(response.headers.get('strict-transport-security')).toBe('max-age=300')
+    expect(response.headers.get('strict-transport-security')).toBe('max-age=86400')
+    expect(response.headers.get('strict-transport-security')).not.toContain('includeSubDomains')
+    expect(response.headers.get('strict-transport-security')).not.toContain('preload')
     expect(response.headers.get('content-security-policy'))
       .toBe("base-uri 'self'; frame-ancestors 'none'; object-src 'none'")
     expect(response.headers.get('permissions-policy'))

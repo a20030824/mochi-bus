@@ -8,7 +8,7 @@ Last verified: 2026-07-10 (Asia/Taipei)
 | --- | --- | --- |
 | SSL/TLS → Edge Certificates → Always Use HTTPS | On | Verified |
 | SSL/TLS → Edge Certificates → Minimum TLS Version | TLS 1.2 | Verified |
-| HSTS | Staged in Worker response first | Stage 1 active: `max-age=300` |
+| HSTS | Staged in Worker response first | Stage 2 rollout prepared: target `max-age=86400` |
 
 The Worker also returns a 308 redirect for non-local HTTP requests. This is defense in depth if the zone setting is accidentally disabled; Cloudflare's edge redirect remains the primary control.
 
@@ -47,6 +47,17 @@ HSTS is cached by browsers and is not instantly reversible. Increase it only aft
 Do not add `includeSubDomains` until every subdomain has been inventoried and verified over HTTPS. Do not request browser preload until that audit is complete and the long-lived policy has been stable.
 
 To advance a stage, update `HSTS_MAX_AGE_SECONDS` in `src/security.ts`, run the full project check, deploy, and repeat the live header and TLS checks above.
+
+## Stage 2 rollout
+
+Status: rollout prepared; production verification will be recorded after deployment and live checks.
+
+- Previous value: `max-age=300` (Stage 1)
+- Target value: `max-age=86400` (Stage 2)
+- `includeSubDomains`: not included
+- `preload`: not included
+- Planned observation: at least 7 days before reviewing Stage 3
+- Rollback limit: browsers that cached the previous HSTS value cannot be reverted immediately; cached policy remains until its `max-age` expires.
 
 ## Rollback
 

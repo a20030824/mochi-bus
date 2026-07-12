@@ -1,4 +1,4 @@
-const HSTS_MAX_AGE_SECONDS = 300
+const HSTS_MAX_AGE_SECONDS = 86_400
 
 const defaultSecurityHeaders = {
   'Content-Security-Policy': "base-uri 'self'; frame-ancestors 'none'; object-src 'none'",
@@ -31,4 +31,3 @@ export function securityHeaders(isHttps: boolean): Readonly<Record<string, strin
     'Strict-Transport-Security': `max-age=${HSTS_MAX_AGE_SECONDS}`,
   }
 }
-
