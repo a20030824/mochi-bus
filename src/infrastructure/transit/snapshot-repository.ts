@@ -7,7 +7,7 @@ import type { ScheduleItem } from '../../domain/schedule'
 import { memoryCacheGet, memoryCacheSet } from '../../lib/memory-cache'
 
 // 全路網鳥瞰不需要單一路線的完整精度,跟 sync 腳本產出 network.json 用
-// 同一個容差(見 scripts/sync-chiayi-snapshot.mjs 的 NETWORK_LOD_TOLERANCE_METERS);
+// 同一個容差(見 scripts/sync-transit-snapshot.mjs 的 NETWORK_LOD_TOLERANCE_METERS);
 // 這裡是小城市(<=40 patterns,沒有預生成 network.json)即時組裝的 fallback 路徑。
 const NETWORK_LOD_TOLERANCE_METERS = 50
 
@@ -325,7 +325,7 @@ export async function findNearbyStopPlaces(
     .slice(0, 100)
 }
 
-// 必須跟 scripts/sync-chiayi-snapshot.mjs 的 normalizeName 完全一致,
+// 必須跟 scripts/sync-transit-snapshot.mjs 的 normalizeName 完全一致,
 // 否則查詢字串對不上 stops.normalized_name 的內容。
 function normalizeStopName(value: string): string {
   return value.normalize('NFKC').replace(/[\s()（）]/g, '').toLowerCase()

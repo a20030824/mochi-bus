@@ -20,8 +20,8 @@
     "check": "npm run cf-typegen:check && npm run test && npm run typecheck && npm run build:map && wrangler deploy --dry-run",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example",
     "cf-typegen:check": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example --check",
-    "snapshot:chiayi": "node scripts/sync-chiayi-snapshot.mjs Chiayi",
-    "snapshot:city": "node scripts/sync-chiayi-snapshot.mjs",
+    "snapshot:chiayi": "node scripts/sync-transit-snapshot.mjs Chiayi",
+    "snapshot:city": "node scripts/sync-transit-snapshot.mjs",
     "snapshot:rollback": "node scripts/transit-snapshot/rollback.mjs"
   },
   "dependencies": {
