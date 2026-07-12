@@ -24,32 +24,74 @@ if (!r2) {
     + '改用 wrangler CLI 逐物件上傳(僅適合小城市,大城市會非常慢)。')
 }
 
-const tokenResponse = await fetch('https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-  body: new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: tdxClientId,
-    client_secret: tdxClientSecret,
-  }),
-})
-if (!tokenResponse.ok) throw new Error(`TDX token failed (${tokenResponse.status})`)
+const TDX_REQUEST_TIMEOUT_MS = 15_000
+const TDX_MAX_ATTEMPTS = 5
+
+// header 缺席時 `Response.headers.get()` 回傳 null,`Number(null)` 卻是 0——
+// 舊寫法會被 `Number.isFinite(0)` 判定為「有效的 0 秒」,對著還在限流的
+// TDX 立刻重打。缺席一律當成「沒有建議值」,交給下面的指數退避。
+function parseRetryAfterSeconds(response) {
+  const header = response.headers.get('Retry-After')
+  if (header === null) return null
+  const seconds = Number(header)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TDX_REQUEST_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// token 端點原本連一次逾時/斷線都扛不住,一失敗就整個城市中止;
+// 現在跟資料端點共用同一套「逾時／斷線／429 都可重試,其餘狀態碼直接失敗」邏輯。
+async function fetchWithRetry(url, options, describe) {
+  for (let attempt = 0; attempt < TDX_MAX_ATTEMPTS; attempt += 1) {
+    let response
+    try {
+      response = await fetchWithTimeout(url, options)
+    } catch (error) {
+      if (attempt === TDX_MAX_ATTEMPTS - 1) {
+        throw new Error(`${describe} failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2 ** (attempt + 1) * 1000))
+      continue
+    }
+    if (response.ok) return response
+    if (response.status !== 429 || attempt === TDX_MAX_ATTEMPTS - 1) {
+      throw new Error(`${describe} failed (${response.status})`)
+    }
+    const retryAfterSeconds = parseRetryAfterSeconds(response)
+    const delay = retryAfterSeconds !== null ? Math.min(30, retryAfterSeconds) * 1000 : 2 ** (attempt + 1) * 1000
+    await new Promise((resolve) => setTimeout(resolve, delay))
+  }
+  throw new Error(`${describe} retry exhausted`)
+}
+
+const tokenResponse = await fetchWithRetry(
+  'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token',
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: tdxClientId,
+      client_secret: tdxClientSecret,
+    }),
+  },
+  'TDX token request',
+)
 const token = (await tokenResponse.json()).access_token
 const base = `https://tdx.transportdata.tw/api/basic/v2/Bus`
 const tdxGet = async (path) => {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const response = await fetch(`${base}/${path}?$format=JSON`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    })
-    if (response.ok) return response.json()
-    if (response.status !== 429 || attempt === 4) {
-      throw new Error(`TDX ${path} failed (${response.status})`)
-    }
-    const retryAfter = Number(response.headers.get('Retry-After'))
-    const delay = Number.isFinite(retryAfter) ? Math.min(30, retryAfter) * 1000 : 2 ** (attempt + 1) * 1000
-    await new Promise((resolve) => setTimeout(resolve, delay))
-  }
-  throw new Error(`TDX ${path} retry exhausted`)
+  const response = await fetchWithRetry(`${base}/${path}?$format=JSON`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  }, `TDX ${path}`)
+  return response.json()
 }
 const get = (resource) => tdxGet(`${resource}/City/${CITY}`)
 
