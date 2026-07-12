@@ -11,9 +11,11 @@ const query = {
   direction: 0 as const,
 }
 
+const requestUrl = 'https://bus.moc96336.com/bus?route=307&stop=%E6%8D%B7%E9%81%8B%E8%A5%BF%E9%96%80%E7%AB%99'
+
 describe('SEO metadata', () => {
   it('renders homepage title, description, and site-name structured data', () => {
-    const html = renderETAPage({ query, useLocalBoard: true })
+    const html = renderETAPage({ query, useLocalBoard: true, requestUrl })
 
     expect(html).toContain(`<title>${siteTitle}</title>`)
     expect(html).toContain(`<meta name="description" content="${siteSearchDescription}">`)
@@ -29,9 +31,16 @@ describe('SEO metadata', () => {
   })
 
   it('renders one semantic heading for the ETA page', () => {
-    const html = renderETAPage({ query, useLocalBoard: false })
+    const html = renderETAPage({ query, useLocalBoard: false, requestUrl })
 
     expect(html).toContain('<h1 class="eyebrow" id="board-title">307 在 捷運西門站 的到站時間</h1>')
+  })
+
+  it('uses the route/stop-specific description for shareable pages, not the generic one', () => {
+    const html = renderETAPage({ query, useLocalBoard: false, requestUrl })
+
+    expect(html).toContain('<meta name="description" content="307 在捷運西門站的即時到站時間">')
+    expect(html).not.toContain(`<meta name="description" content="${siteSearchDescription}">`)
   })
 
   it('renders a server-side heading for map pages', () => {
@@ -41,7 +50,7 @@ describe('SEO metadata', () => {
   })
 
   it('makes persistent BYOK storage an explicit setup-page opt-in', () => {
-    const html = renderSetupPage([['Taipei', '臺北']])
+    const html = renderSetupPage([['Taipei', '臺北']], requestUrl)
 
     expect(html).toContain('<label for="tdx-client-id">Client ID</label>')
     expect(html).toContain('<label for="tdx-client-secret">Client Secret</label>')
@@ -53,25 +62,25 @@ describe('SEO metadata', () => {
   // web/setup/main.ts,交給 Vite 建置與 TypeScript 檢查(ARCH-001);伺服器只
   // 負責掛上建好的 script,不再把行為字串直接嵌進 HTML 裡斷言。
   it('loads the setup page interactivity as a built module script, not an inline literal', () => {
-    const html = renderSetupPage([['Taipei', '臺北']])
+    const html = renderSetupPage([['Taipei', '臺北']], requestUrl)
 
     expect(html).toContain('<script type="module" src="/assets/setup.js"></script>')
     expect(html).not.toContain("tdxRemember.checked?'device':'session'")
   })
 
   it('keeps the setup page (per-device local data) out of search indexes', () => {
-    const html = renderSetupPage([['Taipei', '臺北']])
+    const html = renderSetupPage([['Taipei', '臺北']], requestUrl)
 
     expect(html).toContain('<meta name="robots" content="noindex">')
   })
 
   it('does not noindex the shareable ETA and map pages', () => {
-    expect(renderETAPage({ query, useLocalBoard: true })).not.toContain('name="robots"')
+    expect(renderETAPage({ query, useLocalBoard: true, requestUrl })).not.toContain('name="robots"')
     expect(renderMapPage({ heading: '台北市公車地圖' })).not.toContain('name="robots"')
   })
 
   it('gives chat-app link previews an image and Twitter Card metadata', () => {
-    const eta = renderETAPage({ query, useLocalBoard: true })
+    const eta = renderETAPage({ query, useLocalBoard: true, requestUrl })
     const map = renderMapPage({ heading: '台北市公車地圖' })
 
     for (const html of [eta, map]) {
@@ -80,5 +89,21 @@ describe('SEO metadata', () => {
       expect(html).toContain(`<meta name="twitter:description" content="${siteSocialDescription}">`)
       expect(html).toContain(`<meta name="twitter:image" content="${siteSocialImage}">`)
     }
+  })
+
+  it('normalizes canonical and og:url to the production origin regardless of request host, per route/stop and per query', () => {
+    const eta = renderETAPage({ query, useLocalBoard: false, requestUrl: 'http://localhost:8787/bus?route=307&stop=foo' })
+    expect(eta).toContain('<link rel="canonical" href="https://bus.moc96336.com/bus?route=307&amp;stop=foo">')
+    expect(eta).toContain('<meta property="og:url" content="https://bus.moc96336.com/bus?route=307&amp;stop=foo">')
+
+    const setup = renderSetupPage([['Taipei', '臺北']], 'https://bus.moc96336.com/setup')
+    expect(setup).toContain('<link rel="canonical" href="https://bus.moc96336.com/setup">')
+
+    const map = renderMapPage({ heading: '台北市公車地圖', requestUrl: 'https://bus.moc96336.com/map?city=Taipei' })
+    expect(map).toContain('<link rel="canonical" href="https://bus.moc96336.com/map?city=Taipei">')
+    expect(map).toContain('<meta property="og:url" content="https://bus.moc96336.com/map?city=Taipei">')
+
+    const mapDefault = renderMapPage({ heading: '台灣公車地圖' })
+    expect(mapDefault).toContain('<link rel="canonical" href="https://bus.moc96336.com/map">')
   })
 })

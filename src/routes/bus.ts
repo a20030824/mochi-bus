@@ -72,7 +72,7 @@ bus.get('/bus', async (c) => {
   } catch (error) {
     if (error instanceof QueryResolutionError && error.candidates.length > 1) {
       const query = parseRequestQuery(c)
-      return c.html(renderAmbiguousPage(query, error.candidates), 409, pageHeaders)
+      return c.html(renderAmbiguousPage(query, error.candidates, c.req.url), 409, pageHeaders)
     }
     if (error instanceof TDXServiceError) {
       // TDX 掛掉(額度用完/頻率超限/連不上)時不丟錯誤頁:URL 帶齊識別碼就先信它、
@@ -85,7 +85,7 @@ bus.get('/bus', async (c) => {
   }
 })
 
-bus.get('/setup', (c) => c.html(renderSetupPage(supportedCities), 200, pageHeaders))
+bus.get('/setup', (c) => c.html(renderSetupPage(supportedCities, c.req.url), 200, pageHeaders))
 
 bus.get('/route', async (c) => {
   let query: BusQuery
@@ -98,11 +98,11 @@ bus.get('/route', async (c) => {
     const env = tdxEnv(c)
     const resolved = await resolveBusQuery(env, query)
     const detail = await getRouteDetail(env, resolved)
-    return c.html(renderRoutePage(resolved, detail), 200, pageHeaders)
+    return c.html(renderRoutePage(resolved, detail, c.req.url), 200, pageHeaders)
   } catch (error) {
     try {
       const fallback = await getSnapshotRoutePage(c.env, query)
-      if (fallback) return c.html(renderRoutePage(fallback.resolved, fallback.detail), 200, pageHeaders)
+      if (fallback) return c.html(renderRoutePage(fallback.resolved, fallback.detail, c.req.url), 200, pageHeaders)
     } catch (fallbackError) {
       console.error('route_snapshot_fallback_failed', fallbackError)
     }
@@ -333,14 +333,14 @@ async function renderETA(
     const env = tdxEnv(c)
     const resolved = alreadyResolved && preResolved ? preResolved : await resolveBusQuery(env, query)
     const result = await getCommuteETA(env, resolved)
-    return c.html(renderETAPage({ query: resolved, result, notice, useLocalBoard: useLocalPreset }), 200, pageHeaders)
+    return c.html(renderETAPage({ query: resolved, result, notice, useLocalBoard: useLocalPreset, requestUrl: c.req.url }), 200, pageHeaders)
   } catch (error) {
     console.error('eta_page_failed', error)
     // 出錯也盡量渲染頁面本體(帶錯誤訊息),別讓 TDX 故障把整頁打成錯誤頁;
     // query 帶齊識別碼就直接用,不再打一次注定失敗的 resolveBusQuery。
     try {
       const resolved = preResolved ?? await resolveBusQuery(tdxEnv(c), query)
-      return c.html(renderETAPage({ query: resolved, error: toPublicError(error), notice, useLocalBoard: useLocalPreset }), 200, pageHeaders)
+      return c.html(renderETAPage({ query: resolved, error: toPublicError(error), notice, useLocalBoard: useLocalPreset, requestUrl: c.req.url }), 200, pageHeaders)
     } catch {
       return renderPageError(c, error)
     }

@@ -1,9 +1,10 @@
-import { renderWebsiteStructuredData, siteSearchDescription, siteSocialDescription, siteSocialImage, siteTitle } from './seo'
+import { canonicalUrl, renderWebsiteStructuredData, siteOrigin, siteSearchDescription, siteSocialDescription, siteSocialImage, siteTitle } from './seo'
 
 export type MapPageMeta = {
   title?: string
   description?: string
   heading?: string
+  requestUrl?: string
 }
 
 // 深連結(?route= / ?city=)由伺服器端組標題:社群/聊天軟體的爬蟲不跑 JS,
@@ -12,6 +13,7 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
   const title = meta.title ?? siteTitle
   const description = meta.description ?? siteSearchDescription
   const heading = meta.heading ?? '台灣公車地圖'
+  const canonical = meta.requestUrl ? canonicalUrl(meta.requestUrl) : `${siteOrigin}/map`
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -19,9 +21,11 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#e8e2d6">
   <meta name="description" content="${escapeHTML(description)}">
+  <link rel="canonical" href="${escapeHTML(canonical)}">
   <meta property="og:title" content="${escapeHTML(title)}">
   <meta property="og:description" content="${escapeHTML(siteSocialDescription)}">
   <meta property="og:site_name" content="Mochi Bus">
+  <meta property="og:url" content="${escapeHTML(canonical)}">
   <meta property="og:image" content="${siteSocialImage}">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="${escapeHTML(title)}">

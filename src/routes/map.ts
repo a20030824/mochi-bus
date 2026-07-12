@@ -142,7 +142,7 @@ map.get('/map', (c) => {
     : cityName
       ? { title: `${cityName}公車地圖｜Mochi Bus`, description: `${cityName}的公車路網、附近站牌與路線規劃`, heading: `${cityName}公車地圖` }
       : {}
-  return c.html(renderMapPage(meta), 200, {
+  return c.html(renderMapPage({ ...meta, requestUrl: c.req.url }), 200, {
     'Cache-Control': 'no-cache',
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
