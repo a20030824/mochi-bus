@@ -435,6 +435,21 @@ const tdxSave = document.querySelector('#tdx-save') as HTMLButtonElement
 const tdxRemove = document.querySelector('#tdx-remove') as HTMLButtonElement
 const tdxMessage = document.querySelector('#tdx-message') as HTMLParagraphElement
 
+// 兩個欄位共用同一則 #tdx-message(aria-describedby 已指向它),錯誤時
+// 額外把觸發欄位標成 aria-invalid 並移入焦點,螢幕閱讀器/鍵盤使用者才知道
+// 「錯誤訊息對應哪一格」,不是只有視覺上的顏色差異。
+function setTdxFieldValidity(invalidFields: HTMLInputElement[]) {
+  tdxId.setAttribute('aria-invalid', String(invalidFields.includes(tdxId)))
+  tdxSecret.setAttribute('aria-invalid', String(invalidFields.includes(tdxSecret)))
+}
+
+function showTdxError(message: string, invalidFields: HTMLInputElement[] = []) {
+  tdxMessage.textContent = message
+  tdxMessage.classList.add('form-message-error')
+  setTdxFieldValidity(invalidFields)
+  invalidFields[0]?.focus()
+}
+
 function renderTdx(overrideMessage?: string) {
   const state = getTdxAuthState()
   const auth = state.auth
@@ -445,6 +460,8 @@ function renderTdx(overrideMessage?: string) {
   const mode = state.persistence === 'device' ? '已記住於此裝置' : '只保留在此分頁'
   tdxMessage.textContent = overrideMessage
     ?? (auth ? '目前使用你的憑證（' + auth.clientId.slice(0, 10) + '…，' + mode + '）' : '')
+  tdxMessage.classList.remove('form-message-error')
+  setTdxFieldValidity([])
 }
 
 tdxSave.onclick = async () => {
@@ -452,12 +469,18 @@ tdxSave.onclick = async () => {
   const clientId = tdxId.value.trim()
   const typedSecret = tdxSecret.value.trim()
   const clientSecret = typedSecret || (current && current.clientId === clientId ? current.clientSecret : '')
-  if (!clientId || !clientSecret) {
-    tdxMessage.textContent = 'Client ID 與 Client Secret 都要填'
+  if (!clientId) {
+    showTdxError('Client ID 不能空白', [tdxId])
+    return
+  }
+  if (!clientSecret) {
+    showTdxError('Client Secret 不能空白', [tdxSecret])
     return
   }
   tdxSave.disabled = true
   tdxMessage.textContent = '正在跟 TDX 打聲招呼…'
+  tdxMessage.classList.remove('form-message-error')
+  setTdxFieldValidity([])
   try {
     const response = await fetch('/api/v1/tdx/verify', {
       cache: 'no-store',
@@ -470,7 +493,7 @@ tdxSave.onclick = async () => {
     tdxSecret.value = ''
     renderTdx(persistence === 'device' ? '憑證有效，已記住於此裝置。' : '憑證有效，只保留在此分頁；關閉分頁後即移除。')
   } catch (error) {
-    tdxMessage.textContent = error instanceof Error && error.message ? error.message : '驗證失敗，稍後再試'
+    showTdxError(error instanceof Error && error.message ? error.message : '驗證失敗，稍後再試', [tdxId, tdxSecret])
   }
   tdxSave.disabled = false
 }

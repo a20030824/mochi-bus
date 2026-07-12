@@ -578,6 +578,11 @@ async function chooseCity(city: MapCity) {
   } catch {
     if (isStaleNav(requestId)) return
     setStatus('目前無法載入這個縣市的路線。', true)
+    drawer.replaceChildren(
+      drawerBack('返回區域', () => showRegion(city.region)),
+      heading(city.name, '目前無法載入這個縣市的路線。'),
+      retryButton(() => void chooseCity(city)),
+    )
   }
 }
 
@@ -612,7 +617,14 @@ function renderRoutePicker() {
         // 載回來時使用者可能已經離開選單(開了路線、換了城市),別把畫面搶回來
         if (interactionMode === 'browse' && activeCity?.code === cityCode) renderRoutePicker()
       } catch {
+        // 同樣不能把失敗畫面搶回使用者已經離開的城市/選單
+        if (interactionMode !== 'browse' || activeCity?.code !== cityCode) return
         setStatus('目前無法載入這個縣市的路線。', true)
+        drawer.replaceChildren(
+          drawerBack('返回縣市', () => showRegion(activeCity!.region)),
+          heading(activeCity!.name, '目前無法載入這個縣市的路線。'),
+          retryButton(() => renderRoutePicker()),
+        )
       }
     })()
     return
@@ -924,7 +936,13 @@ async function loadRoute(
     }
   } catch (error) {
     if (isStaleNav(requestId)) return
-    setStatus(error instanceof Error && error.message ? error.message : '目前無法取得這條路線。', true)
+    const message = error instanceof Error && error.message ? error.message : '目前無法取得這條路線。'
+    setStatus(message, true)
+    drawer.replaceChildren(
+      drawerBack(loading.label, loadingBack),
+      heading(routeName, message),
+      retryButton(() => void loadRoute(routeName, preferredVariant, returnToTrip, color, backAction)),
+    )
   }
 }
 
@@ -1329,7 +1347,13 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
     if (autoPreview && lastNearbyPlaces[0]) await showPlaceRoutes(lastNearbyPlaces[0])
   } catch (error) {
     if (isStaleNav(requestId)) return
-    setStatus(error instanceof Error && error.message ? error.message : '附近站牌讀取失敗', true)
+    const message = error instanceof Error && error.message ? error.message : '附近站牌讀取失敗'
+    setStatus(message, true)
+    drawer.replaceChildren(
+      drawerBack('附近站牌', renderNearbyPlaces),
+      heading('附近站牌讀取失敗', message),
+      retryButton(() => void findNearbyPlaces(latitude, longitude, autoPreview)),
+    )
   }
 }
 
@@ -1474,14 +1498,10 @@ async function loadDirectRoutes() {
     setStatus(error instanceof Error && error.message ? error.message : '直達路線查詢失敗', true)
     // 這時 tripStage 已回 idle(點地圖會變成逛附近站牌),不能把使用者
     // 留在「再點一下目的地」的殘局:給重試,退路則回到重新選目的地。
-    const retry = document.createElement('button')
-    retry.className = 'quiet-button'
-    retry.textContent = '再試一次'
-    retry.addEventListener('click', () => void loadDirectRoutes())
     drawer.replaceChildren(
       drawerBack('重新選目的地', resumeDestinationSelection),
       heading('查詢失敗了', `${from.name} → ${to.name} 暫時查不到，稍等一下再試。`),
-      retry,
+      retryButton(() => void loadDirectRoutes()),
     )
     setViewBack(resumeDestinationSelection)
   }
@@ -2043,7 +2063,13 @@ async function showPlaceRoutes(place: NearbyPlace) {
     setStatus(`${place.name} · ${data.routes.length} 個行車方向`)
   } catch (error) {
     if (isStaleNav(requestId)) return
-    setStatus(error instanceof Error && error.message ? error.message : '站牌路線讀取失敗', true)
+    const message = error instanceof Error && error.message ? error.message : '站牌路線讀取失敗'
+    setStatus(message, true)
+    drawer.replaceChildren(
+      drawerBack('附近站牌', renderNearbyPlaces),
+      heading(place.name, message),
+      retryButton(() => void showPlaceRoutes(place)),
+    )
   }
 }
 
@@ -2070,6 +2096,16 @@ function drawerBack(label: string, onClick: () => void): HTMLButtonElement {
   const button = document.createElement('button')
   button.className = 'drawer-back'
   button.textContent = `← ${label}`
+  button.addEventListener('click', onClick)
+  return button
+}
+
+// 讀取失敗時的統一退路:skeleton/loading 畫面不能停在原地不動,
+// 一定要有明確的錯誤文字加上可以再試一次的按鈕。
+function retryButton(onClick: () => void): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.className = 'quiet-button'
+  button.textContent = '再試一次'
   button.addEventListener('click', onClick)
   return button
 }
