@@ -50,7 +50,7 @@ To advance a stage, update `HSTS_MAX_AGE_SECONDS` in `src/security.ts`, run the 
 
 ## Stage 2 rollout
 
-Status: rollout prepared; production verification will be recorded after deployment and live checks.
+Status: production verified after deployment and live checks.
 
 - Previous value: `max-age=300` (Stage 1)
 - Target value: `max-age=86400` (Stage 2)
@@ -58,6 +58,18 @@ Status: rollout prepared; production verification will be recorded after deploym
 - `preload`: not included
 - Planned observation: at least 7 days before reviewing Stage 3
 - Rollback limit: browsers that cached the previous HSTS value cannot be reverted immediately; cached policy remains until its `max-age` expires.
+
+### Stage 2 production verification
+
+- Verified: 2026-07-13 07:13 Asia/Taipei (2026-07-12 23:13 UTC)
+- Commit: `709d12d0b282267ad97114e0011963bcca5130b0`
+- Deployment/version: `c7ee85c9-39c0-4e8c-9676-566450c6b441` (100% traffic; created 2026-07-12 23:12:40.198Z)
+- Live header: `Strict-Transport-Security: max-age=86400`
+- Header exclusions confirmed: no `includeSubDomains`, no `preload`
+- HTTP `/`, `/setup`, and `/api/v1/map/cities`: 301 to the equivalent HTTPS path
+- HTTPS security headers: CSP, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY` present
+- TLS: 1.0/1.1 rejected; 1.2/1.3 connected successfully
+- Smoke: `/`, `/setup`, `/map?city=Chiayi`, and `/api/v1/map/cities` returned 200; intentional 404 returned 404.
 
 ## Rollback
 
