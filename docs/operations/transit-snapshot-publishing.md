@@ -54,3 +54,23 @@ curl.exe -sS "https://bus.moc96336.com/api/v1/map/routes?city=Chiayi&snapshot=ma
 ```
 
 公開回應必須是 `source: "snapshot"`、`snapshotVersion` 等於 D1 active version，且 `routes` 非空。Production smoke 通過前，不得刪除 previous rows 或 objects。
+
+## 8m geometry rollback（2026-07-13）
+
+全路網 `network.json` 與 inline fallback 的 Douglas–Peucker 容差統一為 8m。50m 的 payload 實驗雖然減少 bytes 與座標數，但正式路網以視覺正確性優先；本輪不做城市差異化、多層 LOD、tiles 或 Web Worker。
+
+由 production `dataset_versions.imported_at` 與 50m 變更時間交叉確認，除本輪先重發的 Chiayi 外，仍使用 50m 產物而需重新生成的城市為：
+
+1. Taipei（active `20260712T201010854Z`）
+2. NewTaipei（active `20260712T201547917Z`）
+
+安排：Chiayi 驗證完成後，依序手動 dispatch Taipei、NewTaipei；每城均記錄發布前後 `network.json` bytes、座標數、active version，並完成公開 API smoke。其餘城市的 active snapshot 都早於 50m 變更，不列入本次重生清單。
+
+Chiayi 已完成第一站回退與 production 驗證：
+
+| 容差 | Active version | Bytes | 座標數 |
+| --- | --- | ---: | ---: |
+| 50m（修改前） | `20260712T151455398Z` | 620,381 | 21,739 |
+| 8m（修改後） | `20260712T224859683Z` | 1,322,246 | 55,537 |
+
+8m 相較 50m 增加 701,865 bytes（+113.1%）與 33,798 個座標（+155.5%）。Local validation、remote validation、active pointer 切換、公開 routes smoke 均通過；cache-busted production network API 回 200、273 routes，且 version 與 D1 active pointer 一致。

@@ -354,11 +354,10 @@ const networkKey = `snapshots/${version}/cities/${CITY}/network.json`
 const networkFile = join(outputRoot, 'network.json')
 // schemaVersion/city 直接寫進檔案:API 端把這個物件原樣串流給瀏覽器
 // (雙北 35MB+ 在 Worker 內 parse+stringify 會撞記憶體上限),不再有機會補欄位。
-// 全路網圖層是 0.34 透明度的 2.6px 背景淡線,不需要單一路線的完整精度;
-// PERF-001 讀空跑量測過 50m 容差可讓座標數降 ~93.5%(35.75 MiB → 3.01 MiB
-// raw、gzip 約 0.43 MiB),鳥瞰辨識度不受影響。細節路線圖用的 shapes/*.json
-// 不動,維持原始 ~8m 線形,單一路線頁精度不受此設定影響。
-const NETWORK_LOD_TOLERANCE_METERS = 50
+// 全路網 geometry 統一使用 8m Douglas-Peucker 容差。50m 雖可顯著縮小 payload，
+// 但會犧牲路網線形的視覺正確性，因此不再用於正式 snapshot。細節路線圖使用的
+// shapes/*.json 不經過這段全路網簡化。
+const NETWORK_LOD_TOLERANCE_METERS = 8
 const network = {
   schemaVersion: 1,
   city: CITY,

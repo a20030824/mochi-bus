@@ -11,16 +11,16 @@ describe('simplifyLine', () => {
   })
 
   it('近乎直線的中間點在容差內會被丟掉', () => {
-    // 中間點偏離起訖連線大約幾公尺,遠小於 50 m 容差
+    // 中間點偏離起訖連線大約 5.6m,小於正式全路網使用的 8m 容差
     const line: LonLat[] = [[121, 25], [121.0005, 25.00005], [121.001, 25]]
-    const result = simplifyLine(line, 50)
+    const result = simplifyLine(line, 8)
     expect(result).toEqual([line[0], line[2]])
   })
 
   it('偏離明顯超過容差的中間點會被保留', () => {
-    // 中間點往北偏移約 0.001 度緯度(約 111 m),遠大於 50 m 容差
+    // 中間點往北偏移約 0.001 度緯度(約 111m),遠大於 8m 容差
     const line: LonLat[] = [[121, 25], [121.0005, 25.001], [121.001, 25]]
-    const result = simplifyLine(line, 50)
+    const result = simplifyLine(line, 8)
     expect(result).toEqual(line)
   })
 

@@ -6,10 +6,10 @@ import { classifyRouteName } from '../../domain/route-category'
 import type { ScheduleItem } from '../../domain/schedule'
 import { memoryCacheGet, memoryCacheSet } from '../../lib/memory-cache'
 
-// 全路網鳥瞰不需要單一路線的完整精度,跟 sync 腳本產出 network.json 用
-// 同一個容差(見 scripts/sync-transit-snapshot.mjs 的 NETWORK_LOD_TOLERANCE_METERS);
+// 跟 sync 腳本產出 network.json 使用同一個 8m 容差，確保預生成與 fallback
+// 路徑的全路網 geometry 有一致的視覺精度。
 // 這裡是小城市(<=40 patterns,沒有預生成 network.json)即時組裝的 fallback 路徑。
-const NETWORK_LOD_TOLERANCE_METERS = 50
+const NETWORK_LOD_TOLERANCE_METERS = 8
 
 type ActiveVersion = { active_version: string }
 type PatternRow = {

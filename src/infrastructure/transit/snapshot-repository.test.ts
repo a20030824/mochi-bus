@@ -83,7 +83,7 @@ describe('findNearbyStopPlaces', () => {
 describe('getCityNetwork', () => {
   beforeEach(() => resetMemoryCacheForTests())
 
-  it('簡化小城市 inline fallback 的 shape 座標(PERF-001 LOD),不動起訖點', async () => {
+  it('小城市 inline fallback 使用 8m 容差，保留超過容差的線形', async () => {
     const meta = {
       duration: 0, size_after: 0, rows_read: 0, rows_written: 0, last_row_id: 0, changed_db: false, changes: 0,
     }
@@ -113,13 +113,13 @@ describe('getCityNetwork', () => {
         return statement
       },
     } as D1Database
-    // 幾乎一直線,中間點偏離起訖連線遠小於 50m 容差,應該被簡化掉。
+    // 中間點偏離起訖連線約 22m：8m 應保留；若誤回 50m 就會被丟掉。
     const shapeFeature = {
       type: 'Feature' as const,
       properties: {},
       geometry: {
         type: 'LineString' as const,
-        coordinates: [[121, 25], [121.0005, 25.00005], [121.001, 25]] as [number, number][],
+        coordinates: [[121, 25], [121.0005, 25.0002], [121.001, 25]] as [number, number][],
       },
     }
     const bucket = {
@@ -134,6 +134,6 @@ describe('getCityNetwork', () => {
 
     if (result?.kind !== 'inline') throw new Error('expected inline fallback result')
     expect(result.network.routes).toHaveLength(1)
-    expect(result.network.routes[0].shape.geometry.coordinates).toEqual([[121, 25], [121.001, 25]])
+    expect(result.network.routes[0].shape.geometry.coordinates).toEqual(shapeFeature.geometry.coordinates)
   })
 })

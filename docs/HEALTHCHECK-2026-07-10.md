@@ -81,7 +81,7 @@
 | COR-001 | P0 | 子路線識別遺失，可能混用 ETA／班表／收藏 | `src/domain/route-pattern.ts`、`src/lib/tdx.ts`、`src/domain/favorite-board.ts`、`src/routes/bus.ts` | Phase 2 | Verified：RouteUID/SubRouteUID/pattern identity 全鏈路已部署 `28b347d8-…` |
 | COR-002 | P0 | Journey ETA 用第一筆而非最佳 ETA，班表跨 route flatten | `src/domain/map/journey-estimate.ts`、`src/routes/map.ts`、`src/infrastructure/transit/snapshot-repository.ts` | Phase 2 | Verified：route/subroute-scoped ETA 與 schedule 聚合已部署 `91b1bdfc-…` |
 | DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/transit-snapshot/*`、`scripts/sync-transit-snapshot.mjs`、`docs/operations/transit-snapshot-publishing.md` | Phase 3 | Verified：gated publish 與 rollback 往返已用 Chiayi production snapshot 驗證 |
-| PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-transit-snapshot.mjs:328` | Phase 4 | In Progress：network.json LOD 容差已提高至 50m 並在 Chiayi production 驗證瘦身；Web Worker offload 與大型城市真機量測仍 Open |
+| PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-transit-snapshot.mjs:328` | Phase 4 | In Progress：50m 實驗雖縮小 payload，但因視覺正確性已回退至 8m；其他優化另案評估 |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Verified：共用 nav-request coordinator 已部署 `ef8eefaf-…` |
 | SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/rate-limit.ts`、`src/lib/tdx.ts`、`src/routes/map.ts:450-532` | Phase 1 | Verified：input boundaries、per-location edge rate limit、single-flight 與 credential-scoped circuit breaker 已部署 `8fa1fd3d-…` |
 | SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts`、`web/boards/store.ts:135-305`、`src/ui.ts:331-407` | Phase 1 | Verified：server fingerprint/LRU 與 session-first browser lifecycle 已部署 `b71d9105-…` |
@@ -479,7 +479,7 @@ interface RoutePatternRef {
 
 **修改內容**
 
-- 為「全路網鳥瞰」產生 30–50 m 的專用簡化 geometry；單一路線詳情保留目前約 8 m 精度。
+- 「全路網鳥瞰」與單一路線詳情都維持約 8m 精度；不再採用 30–50m 專用 geometry。
 - route metadata 與 geometry 分離，避免使用者只看列表也下載完整線段。
 - 支援 gzip/br、ETag、immutable version URL；active pointer 只是一個小 metadata response。
 - client 先取 viewport／city metadata，geometry 延後載入；解析與 index 建立移至 Web Worker。
@@ -509,7 +509,7 @@ interface RoutePatternRef {
 - 以 schema/LOD 版本和 feature flag 漸進啟用。
 - server 可暫時回傳舊 snapshot；active pointer 與前端版本需保有相容矩陣。
 
-> 2026-07-11 network geometry LOD 第一步結果：commit `866f14b` 已部署為 `88a9ba3b-4dcf-4d81-9785-e0bcc8ea501b`（100%），前一版 `ef8eefaf-…` 可直接回滾；不需要 schema version bump 或 dual-read——座標數量／精度改變對 client 完全透明(`L.geoJSON`／`buildNetworkIndex` 都是泛型消費座標陣列),新舊 snapshot 混用不會壞。把 sync 腳本既有的 Douglas-Peucker 簡化(`scripts/sync-chiayi-snapshot.mjs` 產生 `network.json`)容差從 8m 提高到 50m,對應本次健檢自己做過的唯讀量測;同一容差也補進 `snapshot-repository.ts` 的小城市 inline fallback(沒有預生成 `network.json` 的城市)。新增可單元測試的 `src/domain/map/simplify.ts`(Douglas-Peucker,6 個測試)取代原本散落各處的重複實作。透過 `gh workflow run sync-transit.yml -f city=Chiayi` 走完整 generate→validate→publish→smoke 閘門,實際重新發布 Chiayi(`20260711T230007001Z`,前一版 `20260711T120518025Z`),production 量測：`network.json` 從 1,322,185 bytes 降到 620,335 bytes(**-53.1%**,273 個 pattern、21,739 個座標);Chiayi 路網本身線形較單純,幅度小於健檢對雙北的唯讀量測(35.75 MiB→3.01 MiB,-93.5%),雙北等大城市要等排到的排程或手動 dispatch 重新產出才能量到對應數字。29 個測試檔、189/189 tests、typegen、TypeScript、build、dry-run 與 `npm audit`（0 vulnerabilities）全數通過；production 首頁、cities、Chiayi routes/nearby/network 均回 200,HSTS/CSP 正常。PERF-001 標記 In Progress：payload/parse 的第一步已驗證且對舊 snapshot 向後相容,但 P4-1 其餘項目(metadata 與 geometry 分離、Web Worker offload、CI payload budget、大型城市與真機 CWV 量測)與 P4-2(vector tiles spike)仍是 Open,留待下一輪。
+> 2026-07-11 network geometry LOD 實驗結果：commit `866f14b` 曾把全路網容差從 8m 提高到 50m。Chiayi production 的 `network.json` 從 1,322,185 bytes 降到 620,335 bytes（-53.1%，273 個 pattern、21,739 個座標）；這些數字只證明 payload 縮小，不代表視覺品質合格。後續檢視確認 50m 會犧牲路網線形的視覺正確性，因此 2026-07-13 統一回退至 8m；本輪不做城市差異化、多層 LOD、Web Worker 或 tiles。
 
 #### P4-2：中期評估 Vector Tiles／PMTiles
 
@@ -691,7 +691,7 @@ interface RoutePatternRef {
 1. **保留 immutable snapshot 模型**：問題是缺 publish gate，不是模型本身錯誤。
 2. **先修正 route pattern identity，再修 Journey ETA**：否則 ETA 修得再漂亮，輸入 identity 仍可能錯。
 3. **先補 CI/runtime tests，再大改 schema**：讓相容性和 Cloudflare binding 行為可被自動驗證。
-4. **先 Network LOD，再評估 tiles**：本輪 50 m 實驗已證明能以小變更取得數量級改善。
+4. **全路網維持 8m 視覺精度**：50m 實驗只證明 payload 可縮小，未通過視覺正確性要求；後續效能方案另案評估。
 5. **安全設定採分階段 rollout**：HTTPS/TLS 立即做；HSTS 因 client cache 不易回滾，必須漸進。
 6. **正確呈現不確定性**：即時資料不足時顯示範圍、來源與 degraded 狀態，不輸出假精確時間。
 
