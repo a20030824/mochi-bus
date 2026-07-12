@@ -349,7 +349,7 @@ export function renderSetupPage(cities: ReadonlyArray<readonly [string, string]>
           <p>向 <a href="https://tdx.transportdata.tw/" target="_blank" rel="noopener">TDX</a> 申請一組自己的憑證，即時查詢就走你自己的額度。憑證只在查詢時送到 Worker 換取 token，不寫入伺服器儲存或 log。</p>
           <div class="credential-field"><label for="tdx-client-id">Client ID</label><input id="tdx-client-id" autocomplete="off" spellcheck="false" aria-describedby="tdx-message" aria-invalid="false"></div>
           <div class="credential-field"><label for="tdx-client-secret">Client Secret</label><input id="tdx-client-secret" placeholder="Client Secret" type="password" autocomplete="off" aria-describedby="tdx-message" aria-invalid="false"></div>
-          <label class="tdx-remember"><input id="tdx-remember" type="checkbox"><span><strong>記住於此裝置</strong><small>勾選才會長期保存在這個瀏覽器；否則關閉本分頁後即移除。</small></span></label>
+          <label class="tdx-remember"><input id="tdx-remember" type="checkbox"><span><strong>記住於此裝置</strong><small>長期保存在這個瀏覽器；不勾選則關閉分頁後移除。</small></span></label>
           <div class="advanced-actions">
             <button id="tdx-save" type="button">儲存並測試</button>
             <button class="quiet-danger" id="tdx-remove" type="button" hidden>移除憑證</button>
