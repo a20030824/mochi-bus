@@ -25,7 +25,7 @@
     "snapshot:rollback": "node scripts/transit-snapshot/rollback.mjs"
   },
   "dependencies": {
-    "hono": "^4.12.27",
+    "hono": "^4.12.29",
     "leaflet": "^1.9.4"
   },
   "devDependencies": {
