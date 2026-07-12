@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderMapPage } from './map-page'
-import { siteSearchDescription, siteSocialDescription, siteTitle } from './seo'
+import { siteSearchDescription, siteSocialDescription, siteSocialImage, siteTitle } from './seo'
 import { renderETAPage, renderSetupPage } from './ui'
 
 const query = {
@@ -57,5 +57,28 @@ describe('SEO metadata', () => {
 
     expect(html).toContain('<script type="module" src="/assets/setup.js"></script>')
     expect(html).not.toContain("tdxRemember.checked?'device':'session'")
+  })
+
+  it('keeps the setup page (per-device local data) out of search indexes', () => {
+    const html = renderSetupPage([['Taipei', '臺北']])
+
+    expect(html).toContain('<meta name="robots" content="noindex">')
+  })
+
+  it('does not noindex the shareable ETA and map pages', () => {
+    expect(renderETAPage({ query, useLocalBoard: true })).not.toContain('name="robots"')
+    expect(renderMapPage({ heading: '台北市公車地圖' })).not.toContain('name="robots"')
+  })
+
+  it('gives chat-app link previews an image and Twitter Card metadata', () => {
+    const eta = renderETAPage({ query, useLocalBoard: true })
+    const map = renderMapPage({ heading: '台北市公車地圖' })
+
+    for (const html of [eta, map]) {
+      expect(html).toContain(`<meta property="og:image" content="${siteSocialImage}">`)
+      expect(html).toContain('<meta name="twitter:card" content="summary">')
+      expect(html).toContain(`<meta name="twitter:description" content="${siteSocialDescription}">`)
+      expect(html).toContain(`<meta name="twitter:image" content="${siteSocialImage}">`)
+    }
   })
 })

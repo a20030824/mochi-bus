@@ -1,4 +1,4 @@
-import { renderWebsiteStructuredData, siteSearchDescription, siteSocialDescription, siteTitle } from './seo'
+import { renderWebsiteStructuredData, siteSearchDescription, siteSocialDescription, siteSocialImage, siteTitle } from './seo'
 
 export type MapPageMeta = {
   title?: string
@@ -22,6 +22,11 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
   <meta property="og:title" content="${escapeHTML(title)}">
   <meta property="og:description" content="${escapeHTML(siteSocialDescription)}">
   <meta property="og:site_name" content="Mochi Bus">
+  <meta property="og:image" content="${siteSocialImage}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="${escapeHTML(title)}">
+  <meta name="twitter:description" content="${escapeHTML(siteSocialDescription)}">
+  <meta name="twitter:image" content="${siteSocialImage}">
   ${renderWebsiteStructuredData()}
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
