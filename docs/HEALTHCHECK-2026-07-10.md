@@ -80,8 +80,8 @@
 | SEC-001 | P0 | HTTP 未跳 HTTPS、無 HSTS、仍接受 TLS 1.0/1.1 | 線上實測；`web/boards/store.ts:137-153`、`src/routes/bus.ts:184-192`、`src/routes/map.ts:99-103` 會傳遞 BYOK | Phase 0 | Verified：deployment `a564a2f5-…`；HSTS Stage 1 觀察中 |
 | COR-001 | P0 | 子路線識別遺失，可能混用 ETA／班表／收藏 | `src/domain/route-pattern.ts`、`src/lib/tdx.ts`、`src/domain/favorite-board.ts`、`src/routes/bus.ts` | Phase 2 | Verified：RouteUID/SubRouteUID/pattern identity 全鏈路已部署 `28b347d8-…` |
 | COR-002 | P0 | Journey ETA 用第一筆而非最佳 ETA，班表跨 route flatten | `src/domain/map/journey-estimate.ts`、`src/routes/map.ts`、`src/infrastructure/transit/snapshot-repository.ts` | Phase 2 | Verified：route/subroute-scoped ETA 與 schedule 聚合已部署 `91b1bdfc-…` |
-| DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/transit-snapshot/*`、`scripts/sync-chiayi-snapshot.mjs`、`docs/operations/transit-snapshot-publishing.md` | Phase 3 | Verified：gated publish 與 rollback 往返已用 Chiayi production snapshot 驗證 |
-| PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-chiayi-snapshot.mjs:328` | Phase 4 | In Progress：network.json LOD 容差已提高至 50m 並在 Chiayi production 驗證瘦身；Web Worker offload 與大型城市真機量測仍 Open |
+| DATA-001 | P0 | 快照發布前缺 schema／數量／引用完整性驗證與自動回滾 | `scripts/transit-snapshot/*`、`scripts/sync-transit-snapshot.mjs`、`docs/operations/transit-snapshot-publishing.md` | Phase 3 | Verified：gated publish 與 rollback 往返已用 Chiayi production snapshot 驗證 |
+| PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-transit-snapshot.mjs:328` | Phase 4 | In Progress：network.json LOD 容差已提高至 50m 並在 Chiayi production 驗證瘦身；Web Worker offload 與大型城市真機量測仍 Open |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Verified：共用 nav-request coordinator 已部署 `ef8eefaf-…` |
 | SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/rate-limit.ts`、`src/lib/tdx.ts`、`src/routes/map.ts:450-532` | Phase 1 | Verified：input boundaries、per-location edge rate limit、single-flight 與 credential-scoped circuit breaker 已部署 `8fa1fd3d-…` |
 | SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts`、`web/boards/store.ts:135-305`、`src/ui.ts:331-407` | Phase 1 | Verified：server fingerprint/LRU 與 session-first browser lifecycle 已部署 `b71d9105-…` |
@@ -91,10 +91,10 @@
 | ARCH-001 | P2 | 大量 browser JS 內嵌字串未被完整 typecheck/lint，地圖主檔過大 | `src/ui.ts:63-285,379-408`、`web/map/main.ts` | Phase 5 | In Progress：setup 頁腳本已搬到 `web/setup/main.ts` 並納入 TypeScript/build;ETA 頁 inline script 與 `web/map/main.ts` 拆分仍 Open |
 | QUERY-001 | P2 | nearby 先在 bbox 無排序 `LIMIT 100`，高密度區可能漏掉真正最近站牌 | `src/infrastructure/transit/snapshot-repository.ts`、`src/infrastructure/transit/snapshot-repository.test.ts` | Phase 2 | Verified：完整 bbox 候選經 Haversine 排序後才取最近 100；已部署 `f6c08bfb-…` |
 | CACHE-001 | P2 | Cache API write 位於回應關鍵路徑，cache failure 可能拖累或弄壞主請求 | `src/lib/edge-cache.ts`、`src/lib/tdx.ts`、`src/routes/map.ts` | Phase 1 | Verified：背景寫入與 read/write fail-open 已部署 `19229db5-…` |
-| PIPE-001 | P2 | token fetch 無 timeout/retry，Retry-After 解析有陷阱，單城失敗中止整批 | `scripts/sync-chiayi-snapshot.mjs:22-54`、`.github/workflows/sync-transit.yml:72-74` | Phase 3 | Open |
+| PIPE-001 | P2 | token fetch 無 timeout/retry，Retry-After 解析有陷阱，單城失敗中止整批 | `scripts/sync-transit-snapshot.mjs:22-54`、`.github/workflows/sync-transit.yml:72-74` | Phase 3 | In Progress：token fetch 與資料 fetch 已共用 timeout/retry/Retry-After 修正；單城失敗隔離在目前 workflow 已是既有行為。細節見 Phase 3 下方 2026-07-12 紀錄，尚待下一次排程/手動 dispatch 的實際執行驗證 |
 | DX-001 | P2 | Node 版本文件與 Wrangler 要求不一致，bindings typegen 不可重現 | `README.md`、`.dev.vars`、`worker-configuration.d.ts` | Phase 1 | Verified：Node ≥22／CI 24 LTS；deterministic typegen check 通過 |
-| A11Y-001 | P2 | 表單 label、錯誤恢復、focus、live region、對比與 reduced motion 不完整 | `src/ui.ts:332-335`、`src/map-page.ts:39-40`、`web/map/style.css` | Phase 5 | In Progress:live region／reduced motion／setup picker 的 Escape+focus 已修;primary button 對比與錯誤恢復 retry action 仍 Open |
-| SEO-001 | P3 | canonical／OG image／Twitter card／setup noindex 等仍可補強 | `src/seo.ts`、`src/ui.ts`、`src/map-page.ts` | Phase 5 | In Progress:setup noindex 與 OG image/Twitter card 已補;canonical/og:url 仍 Open |
+| A11Y-001 | P2 | 表單 label、錯誤恢復、focus、live region、對比與 reduced motion 不完整 | `src/ui.ts:332-335`、`src/map-page.ts:39-40`、`web/map/style.css` | Phase 5 | In Progress:live region／reduced motion／setup picker 的 Escape+focus 已修;skeleton retry action 與 BYOK 錯誤關聯已補(細節見下方 2026-07-12 紀錄);primary button 對比是品牌色決策,需設計覆核才能動,仍 Open |
+| SEO-001 | P3 | canonical／OG image／Twitter card／setup noindex 等仍可補強 | `src/seo.ts`、`src/ui.ts`、`src/map-page.ts` | Phase 5 | In Progress:setup noindex 與 OG image/Twitter card 已補;canonical/og:url 已補(細節見下方 2026-07-12 紀錄) |
 
 ## 5. 詳細整改計畫
 
@@ -461,6 +461,8 @@ interface RoutePatternRef {
 - 在測試 bucket／namespace 演練 publish 和 rollback，再碰 production pointer。
 - 不刪除上一個已知良好物件；依 retention policy 延後清理。
 
+> 2026-07-12 PIPE-001 timeout/retry 結果：`scripts/sync-chiayi-snapshot.mjs` 新增共用 `fetchWithTimeout`/`fetchWithRetry`(15 秒逾時、最多 5 次嘗試、指數退避)，token fetch 與既有的 `tdxGet` 資料端點改用同一套邏輯，不再有「token fetch 失敗就讓整個城市直接中止、沒有重試機會」的落差。同時修正 `Retry-After` 解析陷阱：header 缺席時舊寫法 `Number(null)`(值是 0)會被 `Number.isFinite` 誤判成「有效的 0 秒」，對著還在限流的 TDX 立刻重打；新版先判斷 header 是否存在，缺席才退回指數退避。單城失敗中止整批的部分：確認目前 `.github/workflows/sync-transit.yml` 的城市迴圈已經是 `for city in $cities; do ... done` 搭配收集 `failed` 清單、跑完才統一回報，單一城市失敗不會擋掉其他城市，這部分已是既有行為，不需要額外修改。`node --check` 語法驗證通過，`npm test`(30 個測試檔、201/201)、typecheck、build、`wrangler deploy --dry-run` 全數通過；這支腳本本來就沒有單元測試覆蓋(需要真實 TDX 憑證才能執行)，這輪也沒有對著真正的 TDX API 或排程跑一次完整驗證，PIPE-001 維持 In Progress，留到下一次排程或手動 `workflow_dispatch` 執行時觀察是否如預期重試/逾時。
+
 ### Phase 4 — 全路網效能（第 4 週）
 
 #### P4-1：先落地專用 Network LOD
@@ -575,6 +577,10 @@ interface RoutePatternRef {
 
 > 2026-07-11 SEO-001 第一輪結果:commit `d773e9e` 已部署為 `33657a42-a994-470b-8dcd-fcda8994dce8`(100%),前一版 `ee7003b7-…` 可直接回滾。`/setup` 管理的是單一裝置的本機資料(常用站牌、BYOK 憑證),不該被索引或產生社群預覽卡,補上 `<meta name="robots" content="noindex">`(ETA/route/map 等可分享頁面確認沒有這個標籤)。另外全站原本沒有 `og:image` 與任何 Twitter Card 標籤,聊天軟體/Twitter 爬蟲抓不到圖也抓不到卡片型態;新增共用的 `siteSocialImage`(沿用現成的 180×180 `apple-touch-icon.png`,1200×630 的橫向 banner 需要額外設計,這輪先不做)與 `twitter:card=summary`/`twitter:title`/`twitter:description`/`twitter:image`,套進 `pageShell`(ETA/route/setup)與 `renderMapPage`(地圖頁)。30 個測試檔、199/199 vitest tests(新增 3 個:setup noindex、可分享頁面沒有 noindex、OG/Twitter 標籤存在)全數通過,typegen、TypeScript、build、dry-run 與 `npm audit`(0 vulnerabilities)也過。Production 首頁、`/setup`、地圖頁的 noindex/og:image/twitter card 標籤與 `apple-touch-icon.png` 本身(200)均已線上確認,HSTS/CSP 正常。SEO-001 標記 In Progress:canonical `<link>` 與 `og:url` 需要把目前請求的實際網址傳進 `bus.ts` 好幾個呼叫點,比這輪的疊加式修改更動範圍大,留給下一輪;1200×630 banner 圖與 sitemap 邊界同樣仍是 Open。
 
+> 2026-07-12 A11Y-001 skeleton retry / BYOK 錯誤關聯結果:地圖有 5 處會把 drawer 換成「正在讀取…」loading 畫面的流程(`chooseCity`、`renderRoutePicker` 的補抓分支、`loadRoute`、`findNearbyPlaces`、`showPlaceRoutes`)原本失敗時只更新狀態列文字,drawer 卻停在 loading 畫面不會進入任何 terminal state,使用者除了整頁重新整理沒有別的路可走。新增共用 `retryButton()`,失敗時把 drawer 換成「◯◯讀取失敗」+ 錯誤訊息 +「再試一次」按鈕,重按會用原本的參數重新呼叫同一個載入函式;順手發現 `renderRoutePicker` 的補抓分支原本連 `interactionMode`/`activeCity` 都沒檢查就直接改畫面,補上跟成功分支一致的 staleness guard,避免使用者已經離開這個城市/選單時還被失敗畫面搶回去。BYOK 憑證表單原本 Client ID/Secret 兩個欄位跟共用的 `#tdx-message` 錯誤訊息沒有任何程式化關聯,螢幕閱讀器使用者只能靠肉眼在欄位下方找錯誤;新增 `aria-describedby="tdx-message"`、依錯誤來源切換 `aria-invalid` 並把焦點移到出錯欄位,本機驗證失敗(空白 Client ID/Secret)與遠端驗證失敗(憑證錯誤)分別標記對應欄位。用 Playwright 對著 `wrangler dev` 實際跑過:清空 Client ID 送出 → `aria-invalid=true`、焦點落在 Client ID、訊息「Client ID 不能空白」;補上 ID 留白 Secret → 換成標記 Secret 欄位;兩者都填但憑證錯誤 → 兩個欄位都標成無效並顯示伺服器回傳的錯誤訊息。地圖端攔截 `/api/v1/map/nearby` 回應 500 後點地圖,drawer 正確顯示「附近站牌讀取失敗」+「再試一次」;解除攔截後按重試,drawer 正常收斂到「附近沒有站牌」的空結果終態,沒有卡在錯誤畫面。30 個測試檔、201/201 vitest tests、typegen、TypeScript、build、`wrangler deploy --dry-run` 全數通過。這輪只在本機 `wrangler dev` + Playwright 驗證,還沒有部署到 production,A11Y-001 維持 In Progress:primary button 對比是品牌色決策,仍待設計覆核;全站 axe 掃描與 focus-visible 逐一盤點仍是 Open。
+
+> 2026-07-12 SEO-001 canonical/og:url 結果:`pageShell`(ETA/setup/route/同名站牌 disambiguation 頁共用)與 `renderMapPage` 都補上 `<link rel="canonical">` 與 `<meta property="og:url">`,一律標準化成正式網域 `https://bus.moc96336.com` 加上請求的 pathname/search——不信任 Host header,本機開發或未來的 preview host 也會標準化成同一個正式網址,避免分享卡/搜尋引擎索引到不是正式網址的版本。過程中盤點 `renderETAPage` 對 `pageShell` 的呼叫時發現原本的位置參數設計很脆弱:`script`/`description`/`noindex` 都是可省略的位置參數,一旦有呼叫點漏帶中間某個空字串佔位,後面的參數會整組往前錯位卻不會有任何型別錯誤;這次把 `pageShell` 改成單一必填 `canonical` 的物件參數,連帶排除這類錯位風險,不用等下一次真的漏寫參數才發現。`src/routes/bus.ts` 的 `/`、`/bus`、`/setup`、`/route`(含快照 fallback)、同名站牌 disambiguation 頁,以及 `src/routes/map.ts` 的 `/map`,都改傳入 `c.req.url`。新增測試涵蓋 canonical/og:url 標準化(含本機 host 也要標準化成正式網域)、map 頁沒有 `requestUrl` 時的預設 canonical,以及分享頁應該用路線/站牌專屬的 description 而非首頁通用描述。30 個測試檔、201/201 vitest tests、typegen、TypeScript、build、`wrangler deploy --dry-run` 全數通過;另外對著 `wrangler dev` 用 curl 實測 `/`、`/setup`、`/bus?...`(含經過 canonical redirect 的深連結)、`/route?...`、`/map?city=...`,canonical/og:url 內容與各頁實際請求網址一致,`/bus` 頁的 `<meta name="description">` 也確認顯示路線/站牌專屬文字而非首頁通用描述。同樣還沒部署到 production,SEO-001 維持 In Progress,待部署後補上線上確認;1200×630 banner 圖與 sitemap 邊界仍是 Open。
+
 ## 6. 建議的 PR 切分與依賴順序
 
 不要做一個巨型整改 PR。建議順序如下：
@@ -667,12 +673,12 @@ interface RoutePatternRef {
 
 ## 11. 其他待辦
 
-- README 的 Node 版本與實際 Wrangler engine 對齊。
-- README 圖片由約 1.79 MB PNG 改成 WebP/AVIF。
-- 將 `sync-chiayi-snapshot.mjs` 改成符合 22 城市現況的通用名稱。
-- 補 `SECURITY.md`、貢獻指南、資料與部署 runbook。
-- 檢查 `homeNotice` 使用 `in` 的 prototype-chain 風險，改用 `Object.hasOwn()`。
-- 對 radius／lat／lon 做有限值與範圍驗證。
+- ~~README 的 Node 版本與實際 Wrangler engine 對齊。~~ 已完成(DX-001 一併處理,README 已寫「Node 22+，建議 `.nvmrc` 指定的 Node 24 LTS」，與 `package.json#engines` 一致)。
+- ~~README 圖片由約 1.79 MB PNG 改成 WebP/AVIF。~~ 2026-07-12 已完成:一開始用既有的 `sharp`(已在 `node_modules`,不用新增依賴)把 `docs/image/hero-map.png`(1,792,561 bytes)轉成新的 WebP,結果發現 `docs/image/hero-map.webp` 其實 2026-07-06 commit `4d354ae` 就已經生成並提交過(202,358 bytes),只是 README 圖片連結一直沒接上、還在用 PNG——多餘的資產躺在 repo 裡沒人用。改用回這個既有版本(比重新生成的還小),README 連結指到 `.webp`,刪除 1.79 MB 的舊 PNG(**-88.7%**)。
+- ~~將 `sync-chiayi-snapshot.mjs` 改成符合 22 城市現況的通用名稱。~~ 2026-07-12 已完成:`git mv` 成 `scripts/sync-transit-snapshot.mjs`,同步更新 `package.json` 的 `snapshot:chiayi`/`snapshot:city`、README、`snapshot-repository.ts` 的兩處註解引用；`node --check` 語法驗證通過，205/205 vitest tests、typecheck、build、dry-run 全數通過(workflow 只透過 `npm run snapshot:city` 呼叫，檔名變動不影響 `.github/workflows/sync-transit.yml`)。
+- ~~補 `SECURITY.md`、貢獻指南、資料與部署 runbook。~~ 2026-07-12 已完成:新增 `SECURITY.md`(GitHub 私密 Security Advisories 回報流程、範圍內/外說明)與 `CONTRIBUTING.md`(開發流程、`npm run check` 門檻、程式風格、commit 慣例);部署/資料 runbook 原本就有 `docs/operations/edge-security.md`、`docs/operations/transit-snapshot-publishing.md`,此輪只在 README 補上指向這兩份新文件的連結。
+- ~~檢查 `homeNotice` 使用 `in` 的 prototype-chain 風險，改用 `Object.hasOwn()`。~~ 2026-07-12 已完成:抽出可單獨測試的 `resolveTDXNotice()`(`src/routes/bus.ts`),改用 `Object.hasOwn()`；新增 `src/routes/bus.test.ts` 鎖住 `constructor`／`__proto__`／`toString`／`hasOwnProperty`／`valueOf` 都不會被誤判成合法 key。程式碼路徑推導:修正前 `?notice=constructor` 會取出 `tdxWarningMessages.constructor`(一個函式而非字串),`renderETAPage` 對它呼叫 `escapeHTML()`→`.replaceAll()` 會丟 `TypeError`;`renderETA` 的外層 catch 重新用同一個壞掉的 `notice` 再呼叫一次 `renderETAPage`,同一個 TypeError 再丟一次,最終落到 `renderPageError(c, error)`,因為 TypeError 不屬於 `QueryValidationError`/`QueryResolutionError`/`TDXServiceError`,回應狀態碼落在 503。嘗試對著 `wrangler dev` 實際重現這個修正前的行為時,被自動防護機制擋下(拒絕把還原成漏洞版本的程式碼跑起來對外服務),因此上述推導未經真正的對外請求驗證,但修正後的版本已對著 `wrangler dev` 實測:`constructor`/`__proto__`/`toString`/`hasOwnProperty`/`valueOf`/合法值 `tdx-quota` 皆回 200,且合法值仍正確顯示對應提示文字。
+- ~~對 radius／lat／lon 做有限值與範圍驗證。~~ 已完成(P1-1 API 輸入防護一併處理,見 `src/lib/api-input.ts` 的 `parseCoordinate`/半徑 50–2000 範圍檢查)。
 - localStorage 所有讀取都做 schema validation 與 migration failure fallback。
 - 檢查第三方地圖、字型、圖示與資料 attribution／license notice。
 

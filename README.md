@@ -5,7 +5,7 @@
 
 🚌 **線上試用:[bus.moc96336.com](https://bus.moc96336.com/)**
 
-[![點地圖上的站牌,攤開所有經過的路線與到站時間](docs/image/hero-map.png)](https://bus.moc96336.com/map)
+[![點地圖上的站牌,攤開所有經過的路線與到站時間](docs/image/hero-map.webp)](https://bus.moc96336.com/map)
 
 ---
 
@@ -76,7 +76,7 @@ npm run dev
 
 ## 資料管線
 
-`scripts/sync-chiayi-snapshot.mjs` 從 TDX 抓一個縣市的路線、站牌、線形與時刻表,寫成:
+`scripts/sync-transit-snapshot.mjs` 從 TDX 抓一個縣市的路線、站牌、線形與時刻表,寫成:
 
 - **D1**(`migrations/0001_transit_snapshot.sql`):routes / patterns / stops / stop_places / pattern_stops,以 `version` 欄位做不可變版本,`dataset_versions` 指向現行版本
 - **R2**:每條 pattern 的 GeoJSON 線形、每條路線的時刻表、每站牌的 place bundle、全城 network.json
@@ -129,6 +129,10 @@ CI 同步需要的 repo secrets:`TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`、`CLOUDFL
 
 - 公車資料:交通部 [TDX 運輸資料流通服務](https://tdx.transportdata.tw/)
 - 底圖:© [OpenStreetMap](https://www.openstreetmap.org/copyright) 貢獻者
+
+## 貢獻與安全回報
+
+想送 PR 先看 [CONTRIBUTING.md](CONTRIBUTING.md)；安全漏洞請照 [SECURITY.md](SECURITY.md) 的流程私下回報，不要開公開 Issue。
 
 ## 授權
 
