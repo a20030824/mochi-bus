@@ -107,3 +107,69 @@ describe('SEO metadata', () => {
     expect(mapDefault).toContain('<link rel="canonical" href="https://bus.moc96336.com/map">')
   })
 })
+
+describe('ETA bootstrap', () => {
+  function bootstrapFrom(html: string): Record<string, unknown> {
+    const match = html.match(/<script id="eta-bootstrap" type="application\/json">([\s\S]*?)<\/script>/)
+    if (!match) throw new Error('missing ETA bootstrap')
+    return JSON.parse(match[1]) as Record<string, unknown>
+  }
+
+  it('renders a typed bootstrap and external ETA entry for homepage and shared pages', () => {
+    const homepage = renderETAPage({ query, useLocalBoard: true, requestUrl })
+    const shared = renderETAPage({ query, useLocalBoard: false, requestUrl })
+
+    for (const [html, local] of [[homepage, true], [shared, false]] as const) {
+      expect(html).toContain('id="eta-bootstrap"')
+      expect(html).toContain('type="application/json"')
+      expect(html).toContain('<script type="module" src="/assets/eta.js"></script>')
+      expect(html).not.toContain("import { activeBoardId")
+      expect(html).not.toContain("from '/assets/boards.js'")
+      expect(html).not.toContain('function refreshBoard()')
+      expect(html).not.toContain("serviceWorker.register('/sw.js')")
+      const bootstrap = bootstrapFrom(html)
+      expect(bootstrap).toHaveProperty('initialBoard')
+      expect(bootstrap).toHaveProperty('useLocalBoard', local)
+      expect(bootstrap).toHaveProperty('tdxWarningMessages')
+    }
+  })
+
+  it('escapes bootstrap JSON so a stop name cannot close the script element', () => {
+    const maliciousQuery = {
+      ...query,
+      stopName: '</script><script>globalThis.pwned=true</script>',
+    }
+    const html = renderETAPage({ query: maliciousQuery, useLocalBoard: true, requestUrl })
+
+    expect(html).not.toContain('</script><script>globalThis.pwned=true</script>')
+    expect(html).toContain('\\u003c/script\\u003e\\u003cscript\\u003eglobalThis.pwned=true\\u003c/script\\u003e')
+    expect(bootstrapFrom(html)).toMatchObject({ initialBoard: { title: maliciousQuery.stopName } })
+  })
+
+  it('keeps the server-rendered row, notice, and updated timestamp in the page shell', () => {
+    const html = renderETAPage({
+      query,
+      result: {
+        routeName: query.routeName,
+        stopName: query.stopName,
+        stopUid: query.stopUid,
+        direction: query.direction,
+        estimateSeconds: 120,
+        minutes: 2,
+        label: '約 2 分',
+        stopStatus: 0,
+        statusLabel: '正常',
+        dataTime: '2026-07-13T07:00:00+08:00',
+        fetchedAt: '2026-07-13T07:00:01+08:00',
+        stale: false,
+        source: 'realtime',
+      },
+      useLocalBoard: false,
+      requestUrl,
+    })
+
+    expect(html).toContain('class="bus-eta">約 2 分</span>')
+    expect(html).toContain('id="notice"></p>')
+    expect(html).toContain('id="updated">資料 07:00:00</span>')
+  })
+})

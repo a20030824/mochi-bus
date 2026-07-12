@@ -1,6 +1,5 @@
 // 常用站牌的唯一 localStorage 讀寫入口。
-// 由 Vite 建成 /assets/boards.js:地圖頁(web/map)直接 import,
-// ETA 與 setup 頁的 inline module script 也從同一個 URL import,避免三處各寫一份。
+// 由 Vite 建成 /assets/boards.js:地圖、ETA 與 setup 頁共用同一份 store。
 import {
   busKey,
   migrateLegacyPresets,

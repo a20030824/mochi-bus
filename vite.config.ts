@@ -7,12 +7,13 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: true,
     rollupOptions: {
-      // ETA 頁的 inline script 在建置圖之外 import boards.js,
-      // 必須保留 entry 的全部 exports,不能被 tree-shake。
+      // boards 仍是共用 store entry，ETA 與 setup/map 都會從 TypeScript source import。
+      // 保留 entry 的全部 exports，避免共用 store 的公開 API 被 tree-shake。
       preserveEntrySignatures: 'strict',
       input: {
         map: 'web/map/main.ts',
-        // 常用站牌儲存層,ETA 頁的 inline module script 與 setup 頁都直接 import 這支。
+        eta: 'web/eta/main.ts',
+        // 常用站牌儲存層，作為共用 store entry 保留。
         boards: 'web/boards/store.ts',
         setup: 'web/setup/main.ts',
       },
