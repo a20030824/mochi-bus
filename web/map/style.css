@@ -332,6 +332,7 @@ button { cursor: pointer; }
 .nearby-map-marker.endpoint { background: #b85f49; }
 
 .direct-route-card {
+  position: relative;
   overflow: hidden;
   border: 1px solid #c9c2b4;
   border-left: 5px solid var(--route-color);
@@ -343,7 +344,7 @@ button { cursor: pointer; }
   display: grid;
   gap: 5px;
   width: 100%;
-  padding: 11px 12px 6px 10px;
+  padding: 11px 12px 10px 10px;
   border: 0;
   background: transparent;
   color: #292a25;
@@ -351,19 +352,25 @@ button { cursor: pointer; }
 }
 .direct-route-select > span { display: flex; justify-content: space-between; gap: 12px; }
 .direct-route-select > span > span, .direct-route-select small { color: #67685f; font-size: 12px; }
+.direct-route-select > small { display: block; padding-right: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .direct-route-select:hover, .direct-route-select:focus-visible { background: #f5efe4; }
 .direct-route-detail {
-  width: 100%;
-  padding: 6px 12px 9px 10px;
+  position: absolute;
+  right: 7px;
+  bottom: 6px;
+  width: auto;
+  padding: 3px 5px;
   border: 0;
-  border-top: 1px solid #d5cec0;
-  background: #f4efe4;
-  color: #67685f;
-  font-size: 12px;
-  text-align: left;
+  border-radius: 2px;
+  background: transparent;
+  color: #4f685b;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.2;
 }
 .direct-route-detail:hover, .direct-route-detail:focus-visible { background: #fffaf0; color: #292a25; }
-.direct-route-select:focus-visible, .direct-route-detail:focus-visible { outline: 2px solid #4f685b; outline-offset: -2px; }
+.direct-route-select:focus-visible { outline: 2px solid #4f685b; outline-offset: -2px; }
+.direct-route-detail:focus-visible { outline: 2px solid #4f685b; outline-offset: 1px; }
 .reset-trip-button { width: 100%; margin-top: 10px; }
 
 .transfer-plan-list { display: grid; gap: 10px; }
@@ -440,6 +447,8 @@ button { cursor: pointer; }
     max-height: 43vh;
     border-radius: 4px;
   }
+  .drawer-heading h1 { margin: 3px 0 6px; font-size: 24px; line-height: 1.08; letter-spacing: -.035em; overflow-wrap: anywhere; }
+  .drawer-heading p, .drawer-copy { margin-bottom: 10px; line-height: 1.4; }
   .map-status { max-width: calc(100% - 110px); }
   .selection-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .leaflet-control-zoom { display: none; }

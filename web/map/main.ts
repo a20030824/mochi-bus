@@ -1871,7 +1871,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     const detailButton = document.createElement('button')
     detailButton.type = 'button'
     detailButton.className = 'direct-route-detail'
-    detailButton.textContent = '查看完整路線'
+    detailButton.textContent = '完整路線'
     detailButton.setAttribute('aria-label', `查看 ${route.routeName} 完整路線`)
     detailButton.addEventListener('click', (event) => {
       event.stopPropagation()
