@@ -1,0 +1,92 @@
+name: Apply direct card density
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'fix/map-endpoint-cards'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: fix/map-endpoint-cards
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Compact direct route detail and mobile headings
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              return text.replace(old, new, 1)
+
+          main_path = Path('web/map/main.ts')
+          main = main_path.read_text()
+          main = replace_once(
+              main,
+              "    detailButton.textContent = '查看完整路線'",
+              "    detailButton.textContent = '完整路線'",
+              'detail button copy',
+          )
+          main_path.write_text(main)
+
+          style_path = Path('web/map/style.css')
+          style = style_path.read_text()
+          style = replace_once(
+              style,
+              ".direct-route-card {\n  overflow: hidden;",
+              ".direct-route-card {\n  position: relative;\n  overflow: hidden;",
+              'card positioning',
+          )
+          style = replace_once(
+              style,
+              "  padding: 11px 12px 6px 10px;",
+              "  padding: 11px 12px 10px 10px;",
+              'select padding',
+          )
+          style = replace_once(
+              style,
+              ".direct-route-select > span > span, .direct-route-select small { color: #67685f; font-size: 12px; }\n.direct-route-select:hover, .direct-route-select:focus-visible { background: #f5efe4; }\n.direct-route-detail {\n  width: 100%;\n  padding: 6px 12px 9px 10px;\n  border: 0;\n  border-top: 1px solid #d5cec0;\n  background: #f4efe4;\n  color: #67685f;\n  font-size: 12px;\n  text-align: left;\n}\n.direct-route-detail:hover, .direct-route-detail:focus-visible { background: #fffaf0; color: #292a25; }\n.direct-route-select:focus-visible, .direct-route-detail:focus-visible { outline: 2px solid #4f685b; outline-offset: -2px; }",
+              ".direct-route-select > span > span, .direct-route-select small { color: #67685f; font-size: 12px; }\n.direct-route-select > small { display: block; padding-right: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n.direct-route-select:hover, .direct-route-select:focus-visible { background: #f5efe4; }\n.direct-route-detail {\n  position: absolute;\n  right: 7px;\n  bottom: 6px;\n  width: auto;\n  padding: 3px 5px;\n  border: 0;\n  border-radius: 2px;\n  background: transparent;\n  color: #4f685b;\n  font-size: 11px;\n  font-weight: 750;\n  line-height: 1.2;\n}\n.direct-route-detail:hover, .direct-route-detail:focus-visible { background: #fffaf0; color: #292a25; }\n.direct-route-select:focus-visible { outline: 2px solid #4f685b; outline-offset: -2px; }\n.direct-route-detail:focus-visible { outline: 2px solid #4f685b; outline-offset: 1px; }",
+              'compact detail style',
+          )
+          style = replace_once(
+              style,
+              "  .map-status { max-width: calc(100% - 110px); }",
+              "  .drawer-heading h1 { margin: 3px 0 6px; font-size: 24px; line-height: 1.08; letter-spacing: -.035em; overflow-wrap: anywhere; }\n  .drawer-heading p, .drawer-copy { margin-bottom: 10px; line-height: 1.4; }\n  .map-status { max-width: calc(100% - 110px); }",
+              'mobile heading style',
+          )
+          style_path.write_text(style)
+
+          test_path = Path('test/e2e/map-direct.spec.ts')
+          test = test_path.read_text()
+          anchor = "    await expect(page.getByRole('heading', { name: '起點 → 終點', exact: true })).toBeVisible()\n\n    await cards.nth(1).locator('.direct-route-select').press('Enter')"
+          addition = "    const resultHeading = page.getByRole('heading', { name: '起點 → 終點', exact: true })\n    await expect(resultHeading).toBeVisible()\n    const compactDetail = cards.nth(0).getByRole('button', { name: '查看 A 完整路線', exact: true })\n    await expect(compactDetail).toHaveText('完整路線')\n    await expect.poll(() => compactDetail.evaluate((button) => getComputedStyle(button).position)).toBe('absolute')\n    const originalViewport = page.viewportSize()!\n    await page.setViewportSize({ width: 390, height: 844 })\n    expect(await resultHeading.evaluate((heading) => parseFloat(getComputedStyle(heading).fontSize))).toBeLessThanOrEqual(24)\n    expect(await resultHeading.evaluate((heading) => parseFloat(getComputedStyle(heading).lineHeight))).toBeGreaterThan(24)\n    await page.setViewportSize(originalViewport)\n\n    await cards.nth(1).locator('.direct-route-select').press('Enter')"
+          test = replace_once(test, anchor, addition, 'compact direct card assertions')
+          test_path.write_text(test)
+          PY
+      - run: npm ci
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test test/e2e/map-direct.spec.ts test/e2e/map-trip-stop-matching.spec.ts
+      - name: Commit changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add web/map/main.ts web/map/style.css test/e2e/map-direct.spec.ts
+          git commit -m "fix(map): compact direct route cards"
+          git push origin HEAD:fix/map-endpoint-cards
