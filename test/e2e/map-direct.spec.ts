@@ -150,4 +150,76 @@ test.describe('direct journey candidate selection', () => {
     await expect(page.locator('.direct-route-card').locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
     expect(pageErrors).toEqual([])
   })
+
+  test('loads the selected ninth direct candidate within the bounded preview set', async ({ page }) => {
+    const pageErrors: string[] = []
+    const previewRouteCalls: string[] = []
+    const largePlaces = {
+      from: { placeId: 'Taipei:large-from', name: 'Large From', latitude: 25, longitude: 121 },
+      to: { placeId: 'Taipei:large-to', name: 'Large To', latitude: 25.01, longitude: 121.02 },
+    }
+    const directRoutes = Array.from({ length: 9 }, (_, index) => ({
+      routeName: `R${index + 1}`,
+      variantKey: `R${index + 1}:0`,
+      direction: 0,
+      label: `R${index + 1} Large route`,
+      subRouteName: `R${index + 1}`,
+      boardSequence: 1,
+      alightSequence: 3,
+      stopCount: index + 2,
+    }))
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+
+    await page.route('**/api/v1/map/cities', async (route) => {
+      await route.fulfill({ json: { cities: [city] } })
+    })
+    await page.route(/\/api\/v1\/map\/routes(?:\?|$)/, async (route) => {
+      await route.fulfill({ json: { routes: [{ routeName: 'Mock', category: 'bus' }] } })
+    })
+    await page.route('**/api/v1/map/search*', async (route) => {
+      const query = new URL(route.request().url()).searchParams.get('q')
+      const place = query === 'Large From' ? largePlaces.from : query === 'Large To' ? largePlaces.to : undefined
+      await route.fulfill({ json: { places: place ? [place] : [] } })
+    })
+    await page.route('**/api/v1/map/nearby*', async (route) => {
+      const latitude = Number(new URL(route.request().url()).searchParams.get('lat'))
+      const place = latitude < 25.005 ? largePlaces.from : largePlaces.to
+      await route.fulfill({ json: { places: [{ ...place, distanceMeters: 0 }] } })
+    })
+    await page.route('**/api/v1/map/direct*', async (route) => {
+      await route.fulfill({ json: { routes: directRoutes } })
+    })
+    await page.route('**/api/v1/map/journey-eta', async (route) => {
+      await route.fulfill({ json: { estimates: directRoutes.map((_, index) => ({ key: `direct:${index}`, minutes: index + 5 })) } })
+    })
+    await page.route(/\/api\/v1\/map\/route(?:\?|$)/, async (route) => {
+      const routeName = new URL(route.request().url()).searchParams.get('route') ?? 'R1'
+      previewRouteCalls.push(routeName)
+      const routeIndex = Number(routeName.slice(1)) - 1
+      await route.fulfill({ json: { variants: [routeVariant(routeName, `${routeName}:0`, routeIndex * 10)] } })
+    })
+
+    await page.goto('/map?city=Taipei')
+    await page.getByRole('button', { name: /路線規劃/ }).click()
+    const searchInputs = page.locator('.map-search')
+    await searchInputs.first().fill('Large From')
+    await page.locator('.nearby-place-button').filter({ hasText: 'Large From' }).click()
+    await searchInputs.first().fill('Large To')
+    await page.locator('.nearby-place-button').filter({ hasText: 'Large To' }).click()
+
+    const cards = page.locator('.direct-route-card')
+    await expect(cards).toHaveCount(9)
+    await expect.poll(() => previewRouteCalls.length).toBe(8)
+    expect(new Set(previewRouteCalls)).toEqual(new Set(directRoutes.slice(0, 8).map((route) => route.routeName)))
+
+    await cards.nth(8).locator('.direct-route-select').click()
+    await expect(cards.nth(8).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
+    await expect(cards.nth(0).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'false')
+    await expect.poll(() => previewRouteCalls.length).toBe(16)
+    expect(previewRouteCalls.slice(8)).toEqual(expect.arrayContaining(directRoutes.slice(0, 7).map((route) => route.routeName)))
+    expect(previewRouteCalls.slice(8)).toContain('R9')
+    expect(previewRouteCalls.slice(8)).not.toContain('R8')
+    expect(new Set(previewRouteCalls.slice(8)).size).toBe(8)
+    expect(pageErrors).toEqual([])
+  })
 })

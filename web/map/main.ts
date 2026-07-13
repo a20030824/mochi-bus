@@ -2,6 +2,7 @@ import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
 import { createViewBackController } from '../../src/domain/map/view-back'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
+import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
@@ -2029,7 +2030,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: J
   selectedDirectIndex = selectedIndex
   const requestId = ++previewRequest
   previewLayer.clearLayers()
-  const previews = await Promise.all(directRoutes.slice(0, 8).map(async (route, index) => {
+  const previews = await Promise.all(selectDirectPreviewEntries(directRoutes, selectedIndex).map(async ({ route, index }) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
     const response = await tdxFetch(`/api/v1/map/route?${params}`)
     if (!response.ok) return null
