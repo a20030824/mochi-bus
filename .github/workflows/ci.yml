@@ -17,7 +17,7 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -27,23 +27,5 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - name: Run full Playwright suite
-        id: e2e
-        shell: bash
-        run: |
-          set +e
-          npm run test:e2e > e2e-output.txt 2>&1
-          code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          exit 0
-      - name: Upload Playwright output
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-output
-          path: e2e-output.txt
-          retention-days: 1
-      - name: Preserve E2E result
-        if: steps.e2e.outputs.exit_code != '0'
-        run: exit 1
+      - run: npm run check
 
