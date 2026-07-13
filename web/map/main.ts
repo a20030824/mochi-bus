@@ -7,6 +7,7 @@ import { getTripSelectionConflict, type TripSelectionKind } from '../../src/doma
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
+import { calculateCameraPadding, type CameraRect } from '../../src/domain/map/camera-padding'
 import {
   describeTransferEstimate,
   estimateTransfer,
@@ -1225,8 +1226,6 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     previewsByKey.set(variant.variantKey, { line, style })
     bounds.extend(line.getBounds())
   })
-  if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [40, 90], paddingBottomRight: [40, 260] })
-
   const list = document.createElement('div')
   list.className = 'variant-list'
   list.replaceChildren(...variants.map((variant, index) => {
@@ -1258,6 +1257,7 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
     list,
   )
+  if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
   setViewBack(variantBack)
 }
 
@@ -1293,7 +1293,6 @@ function drawVariant(variant: RouteMapVariant) {
   }).addTo(routeLayer)
 
   const bounds = casing.getBounds()
-  if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [40, 90], paddingBottomRight: [40, 260] })
   setStatus(`${variant.routeName} · ${variant.stops.features.length} 站`)
   const canReturnToVariantPicker = !routeReturnsToTrip
     && variantPickerUsed
@@ -1316,6 +1315,7 @@ function drawVariant(variant: RouteMapVariant) {
     paragraph(variant.subRouteName),
     change,
   )
+  if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
   setViewBack(goBack)
   const params = new URLSearchParams({
     city: activeCity!.code,
@@ -2020,8 +2020,7 @@ async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: Journe
   if (fromCoordinate) bounds.extend(fromCoordinate)
   if (toCoordinate) bounds.extend(toCoordinate)
   if (fitCamera && bounds.isValid()) map.fitBounds(bounds, {
-    paddingTopLeft: [45, 90],
-    paddingBottomRight: [45, 280],
+    ...drawerAwareCameraPadding(),
     maxZoom: 16,
   })
   return true
@@ -2067,8 +2066,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: J
   if (selectedFrom) bounds.extend([selectedFrom.latitude, selectedFrom.longitude])
   if (selectedTo) bounds.extend([selectedTo.latitude, selectedTo.longitude])
   if (fitCamera && bounds.isValid()) map.fitBounds(bounds, {
-    paddingTopLeft: [45, 90],
-    paddingBottomRight: [45, 280],
+    ...drawerAwareCameraPadding(),
     maxZoom: 16,
   })
   return true
@@ -2406,6 +2404,15 @@ function setStatus(text: string, error = false) {
 // 跟著畫面更新分頁標題:多分頁與瀏覽紀錄裡才認得出「哪一條路線、哪一站」。
 function setDocumentTitle(prefix?: string) {
   document.title = prefix ? `${prefix}｜Mochi Bus` : '公車地圖｜Mochi Bus'
+}
+
+function drawerAwareCameraPadding() {
+  return calculateCameraPadding(readCameraRect(mapNode), readCameraRect(drawer))
+}
+
+function readCameraRect(element: HTMLElement): CameraRect {
+  const { left, top, right, bottom, width, height } = element.getBoundingClientRect()
+  return { left, top, right, bottom, width, height }
 }
 
 function requiredElement<T extends HTMLElement = HTMLElement>(id: string): T {
