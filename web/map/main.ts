@@ -4,6 +4,7 @@ import { createViewBackController } from '../../src/domain/map/view-back'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
+import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
 import {
   describeTransferEstimate,
   estimateTransfer,
@@ -55,6 +56,10 @@ type RouteMapVariant = {
 type JourneyLegPreviewOptions = {
   selected?: boolean
   onSelect?: () => void
+}
+
+type JourneyPreviewOptions = {
+  fitCamera: boolean
 }
 
 type NearbyPlace = {
@@ -237,6 +242,9 @@ let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = '
 let routeReturnsToTrip = false
 let activeRouteColor = '#b85f49'
 let previewRequest = 0
+// 行程候選離開前的鏡頭只存可序列化值;路線 detail 的 fit 不應覆蓋它。
+let tripResultsCamera: MapCameraState | undefined
+let tripResultsCameraCity: string | undefined
 // 城市/路線/路網/附近站牌/地點/行程結果是互斥的 drawer 主視圖,各自的
 // fetch 都可能被使用者的下一個動作超車;用共用 coordinator 讓「慢的舊回應」
 // 安靜作廢,不覆蓋 store、DOM、URL,也不彈錯誤(詳見 nav-request.ts)。
@@ -419,6 +427,7 @@ map.on('click', (event) => {
 function showTaiwan() {
   stopVehicleRefresh()
   beginNavRequest()
+  clearTripResultsCamera()
   activeCity = undefined
   networkButton.hidden = true
   setNetworkVisible(false)
@@ -516,6 +525,7 @@ function renderRegionMarkers() {
 
 function showRegion(regionCode: RegionCode) {
   stopVehicleRefresh()
+  clearTripResultsCamera()
   networkButton.hidden = true
   setNetworkVisible(false)
   const region = regions.find((candidate) => candidate.code === regionCode)!
@@ -550,6 +560,7 @@ function showRegion(regionCode: RegionCode) {
 
 async function chooseCity(city: MapCity) {
   stopVehicleRefresh()
+  clearTripResultsCamera()
   activeCity = city
   setActiveCity(city.code)
   const { requestId, signal } = beginNavRequest()
@@ -788,6 +799,7 @@ function tripModeButton(): HTMLButtonElement {
   button.title = '路線規劃'
   button.setAttribute('aria-label', '路線規劃：選擇出發位置與目的地')
   button.addEventListener('click', () => {
+    clearTripResultsCamera()
     selectedFrom = undefined
     selectedTo = undefined
     fromCoordinate = undefined
@@ -830,6 +842,26 @@ function clearTripState() {
   lastDirectRoutes = []
   lastTransferPlans = []
   selectedDirectIndex = 0
+  clearTripResultsCamera()
+}
+
+function captureTripResultsCamera() {
+  if (!activeCity || !hasTripResults()) return
+  tripResultsCamera = captureMapCamera(map)
+  tripResultsCameraCity = activeCity.code
+}
+
+function restoreTripResultsCamera(): boolean {
+  if (!activeCity || !tripResultsCamera || tripResultsCameraCity !== activeCity.code || !hasTripResults()) return false
+  restoreMapCamera(map, tripResultsCamera)
+  return true
+}
+
+function clearTripResultsCamera() {
+  tripResultsCamera = undefined
+  tripResultsCameraCity = undefined
+  // 清除行程也要讓尚未完成的 preview 失效,避免舊回應重新畫線或 fit。
+  previewRequest += 1
 }
 
 function normalizeDirectIndex(directRoutes: DirectRoute[]): number {
@@ -856,14 +888,26 @@ function returnToTripResults() {
   routeLayer.clearLayers()
   stopMarkers = []
   nearbyLayer.clearLayers()
-  if (lastDirectRoutes.length) {
-    renderDirectRoutes(lastDirectRoutes)
-    void previewDirectRoutes(lastDirectRoutes)
-  } else {
-    renderTransferPlans(lastTransferPlans)
-    void previewTransferPlans(lastTransferPlans)
-  }
-  drawTripEndpoints()
+  void (async () => {
+    if (lastDirectRoutes.length) renderDirectRoutes(lastDirectRoutes)
+    else renderTransferPlans(lastTransferPlans)
+    let previewCompleted = false
+    try {
+      previewCompleted = lastDirectRoutes.length
+        ? await previewDirectRoutes(lastDirectRoutes, { fitCamera: false })
+        : await previewTransferPlans(lastTransferPlans, { fitCamera: false })
+    } catch {
+      // 預覽資料失敗時仍保留候選抽屜與離開前鏡頭,不讓錯誤的 fallback fit 搶走視角。
+      if (hasTripResults()) {
+        drawTripEndpoints()
+        restoreTripResultsCamera()
+      }
+      return
+    }
+    if (!previewCompleted || !hasTripResults()) return
+    drawTripEndpoints()
+    restoreTripResultsCamera()
+  })()
 }
 
 // 把 route-back.ts 的純決策目標對應回實際的導航動作。
@@ -906,6 +950,16 @@ function drawTripEndpoints() {
   if (toCoordinate) {
     unifiedStopMarker(toCoordinate, true, '#55718a').bindTooltip('目的地', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
   }
+}
+
+function openTripRoute(
+  routeName: string,
+  preferredVariant: string | null | undefined,
+  color: string,
+  backAction?: () => void,
+) {
+  captureTripResultsCamera()
+  void loadRoute(routeName, preferredVariant, true, color, backAction)
 }
 
 async function loadRoute(
@@ -1477,6 +1531,7 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
 
 async function loadDirectRoutes() {
   if (!activeCity || !selectedFrom || !selectedTo) return
+  clearTripResultsCamera()
   const from = selectedFrom
   const to = selectedTo
   const { requestId, signal } = beginNavRequest()
@@ -1494,7 +1549,7 @@ async function loadDirectRoutes() {
       lastTransferPlans = []
       selectedDirectIndex = 0
       renderDirectRoutes(rankedRoutes)
-      await previewDirectRoutes(rankedRoutes)
+      await previewDirectRoutes(rankedRoutes, { fitCamera: true })
       return
     }
     setStatus('沒有直達車，正在找一次轉乘…')
@@ -1509,7 +1564,7 @@ async function loadDirectRoutes() {
     lastTransferPlans = rankedPlans
     selectedTransferIndex = 0
     renderTransferPlans(rankedPlans)
-    await previewTransferPlans(rankedPlans)
+    await previewTransferPlans(rankedPlans, { fitCamera: true })
   } catch (error) {
     if (isStaleNav(requestId)) return
     setStatus(error instanceof Error && error.message ? error.message : '直達路線查詢失敗', true)
@@ -1624,7 +1679,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     button.addEventListener('click', () => {
       selectedDirectIndex = index
       renderDirectRoutes(directRoutes)
-      void previewDirectRoutes(directRoutes)
+      void previewDirectRoutes(directRoutes, { fitCamera: true })
     })
     const detailButton = document.createElement('button')
     detailButton.type = 'button'
@@ -1633,7 +1688,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     detailButton.setAttribute('aria-label', `查看 ${route.routeName} 完整路線`)
     detailButton.addEventListener('click', (event) => {
       event.stopPropagation()
-      void loadRoute(route.routeName, route.variantKey, true, color)
+      openTripRoute(route.routeName, route.variantKey, color)
     })
     card.appendChild(button)
     card.appendChild(detailButton)
@@ -1666,7 +1721,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     card.addEventListener('click', () => {
       selectedTransferIndex = index
       renderTransferPlans(plans)
-      void previewTransferPlans(plans)
+      void previewTransferPlans(plans, { fitCamera: true })
     })
     card.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
@@ -1711,7 +1766,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
       button.appendChild(stops)
       button.addEventListener('click', (event) => {
         event.stopPropagation()
-        void loadRoute(leg.routeName, leg.variantKey, true, color)
+        openTripRoute(leg.routeName, leg.variantKey, color)
       })
       card.appendChild(button)
     })
@@ -1737,6 +1792,7 @@ function changeOriginButton(): HTMLButtonElement {
 }
 
 function resumeDestinationSelection() {
+  clearTripResultsCamera()
   selectedTo = undefined
   toCoordinate = undefined
   lastDirectRoutes = []
@@ -1759,6 +1815,7 @@ function resumeDestinationSelection() {
 // 對照 resumeDestinationSelection:保留目的地,只重選出發位置。
 // selectTripCoordinate 的 from 分支看到 selectedTo 還在,選完就直接重查。
 function resumeOriginSelection() {
+  clearTripResultsCamera()
   selectedFrom = undefined
   fromCoordinate = undefined
   lastDirectRoutes = []
@@ -1778,12 +1835,12 @@ function resumeOriginSelection() {
   setViewBack(cancelTripMode)
 }
 
-async function previewTransferPlans(plans: TransferPlan[]) {
-  if (!activeCity) return
+async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {
+  if (!activeCity) return false
   const requestId = ++previewRequest
   previewLayer.clearLayers()
   const plan = plans[selectedTransferIndex]
-  if (!plan) return
+  if (!plan) return false
   const previewLegColors = transferLegColors(plan.first.routeName, plan.second.routeName)
   const legs = [
     { ...plan.first, color: previewLegColors[0] },
@@ -1797,7 +1854,7 @@ async function previewTransferPlans(plans: TransferPlan[]) {
     const variant = data.variants?.find((item) => item.variantKey === leg.variantKey)
     return variant ? { variant, color: leg.color, leg } : null
   }))
-  if (requestId !== previewRequest) return
+  if (requestId !== previewRequest) return false
   const bounds = L.latLngBounds([])
   previews.forEach((preview) => {
     if (!preview) return
@@ -1810,20 +1867,22 @@ async function previewTransferPlans(plans: TransferPlan[]) {
       preview.leg.boardSequence,
       preview.leg.alightSequence,
       labels,
+      { onSelect: () => openTripRoute(preview.leg.routeName, preview.leg.variantKey, preview.color) },
     )
     bounds.extend(previewLine.focusBounds)
   })
   if (fromCoordinate) bounds.extend(fromCoordinate)
   if (toCoordinate) bounds.extend(toCoordinate)
-  if (bounds.isValid()) map.fitBounds(bounds, {
+  if (fitCamera && bounds.isValid()) map.fitBounds(bounds, {
     paddingTopLeft: [45, 90],
     paddingBottomRight: [45, 280],
     maxZoom: 16,
   })
+  return true
 }
 
-async function previewDirectRoutes(directRoutes: DirectRoute[]) {
-  if (!activeCity) return
+async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {
+  if (!activeCity) return false
   const selectedIndex = normalizeDirectIndex(directRoutes)
   selectedDirectIndex = selectedIndex
   const requestId = ++previewRequest
@@ -1836,7 +1895,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[]) {
     const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
     return variant ? { variant, color: routeColor(route.routeName), route, index } : null
   }))
-  if (requestId !== previewRequest) return
+  if (requestId !== previewRequest) return false
   const bounds = L.latLngBounds([])
   let focusBounds: L.LatLngBounds | undefined
   previews.forEach((preview) => {
@@ -1852,7 +1911,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[]) {
         onSelect: () => {
           selectedDirectIndex = preview.index
           renderDirectRoutes(directRoutes)
-          void previewDirectRoutes(directRoutes)
+          void previewDirectRoutes(directRoutes, { fitCamera: true })
         },
       },
     )
@@ -1861,11 +1920,12 @@ async function previewDirectRoutes(directRoutes: DirectRoute[]) {
   if (focusBounds) bounds.extend(focusBounds)
   if (selectedFrom) bounds.extend([selectedFrom.latitude, selectedFrom.longitude])
   if (selectedTo) bounds.extend([selectedTo.latitude, selectedTo.longitude])
-  if (bounds.isValid()) map.fitBounds(bounds, {
+  if (fitCamera && bounds.isValid()) map.fitBounds(bounds, {
     paddingTopLeft: [45, 90],
     paddingBottomRight: [45, 280],
     maxZoom: 16,
   })
+  return true
 }
 
 async function previewPlaceRoutes(placeRoutes: PlaceRoute[], place: NearbyPlace) {
@@ -1929,7 +1989,7 @@ function addJourneyLegPreview(
   fullLineTarget.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
     if (options.onSelect) options.onSelect()
-    else void loadRoute(variant.routeName, variant.variantKey, true, color)
+    else openTripRoute(variant.routeName, variant.variantKey, color)
   })
 
   const board = variant.stops.features.find((stop) => stop.properties.sequence === boardSequence)
@@ -1963,7 +2023,7 @@ function addJourneyLegPreview(
     segment.on('click', (event) => {
       L.DomEvent.stopPropagation(event)
       if (options.onSelect) options.onSelect()
-      else void loadRoute(variant.routeName, variant.variantKey, true, color)
+      else openTripRoute(variant.routeName, variant.variantKey, color)
     })
     segmentLine = segment
   }

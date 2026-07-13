@@ -117,6 +117,14 @@ test.describe('direct journey candidate selection', () => {
     await expect(page.getByRole('heading', { name: '起點 → 終點', exact: true })).toBeVisible()
     await expect.poll(() => routeDetailCalls.length).toBe(4)
 
+    const zoomIn = page.getByRole('button', { name: 'Zoom in', exact: true })
+    await expect(zoomIn).toHaveCount(1)
+    const mapPane = page.locator('.leaflet-map-pane')
+    await expect(mapPane).toHaveCount(1)
+    await zoomIn.click()
+    await zoomIn.click()
+    const cameraBeforeDetail = await mapPane.getAttribute('style')
+
     await cards.nth(1).getByRole('button', { name: '查看 B 完整路線', exact: true }).click()
     await expect.poll(() => routeDetailCalls.length).toBe(5)
     expect(routeDetailCalls.at(-1)).toBe('B')
@@ -126,6 +134,7 @@ test.describe('direct journey candidate selection', () => {
     await backToTrip.click()
     await expect(page.locator('.direct-route-card')).toHaveCount(2)
     await expect(page.locator('.direct-route-card').nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
+    await expect.poll(() => mapPane.getAttribute('style')).toBe(cameraBeforeDetail)
 
     directResponseMode = 'one'
     var chooseDestinationAgain = page.getByRole('button', { name: '重新選目的地', exact: false })
