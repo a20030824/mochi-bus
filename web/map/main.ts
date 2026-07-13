@@ -793,7 +793,7 @@ function tripDistanceWarning(distanceMeters: number): HTMLSpanElement | undefine
   if (distanceMeters <= TRIP_NEARBY_FAR_DISTANCE_METERS) return undefined
   const warning = document.createElement('span')
   warning.className = 'trip-distance-warning'
-  warning.textContent = '站牌離點選位置稍遠'
+  warning.textContent = '距離較遠'
   return warning
 }
 
@@ -803,14 +803,15 @@ function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
   const summary = document.createElement('div')
   summary.className = 'trip-matched-summary'
   const copy = document.createElement('p')
-  copy.textContent = `已配對：${pending.selected.name} · 距離點選位置 ${formatTripDistance(pending.selected.distanceMeters)}`
+  const label = kind === 'from' ? '出發' : '目的地'
+  copy.textContent = `${label}：${pending.selected.name} · ${formatTripDistance(pending.selected.distanceMeters)}`
   summary.appendChild(copy)
   const warning = tripDistanceWarning(pending.selected.distanceMeters)
   if (warning) summary.appendChild(warning)
   const change = document.createElement('button')
   change.type = 'button'
   change.className = 'trip-nearby-change'
-  change.textContent = '改選附近站牌'
+  change.textContent = '更換'
   change.addEventListener('click', () => renderPendingTripCandidates(kind))
   summary.appendChild(change)
   return summary
@@ -856,10 +857,13 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
   const backAction = hasTripResults() ? returnToTripResults : () => renderTripSelectionStep(kind)
   drawer.replaceChildren(
     drawerBack(hasTripResults() ? '返回行程候選' : '返回選點', backAction),
-    heading('改選附近站牌', '保留原本點擊位置，選一個更符合道路另一側或同名站位的站牌。'),
+    heading(
+      kind === 'from' ? '選擇出發站牌' : '選擇目的地站牌',
+      '點選正確的站牌。',
+    ),
     list,
   )
-  setStatus(`${kind === 'from' ? '出發' : '目的地'}附近有 ${pending.candidates.length} 個候選站牌`)
+  setStatus(`${kind === 'from' ? '出發' : '目的地'} · ${pending.candidates.length} 個附近站牌`)
   setViewBack(backAction)
 }
 
@@ -872,12 +876,13 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   const existingKind: TripSelectionKind = nextKind === 'from' ? 'to' : 'from'
   const existing = existingKind === 'from' ? selectedFrom : selectedTo
   const existingSummary = tripMatchedSummary(existingKind)
-  const explicitSummary = existing && !existingSummary ? paragraph(`已選擇：${existing.name}`) : undefined
+  const existingLabel = existingKind === 'from' ? '出發' : '目的地'
+  const explicitSummary = existing && !existingSummary ? paragraph(`${existingLabel}：${existing.name}`) : undefined
   const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
   const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
   const description = nextKind === 'from'
-    ? '直接點地圖配對最近站牌，或輸入站牌名稱。'
-    : `出發位置靠近「${selectedFrom?.name ?? ''}」，點地圖上的目的地或輸入站牌名稱。`
+    ? '點地圖或搜尋站牌。'
+    : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
   drawer.replaceChildren(
     drawerBack('取消路線規劃', cancelTripMode),
     heading(title, description),
@@ -1666,7 +1671,7 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
   clearPendingTripSelection(kind)
   const radius = map.getZoom() >= 15 ? 300 : 500
   const params = new URLSearchParams({ city: activeCity.code, lat: String(latitude), lon: String(longitude), radius: String(radius) })
-  setStatus(kind === 'from' ? '正在配對出發位置附近站牌…' : '正在配對目的地附近站牌…')
+  setStatus('正在尋找附近站牌…')
   try {
     const response = await fetch(`/api/v1/map/nearby?${params}`)
     const data = await response.json() as { places?: NearbyPlace[]; error?: string }
@@ -1676,7 +1681,7 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
     setPendingTripSelection({ kind, coordinate: [latitude, longitude], candidates, selected: nearest })
     await applyTripSelection(kind, nearest, [latitude, longitude])
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : '站牌配對失敗', true)
+    setStatus(error instanceof Error ? error.message : '附近站牌讀取失敗', true)
   } finally {
     tripSelecting = false
   }
