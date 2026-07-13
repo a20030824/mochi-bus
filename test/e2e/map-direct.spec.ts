@@ -54,6 +54,7 @@ test.describe('direct journey candidate selection', () => {
   test('selects candidates without opening route detail, supports keyboard, and opens detail explicitly', async ({ page }) => {
     const pageErrors: string[] = []
     const routeDetailCalls: string[] = []
+    let directResponseMode: 'two' | 'one' = 'two'
     page.on('pageerror', (error) => pageErrors.push(error.message))
 
     await page.route('**/api/v1/map/cities', async (route) => {
@@ -73,11 +74,14 @@ test.describe('direct journey candidate selection', () => {
       await route.fulfill({ json: { places: [{ ...place, distanceMeters: 0 }] } })
     })
     await page.route('**/api/v1/map/direct*', async (route) => {
+      const routes = directResponseMode === 'one'
+        ? [{ routeName: 'B', variantKey: 'B:0', direction: 0, label: 'B 起點 → 終點', subRouteName: 'B', boardSequence: 1, alightSequence: 3, stopCount: 3 }]
+        : [
+            { routeName: 'A', variantKey: 'A:0', direction: 0, label: 'A 起點 → 終點', subRouteName: 'A', boardSequence: 1, alightSequence: 3, stopCount: 2 },
+            { routeName: 'B', variantKey: 'B:0', direction: 0, label: 'B 起點 → 終點', subRouteName: 'B', boardSequence: 1, alightSequence: 3, stopCount: 3 },
+          ]
       await route.fulfill({ json: {
-        routes: [
-          { routeName: 'A', variantKey: 'A:0', direction: 0, label: 'A 起點 → 終點', subRouteName: 'A', boardSequence: 1, alightSequence: 3, stopCount: 2 },
-          { routeName: 'B', variantKey: 'B:0', direction: 0, label: 'B 起點 → 終點', subRouteName: 'B', boardSequence: 1, alightSequence: 3, stopCount: 3 },
-        ],
+        routes,
       } })
     })
     await page.route('**/api/v1/map/journey-eta', async (route) => {
@@ -122,6 +126,19 @@ test.describe('direct journey candidate selection', () => {
     await backToTrip.click()
     await expect(page.locator('.direct-route-card')).toHaveCount(2)
     await expect(page.locator('.direct-route-card').nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
+
+    directResponseMode = 'one'
+    var chooseDestinationAgain = page.getByRole('button', { name: '重新選目的地', exact: false })
+    await expect(chooseDestinationAgain).toHaveCount(1)
+    await chooseDestinationAgain.click()
+    var destinationSearch = page.getByRole('textbox', { name: '搜尋目的地站牌' })
+    await expect(destinationSearch).toHaveCount(1)
+    await destinationSearch.fill('終點')
+    var destinationResult = page.getByRole('button', { name: '終點 站牌', exact: true })
+    await expect(destinationResult).toHaveCount(1)
+    await destinationResult.click()
+    await expect(page.locator('.direct-route-card')).toHaveCount(1)
+    await expect(page.locator('.direct-route-card').locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
     expect(pageErrors).toEqual([])
   })
 })
