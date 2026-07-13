@@ -62,6 +62,15 @@ type JourneyPreviewOptions = {
   fitCamera: boolean
 }
 
+type TripSelectionKind = 'from' | 'to'
+
+type PendingTripSelection = {
+  kind: TripSelectionKind
+  coordinate: [number, number]
+  candidates: NearbyPlace[]
+  selected: NearbyPlace
+}
+
 type NearbyPlace = {
   placeId: string
   name: string
@@ -257,6 +266,8 @@ function isStaleNav(requestId: number): boolean {
 }
 let selectedTransferIndex = 0
 let selectedDirectIndex = 0
+let pendingFromSelection: PendingTripSelection | undefined
+let pendingToSelection: PendingTripSelection | undefined
 let routeBackAction: (() => void) | undefined
 // 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
 let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
@@ -271,6 +282,8 @@ let networkHoverLatLng: L.LatLng | undefined
 let vehicleRefreshTimer: number | undefined
 
 const routePalette = ['#b85f49', '#4f685b', '#55718a', '#b08a47', '#765b78', '#6f7561']
+const TRIP_NEARBY_CANDIDATE_LIMIT = 5
+const TRIP_NEARBY_FAR_DISTANCE_METERS = 250
 
 // 依路線名稱 hash 配色:同一條路線在清單、預覽、路線頁永遠同色,
 // 使用者才能建立「路線=顏色」的連結;依清單位置配色會讓顏色隨排序漂移。
@@ -427,6 +440,7 @@ map.on('click', (event) => {
 function showTaiwan() {
   stopVehicleRefresh()
   beginNavRequest()
+  clearPendingTripSelections()
   clearTripResultsCamera()
   activeCity = undefined
   networkButton.hidden = true
@@ -525,6 +539,7 @@ function renderRegionMarkers() {
 
 function showRegion(regionCode: RegionCode) {
   stopVehicleRefresh()
+  clearPendingTripSelections()
   clearTripResultsCamera()
   networkButton.hidden = true
   setNetworkVisible(false)
@@ -560,6 +575,7 @@ function showRegion(regionCode: RegionCode) {
 
 async function chooseCity(city: MapCity) {
   stopVehicleRefresh()
+  clearPendingTripSelections()
   clearTripResultsCamera()
   activeCity = city
   setActiveCity(city.code)
@@ -745,6 +761,175 @@ function searchResultButton(place: SearchPlace, onPick: (place: SearchPlace) => 
   return button
 }
 
+function pendingTripSelection(kind: TripSelectionKind): PendingTripSelection | undefined {
+  return kind === 'from' ? pendingFromSelection : pendingToSelection
+}
+
+function setPendingTripSelection(selection: PendingTripSelection) {
+  if (selection.kind === 'from') pendingFromSelection = selection
+  else pendingToSelection = selection
+}
+
+function clearPendingTripSelection(kind: TripSelectionKind) {
+  if (kind === 'from') pendingFromSelection = undefined
+  else pendingToSelection = undefined
+}
+
+function clearPendingTripSelections() {
+  pendingFromSelection = undefined
+  pendingToSelection = undefined
+}
+
+function formatTripDistance(distanceMeters: number): string {
+  return `${Math.round(distanceMeters)} m`
+}
+
+function tripDistanceWarning(distanceMeters: number): HTMLSpanElement | undefined {
+  if (distanceMeters <= TRIP_NEARBY_FAR_DISTANCE_METERS) return undefined
+  const warning = document.createElement('span')
+  warning.className = 'trip-distance-warning'
+  warning.textContent = '站牌離點選位置稍遠'
+  return warning
+}
+
+function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
+  const pending = pendingTripSelection(kind)
+  if (!pending) return
+  const summary = document.createElement('div')
+  summary.className = 'trip-matched-summary'
+  const copy = document.createElement('p')
+  copy.textContent = `已配對：${pending.selected.name} · 距離點選位置 ${formatTripDistance(pending.selected.distanceMeters)}`
+  summary.appendChild(copy)
+  const warning = tripDistanceWarning(pending.selected.distanceMeters)
+  if (warning) summary.appendChild(warning)
+  const change = document.createElement('button')
+  change.type = 'button'
+  change.className = 'trip-nearby-change'
+  change.textContent = '改選附近站牌'
+  change.addEventListener('click', () => renderPendingTripCandidates(kind))
+  summary.appendChild(change)
+  return summary
+}
+
+function tripMatchedControls(): HTMLElement | undefined {
+  const from = tripMatchedSummary('from')
+  const to = tripMatchedSummary('to')
+  if (!from && !to) return
+  const controls = document.createElement('div')
+  controls.className = 'trip-matched-controls'
+  if (from) controls.appendChild(from)
+  if (to) controls.appendChild(to)
+  return controls
+}
+
+function renderPendingTripCandidates(kind: TripSelectionKind) {
+  const pending = pendingTripSelection(kind)
+  if (!pending) {
+    renderTripSelectionStep(kind)
+    return
+  }
+  const list = document.createElement('div')
+  list.className = 'trip-nearby-candidate-list'
+  pending.candidates.forEach((candidate) => {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'trip-nearby-candidate'
+    const selected = candidate.placeId === pending.selected.placeId
+    button.classList.toggle('selected', selected)
+    button.setAttribute('aria-pressed', String(selected))
+    const name = document.createElement('strong')
+    name.textContent = candidate.name
+    const distance = document.createElement('span')
+    distance.textContent = formatTripDistance(candidate.distanceMeters)
+    button.appendChild(name)
+    button.appendChild(distance)
+    const warning = tripDistanceWarning(candidate.distanceMeters)
+    if (warning) button.appendChild(warning)
+    button.addEventListener('click', () => void selectTripCandidate(kind, candidate))
+    list.appendChild(button)
+  })
+  const backAction = hasTripResults() ? returnToTripResults : () => renderTripSelectionStep(kind)
+  drawer.replaceChildren(
+    drawerBack(hasTripResults() ? '返回行程候選' : '返回選點', backAction),
+    heading('改選附近站牌', '保留原本點擊位置，選一個更符合道路另一側或同名站位的站牌。'),
+    list,
+  )
+  setStatus(`${kind === 'from' ? '出發' : '目的地'}附近有 ${pending.candidates.length} 個候選站牌`)
+  setViewBack(backAction)
+}
+
+function renderTripSelectionStep(nextKind: TripSelectionKind) {
+  tripStage = nextKind
+  interactionMode = 'trip'
+  previewLayer.clearLayers()
+  nearbyLayer.clearLayers()
+  drawTripEndpoints()
+  const existingKind: TripSelectionKind = nextKind === 'from' ? 'to' : 'from'
+  const existing = existingKind === 'from' ? selectedFrom : selectedTo
+  const existingSummary = tripMatchedSummary(existingKind)
+  const explicitSummary = existing && !existingSummary ? paragraph(`已選擇：${existing.name}`) : undefined
+  const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
+  const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
+  const description = nextKind === 'from'
+    ? '直接點地圖配對最近站牌，或輸入站牌名稱。'
+    : `出發位置靠近「${selectedFrom?.name ?? ''}」，點地圖上的目的地或輸入站牌名稱。`
+  drawer.replaceChildren(
+    drawerBack('取消路線規劃', cancelTripMode),
+    heading(title, description),
+    existingSummary ?? explicitSummary ?? document.createDocumentFragment(),
+    placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)),
+  )
+  setStatus(nextKind === 'from' ? '路線規劃 · 請點出發位置' : `出發：${selectedFrom?.name ?? ''} · 請點目的地`)
+  setViewBack(cancelTripMode)
+}
+
+async function applyTripSelection(
+  kind: TripSelectionKind,
+  candidate: NearbyPlace,
+  coordinate: [number, number],
+) {
+  if (kind === 'from') {
+    if (selectedTo?.placeId === candidate.placeId) {
+      setStatus('出發位置和目的地是同一站，請選另一個站牌', true)
+      return
+    }
+    selectedFrom = candidate
+    fromCoordinate = coordinate
+  } else {
+    if (selectedFrom?.placeId === candidate.placeId) {
+      setStatus('出發位置和目的地是同一站，請選另一個站牌', true)
+      return
+    }
+    selectedTo = candidate
+    toCoordinate = coordinate
+  }
+  if (selectedFrom && selectedTo) {
+    tripStage = 'idle'
+    interactionMode = 'trip-results'
+    lastDirectRoutes = []
+    lastTransferPlans = []
+    setNetworkVisible(false)
+    nearbyLayer.clearLayers()
+    drawTripEndpoints()
+    await loadDirectRoutes()
+    return
+  }
+  renderTripSelectionStep(kind === 'from' ? 'to' : 'from')
+}
+
+async function selectTripCandidate(kind: TripSelectionKind, candidate: NearbyPlace) {
+  const pending = pendingTripSelection(kind)
+  if (!pending) return
+  pending.selected = candidate
+  await applyTripSelection(kind, candidate, pending.coordinate)
+}
+
+async function selectTripPlace(kind: TripSelectionKind, place: SearchPlace) {
+  clearPendingTripSelection(kind)
+  const candidate: NearbyPlace = { ...place, distanceMeters: 0 }
+  await applyTripSelection(kind, candidate, [place.latitude, place.longitude])
+}
+
 // 站牌名稱搜尋框:輸入 2 個字以上就打 /api/v1/map/search,
 // 讓不熟地圖的人(或外地人)不用在地圖上大海撈針。
 function placeSearchBox(placeholder: string, onPick: (place: SearchPlace) => void): HTMLElement {
@@ -800,6 +985,7 @@ function tripModeButton(): HTMLButtonElement {
   button.setAttribute('aria-label', '路線規劃：選擇出發位置與目的地')
   button.addEventListener('click', () => {
     clearTripResultsCamera()
+    clearPendingTripSelections()
     selectedFrom = undefined
     selectedTo = undefined
     fromCoordinate = undefined
@@ -813,13 +999,7 @@ function tripModeButton(): HTMLButtonElement {
     previewLayer.clearLayers()
     routeLayer.clearLayers()
     nearbyLayer.clearLayers()
-    drawer.replaceChildren(
-      drawerBack('取消路線規劃', cancelTripMode),
-      heading('點一下出發位置', '直接點地圖配對最近站牌，或輸入站牌名稱。'),
-      placeSearchBox('搜尋出發站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
-    )
-    setStatus('路線規劃 · 請點出發位置')
-    setViewBack(cancelTripMode)
+    renderTripSelectionStep('from')
   })
   return button
 }
@@ -842,6 +1022,7 @@ function clearTripState() {
   lastDirectRoutes = []
   lastTransferPlans = []
   selectedDirectIndex = 0
+  clearPendingTripSelections()
   clearTripResultsCamera()
 }
 
@@ -1476,52 +1657,21 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
   // 連點(桌機雙擊尤其)會發出兩次選點;第二發會在第一發把階段推進之後
   // 才回來,被誤當成目的地。一次只處理一發,其餘直接丟掉。
   if (tripSelecting) return
+  const kind = tripStage
+  if (kind === 'idle') return
   tripSelecting = true
+  clearPendingTripSelection(kind)
   const radius = map.getZoom() >= 15 ? 300 : 500
   const params = new URLSearchParams({ city: activeCity.code, lat: String(latitude), lon: String(longitude), radius: String(radius) })
-  setStatus(tripStage === 'from' ? '正在配對出發位置附近站牌…' : '正在配對目的地附近站牌…')
+  setStatus(kind === 'from' ? '正在配對出發位置附近站牌…' : '正在配對目的地附近站牌…')
   try {
     const response = await fetch(`/api/v1/map/nearby?${params}`)
     const data = await response.json() as { places?: NearbyPlace[]; error?: string }
-    const nearest = data.places?.[0]
+    const candidates = data.places?.slice(0, TRIP_NEARBY_CANDIDATE_LIMIT) ?? []
+    const nearest = candidates[0]
     if (!response.ok || !nearest) throw new Error(data.error ?? '這附近沒有站牌')
-    if (tripStage === 'from') {
-      // 「重選出發位置」會保留已選好的目的地:換完起點直接重查,不用重選終點。
-      if (selectedTo?.placeId === nearest.placeId) throw new Error('出發位置和目的地配對到同一站，請選遠一點')
-      selectedFrom = nearest
-      fromCoordinate = [latitude, longitude]
-      if (selectedTo) {
-        tripStage = 'idle'
-        interactionMode = 'trip-results'
-        setNetworkVisible(false)
-        nearbyLayer.clearLayers()
-        drawTripEndpoints()
-        await loadDirectRoutes()
-        return
-      }
-      tripStage = 'to'
-      interactionMode = 'trip'
-      nearbyLayer.clearLayers()
-      drawTripEndpoints()
-      drawer.replaceChildren(
-        drawerBack('取消路線規劃', cancelTripMode),
-        heading('再點一下目的地', `出發位置靠近「${nearest.name}」，點地圖上的目的地或輸入站牌名稱。`),
-        placeSearchBox('搜尋目的地站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
-      )
-      setStatus(`出發：${nearest.name} · 請點目的地`)
-      setViewBack(cancelTripMode)
-    } else {
-      if (selectedFrom?.placeId === nearest.placeId) throw new Error('出發位置和目的地配對到同一站，請選遠一點')
-      selectedTo = nearest
-      toCoordinate = [latitude, longitude]
-      tripStage = 'idle'
-      interactionMode = 'trip-results'
-      // 起終點都定了,背景路網功成身退,讓建議路線乾淨登場
-      setNetworkVisible(false)
-      nearbyLayer.clearLayers()
-      drawTripEndpoints()
-      await loadDirectRoutes()
-    }
+    setPendingTripSelection({ kind, coordinate: [latitude, longitude], candidates, selected: nearest })
+    await applyTripSelection(kind, nearest, [latitude, longitude])
   } catch (error) {
     setStatus(error instanceof Error ? error.message : '站牌配對失敗', true)
   } finally {
@@ -1696,9 +1846,11 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
   })
   const back = drawerBack('重新選目的地', resumeDestinationSelection)
   const reset = tripModeButton()
+  const matchedControls = tripMatchedControls()
   drawer.replaceChildren(
     back,
     heading(`${selectedFrom.name} → ${selectedTo.name}`, directRoutes.length ? `${directRoutes.length} 個直達方向，淡色線為候選路線。` : '沒有直達路線'),
+    ...(matchedControls ? [matchedControls] : []),
     list,
     changeOriginButton(),
     reset,
@@ -1772,9 +1924,11 @@ function renderTransferPlans(plans: TransferPlan[]) {
     })
     list.appendChild(card)
   })
+  const matchedControls = tripMatchedControls()
   drawer.replaceChildren(
     drawerBack('重新選目的地', resumeDestinationSelection),
     heading(`${selectedFrom.name} → ${selectedTo.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
+    ...(matchedControls ? [matchedControls] : []),
     list,
     changeOriginButton(),
     tripModeButton(),
@@ -1793,6 +1947,7 @@ function changeOriginButton(): HTMLButtonElement {
 
 function resumeDestinationSelection() {
   clearTripResultsCamera()
+  clearPendingTripSelection('to')
   selectedTo = undefined
   toCoordinate = undefined
   lastDirectRoutes = []
@@ -1802,20 +1957,14 @@ function resumeDestinationSelection() {
   interactionMode = 'trip'
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
-  drawTripEndpoints()
-  drawer.replaceChildren(
-    drawerBack('取消路線規劃', cancelTripMode),
-    heading('重新選目的地', `保留出發站「${selectedFrom?.name ?? ''}」，點地圖或輸入站牌名稱。`),
-    placeSearchBox('搜尋目的地站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
-  )
-  setStatus('已保留出發位置 · 請重新點目的地')
-  setViewBack(cancelTripMode)
+  renderTripSelectionStep('to')
 }
 
 // 對照 resumeDestinationSelection:保留目的地,只重選出發位置。
 // selectTripCoordinate 的 from 分支看到 selectedTo 還在,選完就直接重查。
 function resumeOriginSelection() {
   clearTripResultsCamera()
+  clearPendingTripSelection('from')
   selectedFrom = undefined
   fromCoordinate = undefined
   lastDirectRoutes = []
@@ -1825,14 +1974,7 @@ function resumeOriginSelection() {
   interactionMode = 'trip'
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
-  drawTripEndpoints()
-  drawer.replaceChildren(
-    drawerBack('取消路線規劃', cancelTripMode),
-    heading('重選出發位置', `保留目的地「${selectedTo?.name ?? ''}」，點地圖或輸入站牌名稱。`),
-    placeSearchBox('搜尋出發站牌', (place) => void selectTripCoordinate(place.latitude, place.longitude)),
-  )
-  setStatus('已保留目的地 · 請重新點出發位置')
-  setViewBack(cancelTripMode)
+  renderTripSelectionStep('from')
 }
 
 async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {

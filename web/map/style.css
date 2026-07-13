@@ -263,6 +263,46 @@ button { cursor: pointer; }
 .place-route-skeleton { height: 66px; border: 1px solid #d5cdbf; border-radius: 3px; background: linear-gradient(100deg, #e8e1d5 20%, #f3ede3 42%, #e8e1d5 64%); background-size: 220% 100%; animation: route-loading 1.1s ease-in-out infinite; }
 @keyframes route-loading { to { background-position-x: -220%; } }
 .nearby-place-button:hover, .place-route-button:hover { border-color: #b85f49; }
+.trip-matched-controls { display: grid; gap: 7px; margin-bottom: 10px; }
+.trip-matched-summary {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid #c9c2b4;
+  border-left: 4px solid #4f685b;
+  border-radius: 3px;
+  background: #f4efe4;
+}
+.trip-matched-summary p { margin: 0; color: #292a25; font-size: 13px; }
+.trip-nearby-change {
+  justify-self: start;
+  padding: 5px 8px;
+  border: 1px solid #b8ad99;
+  border-radius: 3px;
+  background: transparent;
+  color: #4f685b;
+  font-size: 12px;
+  font-weight: 750;
+}
+.trip-nearby-change:hover { border-color: #4f685b; background: #ebe5d9; }
+.trip-distance-warning { color: #9b4735; font-size: 12px; font-weight: 750; }
+.trip-nearby-candidate-list { display: grid; gap: 7px; }
+.trip-nearby-candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #c9c2b4;
+  border-radius: 3px;
+  background: #ebe5d9;
+  color: #292a25;
+  text-align: left;
+}
+.trip-nearby-candidate span { color: #67685f; font-size: 12px; font-variant-numeric: tabular-nums; }
+.trip-nearby-candidate .trip-distance-warning { grid-column: 1 / -1; }
+.trip-nearby-candidate.selected { border-color: #292a25; background: #f4efe4; box-shadow: 0 0 0 2px rgba(41, 42, 37, .12); }
+.trip-nearby-candidate:hover, .trip-nearby-candidate:focus-visible { border-color: #4f685b; }
 .endpoint-button {
   min-width: 68px;
   border: 1px solid #b8ad99;
