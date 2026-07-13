@@ -799,23 +799,59 @@ function tripDistanceWarning(distanceMeters: number): HTMLSpanElement | undefine
 }
 
 function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
+  const selected = kind === 'from' ? selectedFrom : selectedTo
+  if (!selected) return
   const pending = pendingTripSelection(kind)
-  if (!pending) return
-  const summary = document.createElement('div')
-  summary.className = 'trip-matched-summary'
-  const copy = document.createElement('p')
   const label = kind === 'from' ? '出發' : '目的地'
-  copy.textContent = `${label}：${pending.selected.name} · ${formatTripDistance(pending.selected.distanceMeters)}`
-  summary.appendChild(copy)
-  const warning = tripDistanceWarning(pending.selected.distanceMeters)
-  if (warning) summary.appendChild(warning)
-  const change = document.createElement('button')
-  change.type = 'button'
-  change.className = 'trip-nearby-change'
-  change.textContent = '更換'
-  change.addEventListener('click', () => renderPendingTripCandidates(kind))
-  summary.appendChild(change)
+  const summary = document.createElement('button')
+  summary.type = 'button'
+  summary.className = 'trip-matched-summary'
+  summary.setAttribute('aria-label', `更換${label}站牌：${selected.name}`)
+  const labelNode = document.createElement('span')
+  labelNode.className = 'trip-endpoint-label'
+  labelNode.textContent = label
+  const action = document.createElement('span')
+  action.className = 'trip-endpoint-action'
+  action.textContent = '↻'
+  action.setAttribute('aria-hidden', 'true')
+  const name = document.createElement('strong')
+  name.className = 'trip-endpoint-name'
+  name.textContent = selected.name
+  summary.appendChild(labelNode)
+  summary.appendChild(action)
+  summary.appendChild(name)
+  if (pending) {
+    const distance = document.createElement('span')
+    distance.className = 'trip-endpoint-distance'
+    distance.textContent = formatTripDistance(pending.selected.distanceMeters)
+    if (pending.selected.distanceMeters > TRIP_NEARBY_FAR_DISTANCE_METERS) {
+      distance.classList.add('far')
+      distance.title = '距離較遠'
+    }
+    summary.appendChild(distance)
+  }
+  summary.addEventListener('click', () => {
+    if (pendingTripSelection(kind)) {
+      renderPendingTripCandidates(kind)
+      return
+    }
+    resumeTripEndpointSelection(kind)
+  })
   return summary
+}
+
+function resumeTripEndpointSelection(kind: TripSelectionKind) {
+  if (kind === 'from') resumeOriginSelection()
+  else resumeDestinationSelection()
+}
+
+function reselectTripEndpointButton(kind: TripSelectionKind): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'quiet-button trip-endpoint-reselect'
+  button.textContent = kind === 'from' ? '重新選出發位置' : '重新選目的地位置'
+  button.addEventListener('click', () => resumeTripEndpointSelection(kind))
+  return button
 }
 
 function tripMatchedControls(): HTMLElement | undefined {
@@ -860,9 +896,10 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
     drawerBack(hasTripResults() ? '返回行程候選' : '返回選點', backAction),
     heading(
       kind === 'from' ? '選擇出發站牌' : '選擇目的地站牌',
-      '點選正確的站牌。',
+      '點選附近站牌，或重新選位置。',
     ),
     list,
+    reselectTripEndpointButton(kind),
   )
   setStatus(`${kind === 'from' ? '出發' : '目的地'} · ${pending.candidates.length} 個附近站牌`)
   setViewBack(backAction)
@@ -875,10 +912,7 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   nearbyLayer.clearLayers()
   drawTripEndpoints()
   const existingKind: TripSelectionKind = nextKind === 'from' ? 'to' : 'from'
-  const existing = existingKind === 'from' ? selectedFrom : selectedTo
   const existingSummary = tripMatchedSummary(existingKind)
-  const existingLabel = existingKind === 'from' ? '出發' : '目的地'
-  const explicitSummary = existing && !existingSummary ? paragraph(`${existingLabel}：${existing.name}`) : undefined
   const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
   const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
   const description = nextKind === 'from'
@@ -887,7 +921,7 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   drawer.replaceChildren(
     drawerBack('取消路線規劃', cancelTripMode),
     heading(title, description),
-    existingSummary ?? explicitSummary ?? document.createDocumentFragment(),
+    existingSummary ?? document.createDocumentFragment(),
     placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)),
   )
   setStatus(nextKind === 'from' ? '路線規劃 · 請點出發位置' : `出發：${selectedFrom?.name ?? ''} · 請點目的地`)
@@ -1837,7 +1871,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     const detailButton = document.createElement('button')
     detailButton.type = 'button'
     detailButton.className = 'direct-route-detail'
-    detailButton.textContent = '查看完整路線'
+    detailButton.textContent = '完整路線'
     detailButton.setAttribute('aria-label', `查看 ${route.routeName} 完整路線`)
     detailButton.addEventListener('click', (event) => {
       event.stopPropagation()
@@ -1855,7 +1889,6 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     heading(`${selectedFrom.name} → ${selectedTo.name}`, directRoutes.length ? `${directRoutes.length} 個直達方向，淡色線為候選路線。` : '沒有直達路線'),
     ...(matchedControls ? [matchedControls] : []),
     list,
-    changeOriginButton(),
     reset,
   )
   setStatus(directRoutes.length ? `找到 ${directRoutes.length} 個直達方向` : '沒有直達車')
@@ -1934,19 +1967,10 @@ function renderTransferPlans(plans: TransferPlan[]) {
     heading(`${selectedFrom.name} → ${selectedTo.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
     ...(matchedControls ? [matchedControls] : []),
     list,
-    changeOriginButton(),
     tripModeButton(),
   )
   setStatus(plans.length ? `找到 ${plans.length} 個一次轉乘方案` : '沒有合理的一次轉乘方案')
   setViewBack(resumeDestinationSelection)
-}
-
-function changeOriginButton(): HTMLButtonElement {
-  const button = document.createElement('button')
-  button.className = 'quiet-button change-origin-button'
-  button.textContent = '重選出發位置'
-  button.addEventListener('click', resumeOriginSelection)
-  return button
 }
 
 function resumeDestinationSelection() {

@@ -120,7 +120,16 @@ test.describe('direct journey candidate selection', () => {
       const candidateBackground = await cards.nth(1).evaluate((card) => getComputedStyle(card).backgroundColor)
       return selectedBackground !== candidateBackground
     }).toBe(true)
-    await expect(page.getByRole('heading', { name: '起點 → 終點', exact: true })).toBeVisible()
+    const resultHeading = page.getByRole('heading', { name: '起點 → 終點', exact: true })
+    await expect(resultHeading).toBeVisible()
+    const compactDetail = cards.nth(0).getByRole('button', { name: '查看 A 完整路線', exact: true })
+    await expect(compactDetail).toHaveText('完整路線')
+    await expect.poll(() => compactDetail.evaluate((button) => getComputedStyle(button).position)).toBe('absolute')
+    const originalViewport = page.viewportSize()!
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await resultHeading.evaluate((heading) => parseFloat(getComputedStyle(heading).fontSize))).toBeLessThanOrEqual(24)
+    expect(await resultHeading.evaluate((heading) => parseFloat(getComputedStyle(heading).lineHeight))).toBeGreaterThan(24)
+    await page.setViewportSize(originalViewport)
 
     await cards.nth(1).locator('.direct-route-select').press('Enter')
     await expect(cards.nth(0).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'false')
