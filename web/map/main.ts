@@ -354,6 +354,7 @@ function addPreviewStopDots(
     pointToLayer: (_feature, latlng) => {
       const dot = L.circleMarker(latlng, {
         pane: 'previewDotPane', radius, weight, color: '#fffaf0', fillColor: color, fillOpacity: .6,
+        className: 'preview-stop-dot',
         interactive: false,
       })
       previewStopDots.add(dot)
@@ -1828,12 +1829,6 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     detail.textContent = route.label
     button.appendChild(top)
     button.appendChild(detail)
-    if (selected) {
-      const selectedNote = document.createElement('small')
-      selectedNote.className = 'direct-route-selected-note'
-      selectedNote.textContent = '目前預覽'
-      button.appendChild(selectedNote)
-    }
     button.addEventListener('click', () => {
       selectedDirectIndex = index
       renderDirectRoutes(directRoutes)
@@ -2131,8 +2126,9 @@ function addJourneyLegPreview(
   focusBounds: L.LatLngBounds
   hasSegment: boolean
 } {
+  const selected = options.selected !== false
   const { line: fullLine, target: fullLineTarget } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, {
-    color, weight: 3.5, opacity: .2, lineCap: 'round', lineJoin: 'round',
+    color, weight: selected ? 3.5 : 2.5, opacity: selected ? .18 : .08, lineCap: 'round', lineJoin: 'round',
   })
   bindHoverTooltip(fullLineTarget, `${variant.routeName} · ${variant.label}`, { sticky: true })
   fullLineTarget.on('click', (event) => {
@@ -2162,8 +2158,8 @@ function addJourneyLegPreview(
       pane: 'routePreviewPane',
       style: {
         color,
-        weight: options.selected === false ? 5 : 7,
-        opacity: options.selected === false ? .38 : .92,
+        weight: selected ? 7 : 4,
+        opacity: selected ? .92 : .26,
         lineCap: 'round',
         lineJoin: 'round',
       },
@@ -2180,7 +2176,7 @@ function addJourneyLegPreview(
   if (board) focusBounds.extend([board.geometry.coordinates[1], board.geometry.coordinates[0]])
   if (alight) focusBounds.extend([alight.geometry.coordinates[1], alight.geometry.coordinates[0]])
 
-  if (board && alight) {
+  if (board && alight && selected) {
     addPreviewStopDots(variant.stops, color, previewLayer)
     ;[[board, labels[0]], [alight, labels[1]]].forEach(([stop, label]) => {
       const feature = stop as typeof board
