@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -21,63 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
-          fetch-depth: 0
-      - name: Replace temporary map wrapper
-        if: github.event_name == 'pull_request' && github.head_ref == 'fix/map-drawer-aware-padding'
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          source = Path('web/map/main-app.ts')
-          target = Path('web/map/main.ts')
-          text = source.read_text()
-          replacements = [
-              (
-                  "import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'\n",
-                  "import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'\nimport { calculateCameraPadding, type CameraRect } from '../../src/domain/map/camera-padding'\n",
-              ),
-              (
-                  "  if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [40, 90], paddingBottomRight: [40, 260] })\n\n  const list = document.createElement('div')",
-                  "  const list = document.createElement('div')",
-              ),
-              (
-                  "    list,\n  )\n  setViewBack(variantBack)",
-                  "    list,\n  )\n  if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())\n  setViewBack(variantBack)",
-              ),
-              (
-                  "  const bounds = casing.getBounds()\n  if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [40, 90], paddingBottomRight: [40, 260] })\n  setStatus",
-                  "  const bounds = casing.getBounds()\n  setStatus",
-              ),
-              (
-                  "    change,\n  )\n  setViewBack(goBack)",
-                  "    change,\n  )\n  if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())\n  setViewBack(goBack)",
-              ),
-              (
-                  "    paddingTopLeft: [45, 90],\n    paddingBottomRight: [45, 280],\n    maxZoom: 16,",
-                  "    ...drawerAwareCameraPadding(),\n    maxZoom: 16,",
-              ),
-              (
-                  "function requiredElement<T extends HTMLElement = HTMLElement>(id: string): T {",
-                  "function drawerAwareCameraPadding() {\n  return calculateCameraPadding(readCameraRect(mapNode), readCameraRect(drawer))\n}\n\nfunction readCameraRect(element: HTMLElement): CameraRect {\n  const { left, top, right, bottom, width, height } = element.getBoundingClientRect()\n  return { left, top, right, bottom, width, height }\n}\n\nfunction requiredElement<T extends HTMLElement = HTMLElement>(id: string): T {",
-              ),
-          ]
-          for index, (old, new) in enumerate(replacements):
-              expected = 2 if index == 5 else 1
-              actual = text.count(old)
-              if actual != expected:
-                  raise RuntimeError(f'replacement {index} expected {expected} matches, found {actual}')
-              text = text.replace(old, new) if expected == 2 else text.replace(old, new, 1)
-          target.write_text(text)
-          source.unlink()
-          PY
-
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add web/map/main.ts web/map/main-app.ts
-          git commit -m "refactor(map): use explicit drawer-aware fit calls"
-          git push origin HEAD:fix/map-drawer-aware-padding
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
