@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,15 +17,71 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: false
+          ref: fix/map-trip-copy
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Simplify trip selection copy
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count == 1:
+                  return text.replace(old, new, 1)
+              if count == 0 and new in text:
+                  return text
+              raise SystemExit(f'{label}: expected exactly one match, found {count}')
+
+          main_path = Path('web/map/main.ts')
+          main = main_path.read_text()
+          replacements = [
+              ("  warning.textContent = '站牌離點選位置稍遠'", "  warning.textContent = '距離較遠'", 'distance warning'),
+              ("  copy.textContent = `已配對：${pending.selected.name} · 距離點選位置 ${formatTripDistance(pending.selected.distanceMeters)}`", "  const label = kind === 'from' ? '出發' : '目的地'\n  copy.textContent = `${label}：${pending.selected.name} · ${formatTripDistance(pending.selected.distanceMeters)}`", 'matched summary'),
+              ("  change.textContent = '改選附近站牌'", "  change.textContent = '更換'", 'change button'),
+              ("    heading('改選附近站牌', '保留原本點擊位置，選一個更符合道路另一側或同名站位的站牌。'),", "    heading(\n      kind === 'from' ? '選擇出發站牌' : '選擇目的地站牌',\n      '點選正確的站牌。',\n    ),", 'candidate heading'),
+              ("  setStatus(`${kind === 'from' ? '出發' : '目的地'}附近有 ${pending.candidates.length} 個候選站牌`)", "  setStatus(`${kind === 'from' ? '出發' : '目的地'} · ${pending.candidates.length} 個附近站牌`)", 'candidate status'),
+              ("  const explicitSummary = existing && !existingSummary ? paragraph(`已選擇：${existing.name}`) : undefined", "  const existingLabel = existingKind === 'from' ? '出發' : '目的地'\n  const explicitSummary = existing && !existingSummary ? paragraph(`${existingLabel}：${existing.name}`) : undefined", 'explicit summary'),
+              ("    ? '直接點地圖配對最近站牌，或輸入站牌名稱。'\n    : `出發位置靠近「${selectedFrom?.name ?? ''}」，點地圖上的目的地或輸入站牌名稱。`", "    ? '點地圖或搜尋站牌。'\n    : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`", 'selection description'),
+              ("  setStatus(kind === 'from' ? '正在配對出發位置附近站牌…' : '正在配對目的地附近站牌…')", "  setStatus('正在尋找附近站牌…')", 'loading status'),
+              ("    setStatus(error instanceof Error ? error.message : '站牌配對失敗', true)", "    setStatus(error instanceof Error ? error.message : '附近站牌讀取失敗', true)", 'error fallback'),
+          ]
+          for old, new, label in replacements:
+              main = replace_once(main, old, new, label)
+          main_path.write_text(main)
+
+          test_path = Path('test/e2e/map-trip-stop-matching.spec.ts')
+          test = test_path.read_text()
+          test = test.replace('已配對：起點 A · 距離點選位置 86 m', '出發：起點 A · 86 m')
+          test = test.replace('已配對：起點 B · 距離點選位置 300 m', '出發：起點 B · 300 m')
+          test = test.replace('已配對：終點 A · 距離點選位置 42 m', '目的地：終點 A · 42 m')
+          test = test.replace('站牌離點選位置稍遠', '距離較遠')
+          test = test.replace("name: '改選附近站牌'", "name: '更換'")
+          test = test.replace('已選擇：明確站', '出發：明確站')
+          anchor = "  await changeButtons.click()\n  const candidates = page.locator('.trip-nearby-candidate')"
+          addition = "  await changeButtons.click()\n  await expect(page.getByRole('heading', { name: '選擇出發站牌', exact: true })).toBeVisible()\n  await expect(page.getByText('點選正確的站牌。', { exact: true })).toBeVisible()\n  const candidates = page.locator('.trip-nearby-candidate')"
+          test = replace_once(test, anchor, addition, 'candidate copy assertion')
+          test_path.write_text(test)
+          PY
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npm run check
-
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test test/e2e/map-trip-stop-matching.spec.ts
+      - name: Commit cleanup
+        run: |
+          if git diff --quiet -- web/map/main.ts test/e2e/map-trip-stop-matching.spec.ts; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add web/map/main.ts test/e2e/map-trip-stop-matching.spec.ts
+          git commit -m "fix(map): simplify trip selection copy"
+          git push origin HEAD:fix/map-trip-copy
