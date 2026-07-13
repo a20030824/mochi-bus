@@ -103,7 +103,10 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npx playwright install --with-deps chromium
-      - run: npx playwright test test/e2e/map-direct.spec.ts test/e2e/map-transfer-keyboard.spec.ts
+      - name: Test direct journey preview
+        run: npx playwright test test/e2e/map-direct.spec.ts
+      - name: Test transfer keyboard flow
+        run: npx playwright test test/e2e/map-transfer-keyboard.spec.ts
       - name: Commit changes
         run: |
           git config user.name github-actions[bot]
