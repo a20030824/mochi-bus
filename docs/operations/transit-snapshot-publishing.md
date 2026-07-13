@@ -59,12 +59,7 @@ curl.exe -sS "https://bus.moc96336.com/api/v1/map/routes?city=Chiayi&snapshot=ma
 
 全路網 `network.json` 與 inline fallback 的 Douglas–Peucker 容差統一為 8m。50m 的 payload 實驗雖然減少 bytes 與座標數，但正式路網以視覺正確性優先；本輪不做城市差異化、多層 LOD、tiles 或 Web Worker。
 
-由 production `dataset_versions.imported_at` 與 50m 變更時間交叉確認，除本輪先重發的 Chiayi 外，仍使用 50m 產物而需重新生成的城市為：
-
-1. Taipei（active `20260712T201010854Z`）
-2. NewTaipei（active `20260712T201547917Z`）
-
-安排：Chiayi 驗證完成後，依序手動 dispatch Taipei、NewTaipei；每城均記錄發布前後 `network.json` bytes、座標數、active version，並完成公開 API smoke。其餘城市的 active snapshot 都早於 50m 變更，不列入本次重生清單。
+由 production `dataset_versions.imported_at` 與 50m 變更時間交叉確認，原先需要重新生成的 Taipei 與 NewTaipei 已完成 8m production rollout；兩城的 50m active snapshot 均已由新版本取代。其餘城市的 active snapshot 都早於 50m 變更，不列入本次重生清單。
 
 Chiayi 已完成第一站回退與 production 驗證：
 
@@ -74,3 +69,39 @@ Chiayi 已完成第一站回退與 production 驗證：
 | 8m（修改後） | `20260712T224859683Z` | 1,322,246 | 55,537 |
 
 8m 相較 50m 增加 701,865 bytes（+113.1%）與 33,798 個座標（+155.5%）。Local validation、remote validation、active pointer 切換、公開 routes smoke 均通過；cache-busted production network API 回 200、273 routes，且 version 與 D1 active pointer 一致。
+
+### Taipei 8m production verification
+
+| 項目 | 50m／發布前 | 8m／發布後 |
+| --- | ---: | ---: |
+| Active version | `20260712T201010854Z` | `20260713T094028731Z` |
+| network.json bytes | 3,152,877 | 6,751,228 |
+| 座標數 | 114,318 | 287,541 |
+| routes | 1,747 | 1,747 |
+| places | 3,878 | 3,877 |
+
+- Workflow：<https://github.com/a20030824/mochi-bus/actions/runs/29239937366>
+- Workflow head SHA：`85ae5672792f1f3a383d1f54f287ad4ba70a07da`
+- Local validation、remote validation、publish、activate 與 public smoke 均成功。
+- `network.version` 與 `routes.snapshotVersion` 一致；production network、routes 與 map smoke 均回 200。
+- 瀏覽器視覺確認已恢復 8m 線形；未見破碎或嚴重偏移。
+- 大型 payload、parse、index 與記憶體問題仍為 Open；本輪沒有宣稱效能或 35MB 問題已解決。
+
+### NewTaipei 8m production verification
+
+| 項目 | 50m／發布前 | 8m／發布後 |
+| --- | ---: | ---: |
+| Active version | `20260712T201547917Z` | `20260713T101637688Z` |
+| network.json bytes | 3,585,200 | 7,727,553 |
+| 座標數 | 126,791 | 326,188 |
+| routes | 1,740 | 1,740 |
+| places | 5,590 | 5,590 |
+
+- Workflow：<https://github.com/a20030824/mochi-bus/actions/runs/29242154743>
+- Workflow head SHA：`85ae5672792f1f3a383d1f54f287ad4ba70a07da`
+- Local validation、remote validation、publish、activate 與 public smoke 均成功。
+- `network.version` 與 `routes.snapshotVersion` 一致；production network、routes 與 map smoke 均回 200。
+- 瀏覽器視覺確認已恢復 8m 線形；未見破碎或嚴重偏移。
+- 大型 payload、parse、index 與記憶體問題仍為 Open；本輪沒有宣稱效能或 35MB 問題已解決。
+
+本輪只恢復視覺正確性；PERF-001 的大型城市 payload、parse、index 與記憶體問題仍延後處理。不採城市差異化、多層 LOD、tiles 或 Web Worker。

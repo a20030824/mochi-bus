@@ -96,6 +96,8 @@
 | A11Y-001 | P2 | 表單 label、錯誤恢復、focus、live region、對比與 reduced motion 不完整 | `src/ui.ts:332-335`、`src/map-page.ts:39-40`、`web/map/style.css` | Phase 5 | In Progress:live region／reduced motion／setup picker 的 Escape+focus 已修;skeleton retry action 與 BYOK 錯誤關聯已補(細節見下方 2026-07-12 紀錄);primary button 對比是品牌色決策,需設計覆核才能動,仍 Open |
 | SEO-001 | P3 | canonical／OG image／Twitter card／setup noindex 等仍可補強 | `src/seo.ts`、`src/ui.ts`、`src/map-page.ts` | Phase 5 | In Progress:setup noindex 與 OG image/Twitter card 已補;canonical/og:url 已補(細節見下方 2026-07-12 紀錄) |
 
+> 2026-07-13 snapshot rollout note：Chiayi、Taipei、NewTaipei 都已重新發布為 8m；50m production snapshot 已清除，視覺回歸已修復。PERF-001 仍為 In Progress，臺北大型 payload、parse、index 與記憶體問題仍 Open。本輪只恢復視覺正確性，不採城市差異化、多層 LOD、tiles 或 Worker 作為本輪內容。
+
 ## 5. 詳細整改計畫
 
 ### Phase 0 — 邊緣傳輸止血（立即，獨立操作）
