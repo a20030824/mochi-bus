@@ -3,6 +3,7 @@ import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src
 import { createViewBackController } from '../../src/domain/map/view-back'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
+import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
@@ -62,8 +63,6 @@ type JourneyLegPreviewOptions = {
 type JourneyPreviewOptions = {
   fitCamera: boolean
 }
-
-type TripSelectionKind = 'from' | 'to'
 
 type PendingTripSelection = {
   kind: TripSelectionKind
@@ -781,6 +780,10 @@ function clearPendingTripSelections() {
   pendingToSelection = undefined
 }
 
+function tripSelectionConflict(kind: TripSelectionKind, candidate: NearbyPlace): string | undefined {
+  return getTripSelectionConflict(kind, candidate, selectedFrom, selectedTo)
+}
+
 function formatTripDistance(distanceMeters: number): string {
   return `${Math.round(distanceMeters)} m`
 }
@@ -888,19 +891,18 @@ async function applyTripSelection(
   kind: TripSelectionKind,
   candidate: NearbyPlace,
   coordinate: [number, number],
-) {
+): Promise<boolean> {
+  const conflict = tripSelectionConflict(kind, candidate)
+  if (conflict) {
+    setStatus(conflict, true)
+    return false
+  }
+  const pending = pendingTripSelection(kind)
+  if (pending) pending.selected = candidate
   if (kind === 'from') {
-    if (selectedTo?.placeId === candidate.placeId) {
-      setStatus('出發位置和目的地是同一站，請選另一個站牌', true)
-      return
-    }
     selectedFrom = candidate
     fromCoordinate = coordinate
   } else {
-    if (selectedFrom?.placeId === candidate.placeId) {
-      setStatus('出發位置和目的地是同一站，請選另一個站牌', true)
-      return
-    }
     selectedTo = candidate
     toCoordinate = coordinate
   }
@@ -913,15 +915,15 @@ async function applyTripSelection(
     nearbyLayer.clearLayers()
     drawTripEndpoints()
     await loadDirectRoutes()
-    return
+    return true
   }
   renderTripSelectionStep(kind === 'from' ? 'to' : 'from')
+  return true
 }
 
 async function selectTripCandidate(kind: TripSelectionKind, candidate: NearbyPlace) {
   const pending = pendingTripSelection(kind)
   if (!pending) return
-  pending.selected = candidate
   await applyTripSelection(kind, candidate, pending.coordinate)
 }
 
