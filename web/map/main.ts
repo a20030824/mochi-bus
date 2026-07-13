@@ -1,7 +1,7 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
 import { createViewBackController } from '../../src/domain/map/view-back'
-import { matchStopsToShape } from '../../src/domain/map/shape-matcher'
+import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import {
@@ -1755,18 +1755,22 @@ async function previewTransferPlans(plans: TransferPlan[]) {
     const labels = previews.indexOf(preview) % 2 === 0
       ? ['上車', '轉乘'] as const
       : ['轉乘', '下車'] as const
-    const line = addJourneyLegPreview(
+    const previewLine = addJourneyLegPreview(
       preview.variant,
       preview.color,
       preview.leg.boardSequence,
       preview.leg.alightSequence,
       labels,
     )
-    bounds.extend(line.getBounds())
+    bounds.extend(previewLine.focusBounds)
   })
   if (fromCoordinate) bounds.extend(fromCoordinate)
   if (toCoordinate) bounds.extend(toCoordinate)
-  if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [45, 90], paddingBottomRight: [45, 280] })
+  if (bounds.isValid()) map.fitBounds(bounds, {
+    paddingTopLeft: [45, 90],
+    paddingBottomRight: [45, 280],
+    maxZoom: 16,
+  })
 }
 
 async function previewDirectRoutes(directRoutes: DirectRoute[]) {
@@ -1783,20 +1787,26 @@ async function previewDirectRoutes(directRoutes: DirectRoute[]) {
   }))
   if (requestId !== previewRequest) return
   const bounds = L.latLngBounds([])
+  let focusBounds: L.LatLngBounds | undefined
   previews.forEach((preview) => {
     if (!preview) return
-    const line = addJourneyLegPreview(
+    const previewLine = addJourneyLegPreview(
       preview.variant,
       preview.color,
       preview.route.boardSequence,
       preview.route.alightSequence,
       ['上車', '下車'],
     )
-    bounds.extend(line.getBounds())
+    if (!focusBounds && previewLine.hasSegment) focusBounds = previewLine.focusBounds
   })
+  if (focusBounds) bounds.extend(focusBounds)
   if (selectedFrom) bounds.extend([selectedFrom.latitude, selectedFrom.longitude])
   if (selectedTo) bounds.extend([selectedTo.latitude, selectedTo.longitude])
-  if (bounds.isValid()) map.fitBounds(bounds, { paddingTopLeft: [45, 90], paddingBottomRight: [45, 280] })
+  if (bounds.isValid()) map.fitBounds(bounds, {
+    paddingTopLeft: [45, 90],
+    paddingBottomRight: [45, 280],
+    maxZoom: 16,
+  })
 }
 
 async function previewPlaceRoutes(placeRoutes: PlaceRoute[], place: NearbyPlace) {
@@ -1846,7 +1856,12 @@ function addJourneyLegPreview(
   boardSequence: number,
   alightSequence: number,
   labels: readonly [string, string],
-): LeafletGeoJSON {
+): {
+  fullLine: LeafletGeoJSON
+  segmentLine?: LeafletGeoJSON
+  focusBounds: L.LatLngBounds
+  hasSegment: boolean
+} {
   const { line: fullLine, target: fullLineTarget } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, {
     color, weight: 3.5, opacity: .2, lineCap: 'round', lineJoin: 'round',
   })
@@ -1858,21 +1873,16 @@ function addJourneyLegPreview(
 
   const board = variant.stops.features.find((stop) => stop.properties.sequence === boardSequence)
   const alight = variant.stops.features.find((stop) => stop.properties.sequence === alightSequence)
-  if (!board || !alight) return fullLine
-
-  addPreviewStopDots(variant.stops, color, previewLayer)
-
   const coordinates = variant.shape.geometry.coordinates as Array<[number, number]>
-  const matches = matchStopsToShape(variant.stops.features.map((stop) => ({
+  const stops = variant.stops.features.map((stop) => ({
     sequence: stop.properties.sequence,
     coordinates: stop.geometry.coordinates as [number, number],
-  })), coordinates)
-  const boardIndex = matches.get(boardSequence) ?? nearestCoordinateIndex(coordinates, board.geometry.coordinates)
-  const alightIndex = matches.get(alightSequence) ?? nearestCoordinateIndex(coordinates, alight.geometry.coordinates)
-  const start = Math.min(boardIndex, alightIndex)
-  const end = Math.max(boardIndex, alightIndex)
-  const segmentCoordinates = coordinates.slice(start, end + 1)
-  if (segmentCoordinates.length >= 2) {
+  }))
+  const segmentCoordinates = getJourneySegmentCoordinates(coordinates, stops, boardSequence, alightSequence)
+  const focusBounds = L.latLngBounds([])
+  let segmentLine: LeafletGeoJSON | undefined
+  if (segmentCoordinates && board && alight) {
+    segmentCoordinates.forEach(([longitude, latitude]) => focusBounds.extend([latitude, longitude]))
     const segmentFeature: GeoJSON.Feature<GeoJSON.LineString> = {
       type: 'Feature',
       properties: {},
@@ -1887,31 +1897,23 @@ function addJourneyLegPreview(
       L.DomEvent.stopPropagation(event)
       void loadRoute(variant.routeName, variant.variantKey, true, color)
     })
+    segmentLine = segment
   }
 
-  ;[[board, labels[0]], [alight, labels[1]]].forEach(([stop, label]) => {
-    const feature = stop as typeof board
-    const [longitude, latitude] = feature.geometry.coordinates
-    unifiedStopMarker([latitude, longitude], true, color)
-      .bindTooltip(`${label} · ${feature.properties.stopName}`, { permanent: true, direction: 'top' })
-      .addTo(previewLayer)
-  })
-  return fullLine
-}
+  if (board) focusBounds.extend([board.geometry.coordinates[1], board.geometry.coordinates[0]])
+  if (alight) focusBounds.extend([alight.geometry.coordinates[1], alight.geometry.coordinates[0]])
 
-function nearestCoordinateIndex(coordinates: GeoJSON.Position[], target: GeoJSON.Position): number {
-  let nearest = 0
-  let nearestDistance = Number.POSITIVE_INFINITY
-  coordinates.forEach(([longitude, latitude], index) => {
-    const deltaLongitude = longitude - target[0]
-    const deltaLatitude = latitude - target[1]
-    const distance = deltaLongitude * deltaLongitude + deltaLatitude * deltaLatitude
-    if (distance < nearestDistance) {
-      nearest = index
-      nearestDistance = distance
-    }
-  })
-  return nearest
+  if (board && alight) {
+    addPreviewStopDots(variant.stops, color, previewLayer)
+    ;[[board, labels[0]], [alight, labels[1]]].forEach(([stop, label]) => {
+      const feature = stop as typeof board
+      const [longitude, latitude] = feature.geometry.coordinates
+      unifiedStopMarker([latitude, longitude], true, color)
+        .bindTooltip(`${label} · ${feature.properties.stopName}`, { permanent: true, direction: 'top' })
+        .addTo(previewLayer)
+    })
+  }
+  return { fullLine, segmentLine, focusBounds, hasSegment: Boolean(segmentLine) }
 }
 
 async function openPlaceById(placeId: string) {
