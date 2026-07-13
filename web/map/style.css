@@ -289,21 +289,40 @@ button { cursor: pointer; }
 }
 .nearby-map-marker.endpoint { background: #b85f49; }
 
-.direct-route-button {
-  display: grid;
-  gap: 5px;
-  width: 100%;
-  padding: 11px 12px 11px 15px;
+.direct-route-card {
+  overflow: hidden;
   border: 1px solid #c9c2b4;
   border-left: 5px solid var(--route-color);
   border-radius: 3px;
   background: #ebe5d9;
+}
+.direct-route-card.selected { border-color: #292a25; border-left-color: var(--route-color); box-shadow: 0 0 0 2px rgba(41, 42, 37, .12); }
+.direct-route-select {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 11px 12px 6px 10px;
+  border: 0;
+  background: transparent;
   color: #292a25;
   text-align: left;
 }
-.direct-route-button > span { display: flex; justify-content: space-between; gap: 12px; }
-.direct-route-button > span > span, .direct-route-button small { color: #67685f; font-size: 12px; }
-.direct-route-button:hover { background: #f5efe4; }
+.direct-route-select > span { display: flex; justify-content: space-between; gap: 12px; }
+.direct-route-select > span > span, .direct-route-select small { color: #67685f; font-size: 12px; }
+.direct-route-select:hover, .direct-route-select:focus-visible { background: #f5efe4; }
+.direct-route-selected-note { color: #4f685b !important; font-weight: 750; }
+.direct-route-detail {
+  width: 100%;
+  padding: 6px 12px 9px 10px;
+  border: 0;
+  border-top: 1px solid #d5cec0;
+  background: #f4efe4;
+  color: #67685f;
+  font-size: 12px;
+  text-align: left;
+}
+.direct-route-detail:hover, .direct-route-detail:focus-visible { background: #fffaf0; color: #292a25; }
+.direct-route-select:focus-visible, .direct-route-detail:focus-visible { outline: 2px solid #4f685b; outline-offset: -2px; }
 .reset-trip-button { width: 100%; margin-top: 10px; }
 .change-origin-button { width: 100%; margin-top: 10px; }
 

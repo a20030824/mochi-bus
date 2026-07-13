@@ -52,6 +52,11 @@ type RouteMapVariant = {
   updatedAt: string | null
 }
 
+type JourneyLegPreviewOptions = {
+  selected?: boolean
+  onSelect?: () => void
+}
+
 type NearbyPlace = {
   placeId: string
   name: string
@@ -243,6 +248,7 @@ function isStaleNav(requestId: number): boolean {
   return navRequests.isStale(requestId)
 }
 let selectedTransferIndex = 0
+let selectedDirectIndex = 0
 let routeBackAction: (() => void) | undefined
 // 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
 let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
@@ -427,6 +433,7 @@ function showTaiwan() {
   tripStage = 'idle'
   lastDirectRoutes = []
   lastTransferPlans = []
+  selectedDirectIndex = 0
   map.setView([23.75, 120.9], 7)
   setStatus('選一個區域，看看公車如何穿過城市。')
   renderRegionMarkers()
@@ -559,6 +566,7 @@ async function chooseCity(city: MapCity) {
   tripStage = 'idle'
   lastDirectRoutes = []
   lastTransferPlans = []
+  selectedDirectIndex = 0
   map.setView(city.center, 11)
   setDocumentTitle(`${city.name}公車地圖`)
   setStatus(`${city.name} · 正在整理路線…`)
@@ -786,6 +794,7 @@ function tripModeButton(): HTMLButtonElement {
     toCoordinate = undefined
     lastDirectRoutes = []
     lastTransferPlans = []
+    selectedDirectIndex = 0
     tripStage = 'from'
     interactionMode = 'trip'
     // 全路網開著就留著:小站點正好當選點的瞄準參考,等終點選完才收
@@ -820,6 +829,12 @@ function clearTripState() {
   toCoordinate = undefined
   lastDirectRoutes = []
   lastTransferPlans = []
+  selectedDirectIndex = 0
+}
+
+function normalizeDirectIndex(directRoutes: DirectRoute[]): number {
+  if (!directRoutes.length) return 0
+  return Math.min(Math.max(selectedDirectIndex, 0), directRoutes.length - 1)
 }
 
 function hasTripResults(): boolean {
@@ -1477,6 +1492,7 @@ async function loadDirectRoutes() {
       if (isStaleNav(requestId)) return
       lastDirectRoutes = rankedRoutes
       lastTransferPlans = []
+      selectedDirectIndex = 0
       renderDirectRoutes(rankedRoutes)
       await previewDirectRoutes(rankedRoutes)
       return
@@ -1487,6 +1503,7 @@ async function loadDirectRoutes() {
     if (!transferResponse.ok || !transferData.plans) throw new Error(transferData.error)
     if (isStaleNav(requestId)) return
     lastDirectRoutes = []
+    selectedDirectIndex = 0
     const rankedPlans = await rankTransferPlansByEta(transferData.plans)
     if (isStaleNav(requestId)) return
     lastTransferPlans = rankedPlans
@@ -1568,14 +1585,23 @@ async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPl
 function renderDirectRoutes(directRoutes: DirectRoute[]) {
   if (!selectedFrom || !selectedTo) return
   interactionMode = 'trip-results'
+  const selectedIndex = normalizeDirectIndex(directRoutes)
+  selectedDirectIndex = selectedIndex
   const list = document.createElement('div')
   list.className = 'direct-route-list'
   if (!directRoutes.length) list.appendChild(paragraph('目前沒有找到直達車。'))
-  directRoutes.forEach((route) => {
+  directRoutes.forEach((route, index) => {
     const color = routeColor(route.routeName)
+    const selected = index === selectedIndex
+    const card = document.createElement('section')
+    card.className = 'direct-route-card'
+    card.classList.toggle('selected', selected)
+    card.style.setProperty('--route-color', color)
     const button = document.createElement('button')
-    button.className = 'direct-route-button'
-    button.style.setProperty('--route-color', color)
+    button.type = 'button'
+    button.className = 'direct-route-select'
+    button.setAttribute('aria-pressed', String(selected))
+    button.setAttribute('aria-label', `${selected ? '目前預覽：' : '選擇：'}${route.routeName} ${route.label}`)
     const top = document.createElement('span')
     const name = document.createElement('strong')
     name.textContent = route.routeName
@@ -1589,8 +1615,29 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     detail.textContent = route.label
     button.appendChild(top)
     button.appendChild(detail)
-    button.addEventListener('click', () => void loadRoute(route.routeName, route.variantKey, true, color))
-    list.appendChild(button)
+    if (selected) {
+      const selectedNote = document.createElement('small')
+      selectedNote.className = 'direct-route-selected-note'
+      selectedNote.textContent = '目前預覽'
+      button.appendChild(selectedNote)
+    }
+    button.addEventListener('click', () => {
+      selectedDirectIndex = index
+      renderDirectRoutes(directRoutes)
+      void previewDirectRoutes(directRoutes)
+    })
+    const detailButton = document.createElement('button')
+    detailButton.type = 'button'
+    detailButton.className = 'direct-route-detail'
+    detailButton.textContent = '查看完整路線'
+    detailButton.setAttribute('aria-label', `查看 ${route.routeName} 完整路線`)
+    detailButton.addEventListener('click', (event) => {
+      event.stopPropagation()
+      void loadRoute(route.routeName, route.variantKey, true, color)
+    })
+    card.appendChild(button)
+    card.appendChild(detailButton)
+    list.appendChild(card)
   })
   const back = drawerBack('重新選目的地', resumeDestinationSelection)
   const reset = tripModeButton()
@@ -1694,6 +1741,7 @@ function resumeDestinationSelection() {
   toCoordinate = undefined
   lastDirectRoutes = []
   lastTransferPlans = []
+  selectedDirectIndex = 0
   tripStage = 'to'
   interactionMode = 'trip'
   previewLayer.clearLayers()
@@ -1715,6 +1763,7 @@ function resumeOriginSelection() {
   fromCoordinate = undefined
   lastDirectRoutes = []
   lastTransferPlans = []
+  selectedDirectIndex = 0
   tripStage = 'from'
   interactionMode = 'trip'
   previewLayer.clearLayers()
@@ -1775,15 +1824,17 @@ async function previewTransferPlans(plans: TransferPlan[]) {
 
 async function previewDirectRoutes(directRoutes: DirectRoute[]) {
   if (!activeCity) return
+  const selectedIndex = normalizeDirectIndex(directRoutes)
+  selectedDirectIndex = selectedIndex
   const requestId = ++previewRequest
   previewLayer.clearLayers()
-  const previews = await Promise.all(directRoutes.slice(0, 8).map(async (route) => {
+  const previews = await Promise.all(directRoutes.slice(0, 8).map(async (route, index) => {
     const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
     const response = await tdxFetch(`/api/v1/map/route?${params}`)
     if (!response.ok) return null
     const data = await response.json() as { variants?: RouteMapVariant[] }
     const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
-    return variant ? { variant, color: routeColor(route.routeName), route } : null
+    return variant ? { variant, color: routeColor(route.routeName), route, index } : null
   }))
   if (requestId !== previewRequest) return
   const bounds = L.latLngBounds([])
@@ -1796,8 +1847,16 @@ async function previewDirectRoutes(directRoutes: DirectRoute[]) {
       preview.route.boardSequence,
       preview.route.alightSequence,
       ['上車', '下車'],
+      {
+        selected: preview.index === selectedIndex,
+        onSelect: () => {
+          selectedDirectIndex = preview.index
+          renderDirectRoutes(directRoutes)
+          void previewDirectRoutes(directRoutes)
+        },
+      },
     )
-    if (!focusBounds && previewLine.hasSegment) focusBounds = previewLine.focusBounds
+    if (preview.index === selectedIndex && previewLine.hasSegment) focusBounds = previewLine.focusBounds
   })
   if (focusBounds) bounds.extend(focusBounds)
   if (selectedFrom) bounds.extend([selectedFrom.latitude, selectedFrom.longitude])
@@ -1856,6 +1915,7 @@ function addJourneyLegPreview(
   boardSequence: number,
   alightSequence: number,
   labels: readonly [string, string],
+  options: JourneyLegPreviewOptions = {},
 ): {
   fullLine: LeafletGeoJSON
   segmentLine?: LeafletGeoJSON
@@ -1868,7 +1928,8 @@ function addJourneyLegPreview(
   bindHoverTooltip(fullLineTarget, `${variant.routeName} · ${variant.label}`, { sticky: true })
   fullLineTarget.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
-    void loadRoute(variant.routeName, variant.variantKey, true, color)
+    if (options.onSelect) options.onSelect()
+    else void loadRoute(variant.routeName, variant.variantKey, true, color)
   })
 
   const board = variant.stops.features.find((stop) => stop.properties.sequence === boardSequence)
@@ -1890,12 +1951,19 @@ function addJourneyLegPreview(
     }
     const segment = L.geoJSON(segmentFeature, {
       pane: 'routePreviewPane',
-      style: { color, weight: 7, opacity: .92, lineCap: 'round', lineJoin: 'round' },
+      style: {
+        color,
+        weight: options.selected === false ? 5 : 7,
+        opacity: options.selected === false ? .38 : .92,
+        lineCap: 'round',
+        lineJoin: 'round',
+      },
     }).addTo(previewLayer)
     bindHoverTooltip(segment, `${variant.routeName} · ${board.properties.stopName} → ${alight.properties.stopName}`, { sticky: true })
     segment.on('click', (event) => {
       L.DomEvent.stopPropagation(event)
-      void loadRoute(variant.routeName, variant.variantKey, true, color)
+      if (options.onSelect) options.onSelect()
+      else void loadRoute(variant.routeName, variant.variantKey, true, color)
     })
     segmentLine = segment
   }
