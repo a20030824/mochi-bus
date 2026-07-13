@@ -1879,6 +1879,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
       void previewTransferPlans(plans, { fitCamera: true })
     })
     card.addEventListener('keydown', (event) => {
+      if (event.target !== event.currentTarget) return
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault()
         card.click()
