@@ -28,6 +28,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: npx playwright test test/e2e/map-camera-padding.spec.ts
-      - run: npm run test:e2e
+      - name: Run full Playwright suite
+        id: e2e
+        shell: bash
+        run: |
+          set +e
+          npm run test:e2e > e2e-output.txt 2>&1
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload Playwright output
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: e2e-output.txt
+          retention-days: 1
+      - name: Preserve E2E result
+        if: steps.e2e.outputs.exit_code != '0'
+        run: exit 1
 
