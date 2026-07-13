@@ -336,7 +336,7 @@ button { cursor: pointer; }
   border-radius: 3px;
   background: #ebe5d9;
 }
-.direct-route-card.selected { border-color: #292a25; border-left-color: var(--route-color); box-shadow: 0 0 0 2px rgba(41, 42, 37, .12); }
+.direct-route-card.selected { border-color: #b8ad99; border-left-color: var(--route-color); background: #f4efe4; }
 .direct-route-select {
   display: grid;
   gap: 5px;
@@ -350,7 +350,6 @@ button { cursor: pointer; }
 .direct-route-select > span { display: flex; justify-content: space-between; gap: 12px; }
 .direct-route-select > span > span, .direct-route-select small { color: #67685f; font-size: 12px; }
 .direct-route-select:hover, .direct-route-select:focus-visible { background: #f5efe4; }
-.direct-route-selected-note { color: #4f685b !important; font-weight: 750; }
 .direct-route-detail {
   width: 100%;
   padding: 6px 12px 9px 10px;
@@ -374,7 +373,7 @@ button { cursor: pointer; }
   background: #ebe5d9;
 }
 .transfer-plan.connection-tight { opacity: .72; }
-.transfer-plan.selected { border-color: #292a25; box-shadow: 0 0 0 2px rgba(41, 42, 37, .12); }
+.transfer-plan.selected { border-color: #b8ad99; background: #f4efe4; }
 .transfer-plan:focus-visible { outline: 2px solid #4f685b; outline-offset: 2px; }
 .transfer-title { display: flex; justify-content: space-between; gap: 10px; padding: 10px 12px; }
 .transfer-title span { color: #67685f; font-size: 12px; }

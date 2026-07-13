@@ -109,6 +109,17 @@ test.describe('direct journey candidate selection', () => {
     await expect(cards.filter({ has: page.locator('[aria-pressed="true"]') })).toHaveCount(1)
     await expect(cards.nth(0).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
     await expect(cards.nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'false')
+    await expect.poll(() => routeDetailCalls.length).toBe(2)
+    await expect(page.locator('.direct-route-selected-note')).toHaveCount(0)
+    const journeyLabels = page.locator('.leaflet-tooltip').filter({ hasText: /^(上車|下車) · / })
+    await expect(journeyLabels).toHaveCount(2)
+    await expect(page.locator('.preview-stop-dot')).toHaveCount(3)
+    await expect.poll(() => cards.nth(0).evaluate((card) => getComputedStyle(card).boxShadow)).toBe('none')
+    await expect.poll(async () => {
+      const selectedBackground = await cards.nth(0).evaluate((card) => getComputedStyle(card).backgroundColor)
+      const candidateBackground = await cards.nth(1).evaluate((card) => getComputedStyle(card).backgroundColor)
+      return selectedBackground !== candidateBackground
+    }).toBe(true)
     await expect(page.getByRole('heading', { name: '起點 → 終點', exact: true })).toBeVisible()
 
     await cards.nth(1).locator('.direct-route-select').press('Enter')
@@ -116,6 +127,10 @@ test.describe('direct journey candidate selection', () => {
     await expect(cards.nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByRole('heading', { name: '起點 → 終點', exact: true })).toBeVisible()
     await expect.poll(() => routeDetailCalls.length).toBe(4)
+    await expect(journeyLabels).toHaveCount(2)
+    await expect(page.locator('.preview-stop-dot')).toHaveCount(3)
+    await expect(page.locator('.direct-route-selected-note')).toHaveCount(0)
+    await expect.poll(() => cards.nth(1).evaluate((card) => getComputedStyle(card).boxShadow)).toBe('none')
 
     const zoomIn = page.getByRole('button', { name: 'Zoom in', exact: true })
     await expect(zoomIn).toHaveCount(1)
