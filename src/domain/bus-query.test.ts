@@ -45,12 +45,21 @@ describe('parseBusQuery', () => {
     expect(query.stopUid).toBe('TPE213044')
   })
 
-  it('rejects an invalid direction', () => {
-    expect(() => parseBusQuery({
+  it('accepts the TDX circular direction', () => {
+    expect(parseBusQuery({
       city: 'Taipei',
       route: '307',
       stop: '捷運西門站',
       direction: '2',
+    }, undefined, cities).direction).toBe(2)
+  })
+
+  it('rejects a direction outside the TDX value set', () => {
+    expect(() => parseBusQuery({
+      city: 'Taipei',
+      route: '307',
+      stop: '捷運西門站',
+      direction: '3',
     }, undefined, cities)).toThrow(QueryValidationError)
   })
 

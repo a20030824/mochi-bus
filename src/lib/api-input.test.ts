@@ -77,10 +77,11 @@ describe('query and credential boundaries', () => {
     expect(parseRadius(undefined)).toBe(500)
   })
 
-  it('accepts only optional directions 0 and 1', () => {
+  it('accepts optional TDX directions 0, 1, and 2', () => {
     expect(parseOptionalDirection(undefined)).toBeUndefined()
     expect(parseOptionalDirection('1')).toBe(1)
-    expect(() => parseOptionalDirection('2')).toThrow(ApiInputError)
+    expect(parseOptionalDirection('2')).toBe(2)
+    expect(() => parseOptionalDirection('3')).toThrow(ApiInputError)
   })
 
   it('requires a complete, bounded TDX credential pair', () => {

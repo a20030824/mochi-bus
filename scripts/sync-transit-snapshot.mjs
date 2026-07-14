@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { validateSnapshot } from './transit-snapshot/validate.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
+import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
 
 const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
@@ -174,7 +175,7 @@ for (const item of routeItems) {
 
 const shapesByIdentity = new Map()
 for (const item of shapeItems) {
-  if (!item.RouteUID || ![0, 1].includes(item.Direction) || !item.EncodedPolyline) continue
+  if (!item.RouteUID || !isSupportedBusDirection(item.Direction) || !item.EncodedPolyline) continue
   const key = `${item.RouteUID}:${item.Direction}`
   const list = shapesByIdentity.get(key) ?? []
   list.push(item)
@@ -224,7 +225,7 @@ function indexPlace(place) {
   else placeGrid.set(key, [place])
 }
 for (const item of stopOfRouteItems) {
-  if (!item.RouteUID || ![0, 1].includes(item.Direction) || !item.Stops?.length) continue
+  if (!item.RouteUID || !isSupportedBusDirection(item.Direction) || !item.Stops?.length) continue
   const route = routeByUid.get(item.RouteUID)
   if (!route) continue
   const identity = `${item.RouteUID}:${item.Direction}`

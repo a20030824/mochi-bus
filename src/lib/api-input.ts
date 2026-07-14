@@ -88,13 +88,13 @@ export function optionalQueryString(value: string | undefined, label: string, ma
   return cleaned
 }
 
-export function parseOptionalDirection(value: string | undefined, label = 'direction'): 0 | 1 | undefined {
+export function parseOptionalDirection(value: string | undefined, label = 'direction'): 0 | 1 | 2 | undefined {
   if (value === undefined || value.trim() === '') return undefined
   const cleaned = value.trim()
-  if (cleaned !== '0' && cleaned !== '1') {
-    throw new ApiInputError(400, 'INVALID_QUERY', `${label} 必須是 0 或 1`)
+  if (cleaned !== '0' && cleaned !== '1' && cleaned !== '2') {
+    throw new ApiInputError(400, 'INVALID_QUERY', `${label} 必須是 0、1 或 2`)
   }
-  return Number(cleaned) as 0 | 1
+  return Number(cleaned) as 0 | 1 | 2
 }
 
 export function parseCoordinate(value: string | undefined, axis: 'latitude' | 'longitude'): number {

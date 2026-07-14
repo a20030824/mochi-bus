@@ -1,4 +1,4 @@
-export type Direction = 0 | 1
+export type Direction = 0 | 1 | 2
 
 export type BusQuery = {
   city: string
@@ -49,8 +49,8 @@ export function parseBusQuery(
   if (stopUid && stopUid.length > 100) throw new QueryValidationError('StopUID 格式錯誤')
   if (routeUid && routeUid.length > 100) throw new QueryValidationError('RouteUID 格式錯誤')
   if (subRouteUid && subRouteUid.length > 100) throw new QueryValidationError('SubRouteUID 格式錯誤')
-  if (directionValue !== '0' && directionValue !== '1') {
-    throw new QueryValidationError('direction 必須是 0 或 1')
+  if (directionValue !== '0' && directionValue !== '1' && directionValue !== '2') {
+    throw new QueryValidationError('direction 必須是 0、1 或 2')
   }
 
   return {

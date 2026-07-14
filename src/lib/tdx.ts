@@ -676,7 +676,7 @@ export async function getRouteStopGroups(
 
   const groups = data
     .filter((item): item is StopOfRouteItem & { Direction: Direction } =>
-      item.Direction === 0 || item.Direction === 1,
+      item.Direction === 0 || item.Direction === 1 || item.Direction === 2,
     )
     .map((item) => {
       const stops = (item.Stops ?? [])

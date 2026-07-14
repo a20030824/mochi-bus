@@ -19,7 +19,7 @@ type PatternRow = {
   subroute_uid: string | null
   route_name: string
   subroute_name: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   departure_name: string
   destination_name: string
   shape_key: string
@@ -139,7 +139,7 @@ export type StopPlaceBundleRoute = {
   routeUid: string
   routeName: string
   variantKey: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   label: string
   subRouteUid?: string
   subRouteName: string
@@ -482,7 +482,7 @@ export async function getStopPlaceRoutes(env: TransitBindings, city: string, pla
     route_uid: string
     route_name: string
     pattern_id: string
-    direction: 0 | 1
+    direction: 0 | 1 | 2
     departure_name: string
     destination_name: string
     subroute_uid: string | null
@@ -564,7 +564,7 @@ export async function getDirectRoutes(
 type DirectLegRow = ReachableLegRow & {
   route_name: string
   pattern_id: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   subroute_name: string
   departure_name: string
   destination_name: string
@@ -704,7 +704,7 @@ export async function getJourneyLegStopRefs(
     const row = result.results[0] as {
       route_uid: string
       subroute_uid: string | null
-      direction: 0 | 1
+      direction: 0 | 1 | 2
       route_name: string
       stop_uid: string
     } | undefined
