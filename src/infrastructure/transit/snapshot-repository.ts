@@ -600,6 +600,15 @@ export async function getOneTransferRoutes(
         SELECT version, pattern_id, stop_sequence
         FROM pattern_stops
         WHERE version = ? AND place_id = ?
+      ),
+      anchor_stats AS MATERIALIZED (
+        SELECT anchor.version, anchor.pattern_id, anchor.stop_sequence,
+          MIN(path.stop_sequence) AS min_sequence,
+          MAX(path.stop_sequence) AS max_sequence
+        FROM anchor
+        JOIN pattern_stops path
+          ON path.version = anchor.version AND path.pattern_id = anchor.pattern_id
+        GROUP BY anchor.version, anchor.pattern_id, anchor.stop_sequence
       )
       SELECT p.pattern_id, p.route_uid, r.route_name,
         p.departure_name, p.destination_name, p.shape_key,
@@ -607,13 +616,8 @@ export async function getOneTransferRoutes(
         transfer.stop_sequence AS alight_sequence,
         transfer.place_id AS transfer_place_id,
         place.place_name, place.latitude, place.longitude,
-        (SELECT MIN(path.stop_sequence)
-          FROM pattern_stops path
-          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS min_sequence,
-        (SELECT MAX(path.stop_sequence)
-          FROM pattern_stops path
-          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS max_sequence
-      FROM anchor
+        anchor.min_sequence, anchor.max_sequence
+      FROM anchor_stats anchor
       CROSS JOIN pattern_stops transfer
         ON transfer.version = anchor.version
         AND transfer.pattern_id = anchor.pattern_id
@@ -628,6 +632,15 @@ export async function getOneTransferRoutes(
         SELECT version, pattern_id, stop_sequence
         FROM pattern_stops
         WHERE version = ? AND place_id = ?
+      ),
+      anchor_stats AS MATERIALIZED (
+        SELECT anchor.version, anchor.pattern_id, anchor.stop_sequence,
+          MIN(path.stop_sequence) AS min_sequence,
+          MAX(path.stop_sequence) AS max_sequence
+        FROM anchor
+        JOIN pattern_stops path
+          ON path.version = anchor.version AND path.pattern_id = anchor.pattern_id
+        GROUP BY anchor.version, anchor.pattern_id, anchor.stop_sequence
       )
       SELECT p.pattern_id, p.route_uid, r.route_name,
         p.departure_name, p.destination_name, p.shape_key,
@@ -635,13 +648,8 @@ export async function getOneTransferRoutes(
         anchor.stop_sequence AS alight_sequence,
         transfer.place_id AS transfer_place_id,
         place.place_name, place.latitude, place.longitude,
-        (SELECT MIN(path.stop_sequence)
-          FROM pattern_stops path
-          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS min_sequence,
-        (SELECT MAX(path.stop_sequence)
-          FROM pattern_stops path
-          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS max_sequence
-      FROM anchor
+        anchor.min_sequence, anchor.max_sequence
+      FROM anchor_stats anchor
       CROSS JOIN pattern_stops transfer
         ON transfer.version = anchor.version
         AND transfer.pattern_id = anchor.pattern_id
