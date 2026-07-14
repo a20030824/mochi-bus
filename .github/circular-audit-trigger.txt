@@ -1,1 +1,1 @@
-Temporary trigger for the final PR #11 audit workflow.
+Temporary trigger for the final PR #11 read-only validation workflow.
