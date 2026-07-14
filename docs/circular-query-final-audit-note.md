@@ -1,1 +1,1 @@
-Temporary audit note for the current PR validation pass. Remove after validation completes.
+Temporary audit note for the final PR validation pass. Remove after validation completes.
