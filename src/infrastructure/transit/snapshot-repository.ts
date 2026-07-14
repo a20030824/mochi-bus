@@ -82,7 +82,11 @@ async function reachableLegs<T extends ReachableLegRow>(
     }
     return { ...row, stop_count: journeyStopCount(row) }
   }))
-  return checked.filter((row): row is ReachableLeg<T> => row !== null)
+  const reachable: Array<ReachableLeg<T>> = []
+  for (const row of checked) {
+    if (row) reachable.push(row)
+  }
+  return reachable
 }
 
 // 每個查詢都要先知道 active_version,但它只在 sync 換版時才變;
