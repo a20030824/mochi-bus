@@ -1,0 +1,47 @@
+name: Focused circular direction diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Payload read by the existing one-time runner
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import base64
+          import json
+          import subprocess
+
+          subprocess.run(['npm', 'ci', '--silent'], check=True)
+          commands = [
+              ('input-tests', ['npx', 'vitest', 'run', 'src/domain/bus-query.test.ts', 'src/lib/api-input.test.ts', 'scripts/transit-snapshot/direction.test.mjs', '--reporter=verbose']),
+              ('tdx-circular-test', ['npx', 'vitest', 'run', 'src/lib/tdx.test.ts', '-t', 'TDX circular route directions', '--reporter=verbose']),
+              ('typecheck', ['npm', 'run', 'typecheck']),
+          ]
+          results = []
+          for name, command in commands:
+              completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              results.append({'stage': name, 'code': completed.returncode, 'output': completed.stdout[-3500:]})
+          encoded = base64.b64encode(json.dumps(results, ensure_ascii=False).encode()).decode()
+          path = Path('src/infrastructure/transit/snapshot-repository.ts')
+          text = path.read_text()
+          marker = '\n// tdx-direction-diagnostic-base64: '
+          if marker in text:
+              text = text.split(marker, 1)[0]
+          path.write_text(text.rstrip() + f'\n// tdx-direction-diagnostic-base64: {encoded}\n')
+
+          Path('.github/workflows/apply-circular-query-fix.yml').unlink()
+          Path('docs/TDX-CIRCULAR-DIRECTION-STAGING.txt').unlink()
+          subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+          subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'add', '-A'], check=True)
+          subprocess.run(['git', 'reset', '--', 'src/infrastructure/transit/snapshot-repository.ts'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'chore: stage focused direction diagnostics'], check=True)
+          PY
