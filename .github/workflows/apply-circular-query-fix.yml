@@ -1,0 +1,26 @@
+name: Circular query source fix payload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Payload read by the existing one-time runner
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('src/infrastructure/transit/snapshot-repository.ts')
+          text = path.read_text()
+          old = "  return checked.filter((row): row is ReachableLeg<T> => row !== null)\n"
+          new = "  const reachable: Array<ReachableLeg<T>> = []\n  for (const row of checked) {\n    if (row) reachable.push(row)\n  }\n  return reachable\n"
+          if old not in text:
+              raise SystemExit('reachable leg filter anchor not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
