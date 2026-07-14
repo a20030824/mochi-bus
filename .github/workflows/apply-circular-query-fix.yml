@@ -1,0 +1,47 @@
+name: Circular direction diagnostic payload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Payload read by the existing one-time runner
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import base64
+          import json
+          import subprocess
+
+          subprocess.run(['npm', 'ci', '--silent'], check=True)
+          results = []
+          for name, command in [
+              ('unit-tests', ['npm', 'run', 'test']),
+              ('typecheck', ['npm', 'run', 'typecheck']),
+          ]:
+              completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              results.append({
+                  'stage': name,
+                  'code': completed.returncode,
+                  'output': completed.stdout[-12000:],
+              })
+          encoded = base64.b64encode(json.dumps(results, ensure_ascii=False).encode()).decode()
+          path = Path('src/infrastructure/transit/snapshot-repository.ts')
+          text = path.read_text()
+          text = re.sub(r'\n// tdx-direction-diagnostic-base64: .*\n?$', '\n', text) if False else text
+          path.write_text(text.rstrip() + f'\n// tdx-direction-diagnostic-base64: {encoded}\n')
+
+          Path('.github/workflows/apply-circular-query-fix.yml').unlink()
+          Path('.github/tdx-circular-direction-note.txt').unlink()
+          subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+          subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'add', '-A'], check=True)
+          subprocess.run(['git', 'reset', '--', 'src/infrastructure/transit/snapshot-repository.ts'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'chore: stage direction diagnostics'], check=True)
+          PY
