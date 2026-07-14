@@ -64,7 +64,7 @@ describe('GET and credential boundaries', () => {
   })
 
   it('rejects invalid optional directions and oversized path identifiers', async () => {
-    const direction = await app.request(`${baseUrl}/api/v1/map/vehicles?city=Taipei&route=307&direction=2`)
+    const direction = await app.request(`${baseUrl}/api/v1/map/vehicles?city=Taipei&route=307&direction=3`)
     expect(direction.status).toBe(400)
     await expect(direction.json()).resolves.toMatchObject({ code: 'INVALID_QUERY' })
 
