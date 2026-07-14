@@ -7,7 +7,7 @@ import { getTripSelectionConflict, type TripSelectionKind } from '../../src/doma
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
-import { calculateCameraPadding, type CameraRect } from '../../src/domain/map/camera-padding'
+import { calculateCameraPadding, cameraPanOffset, type CameraRect } from '../../src/domain/map/camera-padding'
 import {
   describeTransferEstimate,
   estimateTransfer,
@@ -377,8 +377,7 @@ async function initialise() {
       const city = cities.find((candidate) => candidate.code === cityCode)
       if (city) {
         activeCity = city
-        map.setView(city.center, 11)
-        if (routeName) {
+              if (routeName) {
           await loadRoute(routeName, params.get('variant'))
         } else {
           await chooseCity(city)
@@ -550,7 +549,6 @@ function showRegion(regionCode: RegionCode) {
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
-  map.setView(region.center, region.zoom)
   setStatus(`${region.name} · 選擇縣市`)
   const regionCities = cities.filter((city) => city.region === regionCode)
   for (const city of regionCities) {
@@ -572,6 +570,7 @@ function showRegion(regionCode: RegionCode) {
       onClick: () => void chooseCity(city),
     }))),
   )
+  fitRegionCities(region, regionCities)
   setViewBack(showTaiwan)
 }
 
@@ -600,6 +599,7 @@ async function chooseCity(city: MapCity) {
   setDocumentTitle(`${city.name}公車地圖`)
   setStatus(`${city.name} · 正在整理路線…`)
   drawer.replaceChildren(drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…'))
+  setDrawerAwareView(city.center, 11)
   setViewBack(() => showRegion(city.region))
 
   try {
@@ -611,6 +611,7 @@ async function chooseCity(city: MapCity) {
     routesCityCode = city.code
     category = '全部'
     renderRoutePicker()
+    setDrawerAwareView(city.center, 11)
     setStatus(`${city.name} · ${routes.length} 條路線`)
   } catch {
     if (isStaleNav(requestId)) return
@@ -620,6 +621,7 @@ async function chooseCity(city: MapCity) {
       heading(city.name, '目前無法載入這個縣市的路線。'),
       retryButton(() => void chooseCity(city)),
     )
+    setDrawerAwareView(city.center, 11)
   }
 }
 
@@ -2433,6 +2435,26 @@ function setDocumentTitle(prefix?: string) {
 
 function drawerAwareCameraPadding() {
   return calculateCameraPadding(readCameraRect(mapNode), readCameraRect(drawer))
+}
+
+function setDrawerAwareView(center: L.LatLngExpression, zoom: number) {
+  map.setView(center, zoom, { animate: false })
+  const offset = cameraPanOffset(drawerAwareCameraPadding())
+  if (offset[0] || offset[1]) map.panBy(offset, { animate: false })
+}
+
+function fitRegionCities(region: (typeof regions)[number], regionCities: MapCity[]) {
+  const bounds = L.latLngBounds([])
+  regionCities.forEach((city) => bounds.extend(city.center))
+  if (!bounds.isValid()) {
+    setDrawerAwareView(region.center, region.zoom)
+    return
+  }
+  map.fitBounds(bounds, {
+    ...drawerAwareCameraPadding(),
+    maxZoom: region.zoom,
+    animate: false,
+  })
 }
 
 function readCameraRect(element: HTMLElement): CameraRect {
