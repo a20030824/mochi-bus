@@ -1,1 +1,1 @@
-Temporary note used to position the circular query diagnostic payload at the previous commit. Remove after the one-time runner completes.
+Temporary audit note for the current PR validation pass. Remove after validation completes.
