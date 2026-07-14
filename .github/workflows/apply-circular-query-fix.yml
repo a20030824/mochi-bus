@@ -34,11 +34,13 @@ jobs:
           encoded = base64.b64encode(json.dumps(results, ensure_ascii=False).encode()).decode()
           path = Path('src/infrastructure/transit/snapshot-repository.ts')
           text = path.read_text()
-          text = re.sub(r'\n// tdx-direction-diagnostic-base64: .*\n?$', '\n', text) if False else text
+          marker = '\n// tdx-direction-diagnostic-base64: '
+          if marker in text:
+              text = text.split(marker, 1)[0]
           path.write_text(text.rstrip() + f'\n// tdx-direction-diagnostic-base64: {encoded}\n')
 
           Path('.github/workflows/apply-circular-query-fix.yml').unlink()
-          Path('.github/tdx-circular-direction-note.txt').unlink()
+          Path('docs/TDX-CIRCULAR-DIRECTION-STAGING.txt').unlink()
           subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
           subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
           subprocess.run(['git', 'add', '-A'], check=True)
