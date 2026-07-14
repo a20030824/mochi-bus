@@ -29,7 +29,7 @@ type DirectionGroup = {
   subRouteName: string
   routeUid?: string
   subRouteUid?: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   stops: Array<{ stopUid: string; stopName: string; sequence: number }>
 }
 

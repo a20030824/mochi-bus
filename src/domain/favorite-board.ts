@@ -64,7 +64,7 @@ export function migrateLegacyPresets(presets: unknown, now: string): FavoriteBoa
         identityStatus: preset.routeUid ? undefined : 'legacy-ambiguous',
         stopName: preset.stopName,
         stopUid: preset.stopUid,
-        direction: preset.direction === 1 ? 1 : 0,
+        direction: preset.direction === 2 ? 2 : preset.direction === 1 ? 1 : 0,
       }],
       createdAt: preset.createdAt || now,
       updatedAt: now,

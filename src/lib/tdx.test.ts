@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedBusQuery } from '../domain/bus-query'
-import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
+import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getRouteStopGroups, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
 
 describe('TDX presentation', () => {
   it('formats immediate arrivals', () => {
@@ -427,5 +427,67 @@ describe('route variants', () => {
     ])
 
     expect(merged).toHaveLength(2)
+  })
+})
+
+
+describe('TDX circular route directions', () => {
+  beforeEach(() => resetTDXTestState())
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    resetTDXTestState()
+  })
+
+  it('keeps Direction 2 stop groups instead of dropping circular routes', async () => {
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes('/openid-connect/token')) {
+        return new Response(JSON.stringify({ access_token: 'token', expires_in: 3600 }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify([{
+        RouteUID: 'TNN0LEFT',
+        RouteName: { Zh_tw: '0左' },
+        SubRouteUID: 'TNN0LEFT',
+        SubRouteName: { Zh_tw: '0左' },
+        Direction: 2,
+        Stops: [
+          {
+            StopUID: 'TNN0001', StopName: { Zh_tw: '臺南火車站' }, StopSequence: 1,
+            StopPosition: { PositionLat: 22.997, PositionLon: 120.213 },
+          },
+          {
+            StopUID: 'TNN0002', StopName: { Zh_tw: '成功路' }, StopSequence: 2,
+            StopPosition: { PositionLat: 23.001, PositionLon: 120.208 },
+          },
+          {
+            StopUID: 'TNN0003', StopName: { Zh_tw: '臺南火車站' }, StopSequence: 3,
+            StopPosition: { PositionLat: 22.997, PositionLon: 120.213 },
+          },
+        ],
+      }]), { headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    const groups = await getRouteStopGroups({
+      TDX_CLIENT_ID: 'id', TDX_CLIENT_SECRET: 'secret',
+    }, 'Tainan', '0左')
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]).toMatchObject({
+      direction: 2,
+      routeUid: 'TNN0LEFT',
+      subRouteUid: 'TNN0LEFT',
+      label: '臺南火車站 → 臺南火車站',
+    })
+    expect(groups[0].stops.every((stop) => stop.direction === 2)).toBe(true)
   })
 })

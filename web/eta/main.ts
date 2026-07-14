@@ -26,7 +26,7 @@ type EtaData = {
 }
 
 type StopGroup = {
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   label: string
   subRouteUid?: string
   stops?: Array<{ stopUid: string; stopName: string; routeUid?: string; subRouteUid?: string }>
@@ -35,7 +35,7 @@ type StopGroup = {
 type PlaceRoute = {
   routeName: string
   variantKey: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   label: string
   routeUid: string
   subRouteUid?: string
@@ -232,7 +232,9 @@ async function loadPlaceArrivals(): Promise<PlaceRoute[] | null> {
     const focus = currentBoard.buses[0]
     if (focus?.stopUid) params.set('focusStopUid', focus.stopUid)
     if (focus?.subRouteUid) params.set('focusSubRouteUid', focus.subRouteUid)
-    if (focus && (focus.direction === 0 || focus.direction === 1)) params.set('focusDirection', String(focus.direction))
+    if (focus && (focus.direction === 0 || focus.direction === 1 || focus.direction === 2)) {
+      params.set('focusDirection', String(focus.direction))
+    }
     const response = await fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/arrivals?' + params, { cache: 'no-store', headers: tdxHeaders() })
     const body = await response.json() as { routes?: PlaceRoute[] }
     return response.ok && Array.isArray(body.routes) ? body.routes : null

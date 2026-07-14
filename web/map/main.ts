@@ -44,7 +44,7 @@ type RouteMapVariant = {
   routeName: string
   routeUid: string
   subRouteUid?: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   label: string
   subRouteName: string
   shape: GeoJSON.Feature<GeoJSON.LineString>
@@ -86,7 +86,7 @@ type PlaceRoute = {
   routeUid: string
   routeName: string
   variantKey: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   label: string
   subRouteUid?: string
   subRouteName: string

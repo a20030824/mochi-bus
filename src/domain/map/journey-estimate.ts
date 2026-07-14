@@ -7,7 +7,7 @@ export type JourneyLegRef = {
   patternId: string
   routeUid: string
   subRouteUid?: string
-  direction: 0 | 1
+  direction: 0 | 1 | 2
   routeName: string
   stopUid: string
 }
