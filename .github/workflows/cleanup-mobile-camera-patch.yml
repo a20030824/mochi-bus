@@ -2,7 +2,7 @@ name: Clean mobile camera patch
 
 on:
   pull_request:
-    types: [synchronize]
+    types: [reopened]
 
 permissions:
   contents: write
@@ -47,6 +47,7 @@ jobs:
               raise RuntimeError('chooseCity camera anchor mismatch')
           path.write_text(text.replace(old, new, 1))
           Path('.github/workflows/cleanup-mobile-camera-patch.yml').unlink()
+          Path('.github/workflows/apply-mobile-camera-padding.yml').unlink()
           PY
       - run: npm ci --silent
       - run: npm run check
