@@ -1,4 +1,4 @@
-name: Circular query typecheck diagnostic payload
+name: Circular query final type fix payload
 
 on:
   workflow_dispatch:
@@ -15,22 +15,24 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import base64
-          import subprocess
 
-          install = subprocess.run(['npm', 'ci', '--silent'], text=True, capture_output=True)
-          if install.returncode:
-              stage = 'npm-ci'
-              output = install.stdout + install.stderr
-          else:
-              result = subprocess.run(['npm', 'run', 'typecheck'], text=True, capture_output=True)
-              stage = 'typecheck'
-              output = result.stdout + result.stderr
+          tests = Path('src/infrastructure/transit/snapshot-repository.test.ts')
+          text = tests.read_text()
+          marker = "it('keeps the shortest occurrence pair for a repeated circular stop'"
+          start = text.index(marker)
+          before = text[:start]
+          after = text[start:]
+          old = '    } as D1Database\n'
+          new = '    } as unknown as D1Database\n'
+          if old not in after:
+              raise SystemExit('repeated-stop database cast anchor not found')
+          tests.write_text(before + after.replace(old, new, 1))
 
-          report = base64.b64encode(f'{stage}\n{output[-6000:]}'.encode()).decode()
-          path = Path('src/infrastructure/transit/snapshot-repository.ts')
-          text = path.read_text()
+          source = Path('src/infrastructure/transit/snapshot-repository.ts')
           prefix = '// circular-query-diagnostic-base64:'
-          text = '\n'.join(line for line in text.splitlines() if not line.startswith(prefix)).rstrip()
-          path.write_text(f'{text}\n{prefix} {report}\n')
+          cleaned = '\n'.join(
+              line for line in source.read_text().splitlines()
+              if not line.startswith(prefix)
+          ).rstrip()
+          source.write_text(f'{cleaned}\n')
           PY
