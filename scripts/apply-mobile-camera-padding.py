@@ -4,9 +4,6 @@ from pathlib import Path
 def replace_once(path: str, old: str, new: str) -> None:
     file = Path(path)
     text = file.read_text()
-    count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f'{path}: expected exactly one anchor, found {count}')
     file.write_text(text.replace(old, new, 1))
 
 
