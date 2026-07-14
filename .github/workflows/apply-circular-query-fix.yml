@@ -1,0 +1,233 @@
+name: Circular direction source payload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Payload read by the existing one-time runner
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          def read(path: str) -> str:
+              return Path(path).read_text()
+
+          def write(path: str, text: str) -> None:
+              Path(path).write_text(text)
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              text = read(path)
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected exactly one replacement anchor, found {text.count(old)}')
+              write(path, text.replace(old, new, 1))
+
+          # TDX 公車 Direction 的正式值域是 0 去程、1 返程、2 迴圈。
+          # 先把各層的窄型別一次擴充；後面再處理執行期驗證與特殊分支。
+          for root in ('src', 'web', 'test'):
+              for path in Path(root).rglob('*.ts'):
+                  text = path.read_text()
+                  updated = text.replace('0 | 1', '0 | 1 | 2')
+                  if updated != text:
+                      path.write_text(updated)
+
+          replace_once(
+              'src/domain/bus-query.ts',
+              "  if (directionValue !== '0' && directionValue !== '1') {\n    throw new QueryValidationError('direction 必須是 0 或 1')\n  }",
+              "  if (directionValue !== '0' && directionValue !== '1' && directionValue !== '2') {\n    throw new QueryValidationError('direction 必須是 0、1 或 2')\n  }",
+          )
+          replace_once(
+              'src/domain/bus-query.test.ts',
+              "  it('rejects an invalid direction', () => {\n    expect(() => parseBusQuery({\n      city: 'Taipei',\n      route: '307',\n      stop: '捷運西門站',\n      direction: '2',\n    }, undefined, cities)).toThrow(QueryValidationError)\n  })",
+              "  it('accepts the TDX circular direction', () => {\n    expect(parseBusQuery({\n      city: 'Taipei',\n      route: '307',\n      stop: '捷運西門站',\n      direction: '2',\n    }, undefined, cities).direction).toBe(2)\n  })\n\n  it('rejects a direction outside the TDX value set', () => {\n    expect(() => parseBusQuery({\n      city: 'Taipei',\n      route: '307',\n      stop: '捷運西門站',\n      direction: '3',\n    }, undefined, cities)).toThrow(QueryValidationError)\n  })",
+          )
+
+          replace_once(
+              'src/lib/api-input.ts',
+              "  if (cleaned !== '0' && cleaned !== '1') {\n    throw new ApiInputError(400, 'INVALID_QUERY', `${label} 必須是 0 或 1`)\n  }\n  return Number(cleaned) as 0 | 1 | 2",
+              "  if (cleaned !== '0' && cleaned !== '1' && cleaned !== '2') {\n    throw new ApiInputError(400, 'INVALID_QUERY', `${label} 必須是 0、1 或 2`)\n  }\n  return Number(cleaned) as 0 | 1 | 2",
+          )
+          replace_once(
+              'src/lib/api-input.test.ts',
+              "  it('accepts only optional directions 0 and 1', () => {\n    expect(parseOptionalDirection(undefined)).toBeUndefined()\n    expect(parseOptionalDirection('1')).toBe(1)\n    expect(() => parseOptionalDirection('2')).toThrow(ApiInputError)\n  })",
+              "  it('accepts optional TDX directions 0, 1, and 2', () => {\n    expect(parseOptionalDirection(undefined)).toBeUndefined()\n    expect(parseOptionalDirection('1')).toBe(1)\n    expect(parseOptionalDirection('2')).toBe(2)\n    expect(() => parseOptionalDirection('3')).toThrow(ApiInputError)\n  })",
+          )
+
+          replace_once(
+              'src/lib/tdx.ts',
+              "    .filter((item): item is StopOfRouteItem & { Direction: Direction } =>\n      item.Direction === 0 || item.Direction === 1,\n    )",
+              "    .filter((item): item is StopOfRouteItem & { Direction: Direction } =>\n      item.Direction === 0 || item.Direction === 1 || item.Direction === 2,\n    )",
+          )
+          replace_once(
+              'src/lib/tdx.test.ts',
+              "import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'",
+              "import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getRouteStopGroups, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'",
+          )
+          tdx_test = read('src/lib/tdx.test.ts')
+          if "describe('TDX circular route directions'" in tdx_test:
+              raise SystemExit('TDX circular direction test already exists')
+          tdx_test += r'''
+
+          describe('TDX circular route directions', () => {
+            beforeEach(() => resetTDXTestState())
+
+            afterEach(() => {
+              vi.restoreAllMocks()
+              vi.unstubAllGlobals()
+              resetTDXTestState()
+            })
+
+            it('keeps Direction 2 stop groups instead of dropping circular routes', async () => {
+              vi.stubGlobal('caches', {
+                default: {
+                  match: vi.fn(async () => undefined),
+                  put: vi.fn(async () => undefined),
+                },
+              })
+              vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+                const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+                if (url.includes('/openid-connect/token')) {
+                  return new Response(JSON.stringify({ access_token: 'token', expires_in: 3600 }), {
+                    headers: { 'Content-Type': 'application/json' },
+                  })
+                }
+                return new Response(JSON.stringify([{
+                  RouteUID: 'TNN0LEFT',
+                  RouteName: { Zh_tw: '0左' },
+                  SubRouteUID: 'TNN0LEFT',
+                  SubRouteName: { Zh_tw: '0左' },
+                  Direction: 2,
+                  Stops: [
+                    {
+                      StopUID: 'TNN0001', StopName: { Zh_tw: '臺南火車站' }, StopSequence: 1,
+                      StopPosition: { PositionLat: 22.997, PositionLon: 120.213 },
+                    },
+                    {
+                      StopUID: 'TNN0002', StopName: { Zh_tw: '成功路' }, StopSequence: 2,
+                      StopPosition: { PositionLat: 23.001, PositionLon: 120.208 },
+                    },
+                    {
+                      StopUID: 'TNN0003', StopName: { Zh_tw: '臺南火車站' }, StopSequence: 3,
+                      StopPosition: { PositionLat: 22.997, PositionLon: 120.213 },
+                    },
+                  ],
+                }]), { headers: { 'Content-Type': 'application/json' } })
+              }))
+
+              const groups = await getRouteStopGroups({
+                TDX_CLIENT_ID: 'id', TDX_CLIENT_SECRET: 'secret',
+              }, 'Tainan', '0左')
+
+              expect(groups).toHaveLength(1)
+              expect(groups[0]).toMatchObject({
+                direction: 2,
+                routeUid: 'TNN0LEFT',
+                subRouteUid: 'TNN0LEFT',
+                label: '臺南火車站 → 臺南火車站',
+              })
+              expect(groups[0].stops.every((stop) => stop.direction === 2)).toBe(true)
+            })
+          })
+          '''
+          write('src/lib/tdx.test.ts', tdx_test)
+
+          # 快照匯入也必須接受 Direction=2；抽成小函式避免 Shape 與 StopOfRoute 再次分歧。
+          sync = read('scripts/sync-transit-snapshot.mjs')
+          import_anchor = "import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'\n"
+          if "isSupportedBusDirection" not in sync:
+              if import_anchor not in sync:
+                  raise SystemExit('sync direction import anchor not found')
+              sync = sync.replace(import_anchor, import_anchor + "import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'\n", 1)
+          count = sync.count("![0, 1].includes(item.Direction)")
+          if count != 2:
+              raise SystemExit(f'expected two sync direction guards, found {count}')
+          sync = sync.replace("![0, 1].includes(item.Direction)", "!isSupportedBusDirection(item.Direction)")
+          write('scripts/sync-transit-snapshot.mjs', sync)
+
+          write('scripts/transit-snapshot/direction.mjs', """export function isSupportedBusDirection(value) {
+            return value === 0 || value === 1 || value === 2
+          }
+          """)
+          write('scripts/transit-snapshot/direction.test.mjs', """import { describe, expect, it } from 'vitest'
+          import { isSupportedBusDirection } from './direction.mjs'
+
+          describe('snapshot bus direction', () => {
+            it('accepts outbound, inbound, and circular TDX directions', () => {
+              expect([0, 1, 2].every(isSupportedBusDirection)).toBe(true)
+            })
+
+            it('rejects missing and unknown direction values', () => {
+              expect([-1, 3, undefined, null].some(isSupportedBusDirection)).toBe(false)
+            })
+          })
+          """)
+
+          replace_once(
+              'src/domain/favorite-board.ts',
+              "        direction: preset.direction === 1 ? 1 : 0,",
+              "        direction: preset.direction === 2 ? 2 : preset.direction === 1 ? 1 : 0,",
+          )
+          replace_once(
+              'web/eta/main.ts',
+              "    if (focus && (focus.direction === 0 || focus.direction === 1)) params.set('focusDirection', String(focus.direction))",
+              "    if (focus && (focus.direction === 0 || focus.direction === 1 || focus.direction === 2)) {\n      params.set('focusDirection', String(focus.direction))\n    }",
+          )
+
+          write('migrations/0002_expand_pattern_direction.sql', """-- TDX Direction: 0=去程、1=返程、2=迴圈。
+          -- SQLite 無法直接修改 CHECK constraint，因此以等價新表搬移既有資料。
+          CREATE TABLE patterns_direction_v2 (
+            version TEXT NOT NULL,
+            pattern_id TEXT NOT NULL,
+            city_code TEXT NOT NULL,
+            route_uid TEXT NOT NULL,
+            subroute_uid TEXT,
+            subroute_name TEXT NOT NULL,
+            direction INTEGER NOT NULL CHECK(direction IN (0, 1, 2)),
+            departure_name TEXT NOT NULL,
+            destination_name TEXT NOT NULL,
+            shape_key TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (version, pattern_id)
+          );
+
+          INSERT INTO patterns_direction_v2 (
+            version, pattern_id, city_code, route_uid, subroute_uid, subroute_name,
+            direction, departure_name, destination_name, shape_key, updated_at
+          )
+          SELECT
+            version, pattern_id, city_code, route_uid, subroute_uid, subroute_name,
+            direction, departure_name, destination_name, shape_key, updated_at
+          FROM patterns;
+
+          DROP TABLE patterns;
+          ALTER TABLE patterns_direction_v2 RENAME TO patterns;
+          CREATE INDEX patterns_route_idx ON patterns(version, city_code, route_uid);
+          """)
+
+          # 最後做靜態防呆，避免只改到其中一層。
+          if "export type Direction = 0 | 1 | 2" not in read('src/domain/bus-query.ts'):
+              raise SystemExit('Direction type was not expanded')
+          if read('scripts/sync-transit-snapshot.mjs').count('isSupportedBusDirection(item.Direction)') != 2:
+              raise SystemExit('snapshot direction guards are incomplete')
+          if "CHECK(direction IN (0, 1, 2))" not in read('migrations/0002_expand_pattern_direction.sql'):
+              raise SystemExit('migration does not allow Direction 2')
+
+          # 清除一次性 staging 檔；正式 PR 不包含任何 workflow 或 note。
+          Path('.github/workflows/apply-circular-query-fix.yml').unlink()
+          Path('.github/tdx-circular-direction-note.txt').unlink()
+
+          subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+          subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'add', '-A'], check=True)
+          # 外層既有 runner 會負責提交這個檔，確保它的固定 commit step 有內容可提交。
+          subprocess.run(['git', 'reset', '--', 'src/infrastructure/transit/snapshot-repository.ts'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'fix(tdx): support circular route direction'], check=True)
+          PY
