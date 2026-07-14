@@ -729,4 +729,3 @@ function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number):
     + Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(deltaLon / 2) ** 2
   return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
-// circular-query-diagnostic-base64: dHlwZWNoZWNrCgo+IHR5cGVjaGVjawo+IHRzYyAtLW5vRW1pdAoKc3JjL2luZnJhc3RydWN0dXJlL3RyYW5zaXQvc25hcHNob3QtcmVwb3NpdG9yeS50ZXN0LnRzKDI2MiwyMik6IGVycm9yIFRTMjM1MjogQ29udmVyc2lvbiBvZiB0eXBlICd7IHByZXBhcmUoKTogRDFQcmVwYXJlZFN0YXRlbWVudDsgfScgdG8gdHlwZSAnRDFEYXRhYmFzZScgbWF5IGJlIGEgbWlzdGFrZSBiZWNhdXNlIG5laXRoZXIgdHlwZSBzdWZmaWNpZW50bHkgb3ZlcmxhcHMgd2l0aCB0aGUgb3RoZXIuIElmIHRoaXMgd2FzIGludGVudGlvbmFsLCBjb252ZXJ0IHRoZSBleHByZXNzaW9uIHRvICd1bmtub3duJyBmaXJzdC4KICBUeXBlICd7IHByZXBhcmUoKTogRDFQcmVwYXJlZFN0YXRlbWVudDsgfScgaXMgbWlzc2luZyB0aGUgZm9sbG93aW5nIHByb3BlcnRpZXMgZnJvbSB0eXBlICdEMURhdGFiYXNlJzogYmF0Y2gsIGV4ZWMsIHdpdGhTZXNzaW9uLCBkdW1wCg==

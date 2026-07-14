@@ -268,7 +268,7 @@ describe('circular route queries', () => {
         } as D1PreparedStatement
         return statement
       },
-    } as D1Database
+    } as unknown as D1Database
     const bucket = {
       async get() {
         return { json: async <T>() => circularShape as T } as unknown as R2ObjectBody
