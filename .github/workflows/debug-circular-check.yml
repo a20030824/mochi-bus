@@ -1,4 +1,4 @@
-name: Debug circular query typecheck
+name: Apply final circular query audit fixes
 
 on:
   pull_request:
@@ -6,28 +6,222 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  check:
+  apply:
     if: github.event_name == 'workflow_dispatch' || github.head_ref == 'fix/circular-journey-segments'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: fix/circular-journey-segments
-          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Apply audited source and test fixes
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          repository = Path('src/infrastructure/transit/snapshot-repository.ts')
+          text = repository.read_text()
+          old_narrow = """  return checked.filter((row): row is ReachableLeg<T> => row !== null)
+"""
+          new_narrow = """  const reachable: Array<ReachableLeg<T>> = []
+  for (const row of checked) {
+    if (row) reachable.push(row)
+  }
+  return reachable
+"""
+          text = text.replace(old_narrow, new_narrow)
+
+          old_forward = """      WITH anchor AS MATERIALIZED (
+        SELECT version, pattern_id, stop_sequence
+        FROM pattern_stops
+        WHERE version = ? AND place_id = ?
+      )
+      SELECT p.pattern_id, p.route_uid, r.route_name,
+        p.departure_name, p.destination_name, p.shape_key,
+        anchor.stop_sequence AS board_sequence,
+        transfer.stop_sequence AS alight_sequence,
+        transfer.place_id AS transfer_place_id,
+        place.place_name, place.latitude, place.longitude,
+        (SELECT MIN(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS min_sequence,
+        (SELECT MAX(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS max_sequence
+      FROM anchor
+"""
+          new_forward = """      WITH anchor AS MATERIALIZED (
+        SELECT version, pattern_id, stop_sequence
+        FROM pattern_stops
+        WHERE version = ? AND place_id = ?
+      ),
+      anchor_stats AS MATERIALIZED (
+        SELECT anchor.version, anchor.pattern_id, anchor.stop_sequence,
+          MIN(path.stop_sequence) AS min_sequence,
+          MAX(path.stop_sequence) AS max_sequence
+        FROM anchor
+        JOIN pattern_stops path
+          ON path.version = anchor.version AND path.pattern_id = anchor.pattern_id
+        GROUP BY anchor.version, anchor.pattern_id, anchor.stop_sequence
+      )
+      SELECT p.pattern_id, p.route_uid, r.route_name,
+        p.departure_name, p.destination_name, p.shape_key,
+        anchor.stop_sequence AS board_sequence,
+        transfer.stop_sequence AS alight_sequence,
+        transfer.place_id AS transfer_place_id,
+        place.place_name, place.latitude, place.longitude,
+        anchor.min_sequence, anchor.max_sequence
+      FROM anchor_stats anchor
+"""
+          if old_forward not in text:
+              raise SystemExit('forward transfer SQL anchor not found')
+          text = text.replace(old_forward, new_forward, 1)
+
+          old_backward = """      WITH anchor AS MATERIALIZED (
+        SELECT version, pattern_id, stop_sequence
+        FROM pattern_stops
+        WHERE version = ? AND place_id = ?
+      )
+      SELECT p.pattern_id, p.route_uid, r.route_name,
+        p.departure_name, p.destination_name, p.shape_key,
+        transfer.stop_sequence AS board_sequence,
+        anchor.stop_sequence AS alight_sequence,
+        transfer.place_id AS transfer_place_id,
+        place.place_name, place.latitude, place.longitude,
+        (SELECT MIN(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS min_sequence,
+        (SELECT MAX(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS max_sequence
+      FROM anchor
+"""
+          new_backward = """      WITH anchor AS MATERIALIZED (
+        SELECT version, pattern_id, stop_sequence
+        FROM pattern_stops
+        WHERE version = ? AND place_id = ?
+      ),
+      anchor_stats AS MATERIALIZED (
+        SELECT anchor.version, anchor.pattern_id, anchor.stop_sequence,
+          MIN(path.stop_sequence) AS min_sequence,
+          MAX(path.stop_sequence) AS max_sequence
+        FROM anchor
+        JOIN pattern_stops path
+          ON path.version = anchor.version AND path.pattern_id = anchor.pattern_id
+        GROUP BY anchor.version, anchor.pattern_id, anchor.stop_sequence
+      )
+      SELECT p.pattern_id, p.route_uid, r.route_name,
+        p.departure_name, p.destination_name, p.shape_key,
+        transfer.stop_sequence AS board_sequence,
+        anchor.stop_sequence AS alight_sequence,
+        transfer.place_id AS transfer_place_id,
+        place.place_name, place.latitude, place.longitude,
+        anchor.min_sequence, anchor.max_sequence
+      FROM anchor_stats anchor
+"""
+          if old_backward not in text:
+              raise SystemExit('backward transfer SQL anchor not found')
+          text = text.replace(old_backward, new_backward, 1)
+          repository.write_text(text)
+
+          tests = Path('src/infrastructure/transit/snapshot-repository.test.ts')
+          text = tests.read_text()
+          marker = "keeps the shortest occurrence pair for a repeated circular stop"
+          if marker not in text:
+              insertion = r'''
+
+  it('keeps the shortest occurrence pair for a repeated circular stop', async () => {
+    const rows = [
+      {
+        route_name: 'Loop', pattern_id: 'loop', direction: 0 as const, subroute_name: 'Loop',
+        departure_name: 'A', destination_name: 'A', shape_key: 'loop.json',
+        board_sequence: 1, alight_sequence: 5, min_sequence: 1, max_sequence: 5,
+      },
+      {
+        route_name: 'Loop', pattern_id: 'loop', direction: 0 as const, subroute_name: 'Loop',
+        departure_name: 'A', destination_name: 'A', shape_key: 'loop.json',
+        board_sequence: 4, alight_sequence: 2, min_sequence: 1, max_sequence: 5,
+      },
+    ]
+    const database = {
+      prepare() {
+        const statement = {
+          bind: () => statement,
+          first: async <T>() => ({ active_version: 'v1' }) as T,
+          all: async <T>() => result(rows as T[]),
+        } as D1PreparedStatement
+        return statement
+      },
+    } as D1Database
+    const bucket = {
+      async get() {
+        return { json: async <T>() => circularShape as T } as unknown as R2ObjectBody
+      },
+    } as unknown as R2Bucket
+
+    const routes = await getDirectRoutes({ TRANSIT_DB: database, TRANSIT_SHAPES: bucket }, 'Test', 'from', 'to')
+
+    expect(routes).toHaveLength(1)
+    expect(routes[0]).toMatchObject({ boardSequence: 4, alightSequence: 2, stopCount: 3 })
+  })
+
+  it('allows the second transfer leg to cross a circular seam', async () => {
+    const forwardRows = [{
+      pattern_id: 'first', route_uid: 'R1', route_name: 'First', departure_name: 'A', destination_name: 'B',
+      shape_key: 'first.json', board_sequence: 1, alight_sequence: 3, min_sequence: 1, max_sequence: 5,
+      transfer_place_id: 'T1', place_name: 'Transfer A', latitude: 25, longitude: 121,
+    }]
+    const backwardRows = [{
+      pattern_id: 'loop', route_uid: 'R2', route_name: 'Loop', departure_name: 'C', destination_name: 'C',
+      shape_key: 'loop.json', board_sequence: 4, alight_sequence: 2, min_sequence: 1, max_sequence: 5,
+      transfer_place_id: 'T2', place_name: 'Transfer B', latitude: 25, longitude: 121,
+    }]
+    const database = {
+      prepare() {
+        const statement = {
+          bind: () => statement,
+          first: async <T>() => ({ active_version: 'v1' }) as T,
+        } as D1PreparedStatement
+        return statement
+      },
+      batch: async () => [result(forwardRows), result(backwardRows)],
+    } as unknown as D1Database
+    const bucket = {
+      async get(key: string) {
+        if (key !== 'loop.json') return null
+        return { json: async <T>() => circularShape as T } as unknown as R2ObjectBody
+      },
+    } as unknown as R2Bucket
+
+    const plans = await getOneTransferRoutes({ TRANSIT_DB: database, TRANSIT_SHAPES: bucket }, 'Test', 'from', 'to')
+
+    expect(plans).toHaveLength(1)
+    expect(plans[0].first.stopCount).toBe(2)
+    expect(plans[0].second.stopCount).toBe(3)
+    expect(plans[0].totalStops).toBe(5)
+  })
+'''
+              position = text.rfind('\n})')
+              if position < 0:
+                  raise SystemExit('test describe closing marker not found')
+              text = text[:position] + insertion + text[position:]
+          tests.write_text(text)
+          PY
       - run: npm ci --silent
-      - name: Capture TypeScript output
-        run: npm run typecheck > typecheck.log 2>&1 || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: circular-typecheck
-          path: typecheck.log
-          if-no-files-found: error
-      # Temporary diagnostic workflow; removed after the source fix is verified.
+      - run: npm run check
+      - name: Commit audited fixes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/infrastructure/transit/snapshot-repository.ts src/infrastructure/transit/snapshot-repository.test.ts
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(map): complete circular route query support'
+          git push origin HEAD:fix/circular-journey-segments
