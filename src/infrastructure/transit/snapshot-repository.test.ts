@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { resetMemoryCacheForTests } from '../../lib/memory-cache'
-import { findNearbyStopPlaces, getCityNetwork, type TransitBindings } from './snapshot-repository'
+import { findNearbyStopPlaces, getCityNetwork, getDirectRoutes, getOneTransferRoutes, type TransitBindings } from './snapshot-repository'
 
 type StopPlaceRow = {
   place_id: string
@@ -135,5 +135,114 @@ describe('getCityNetwork', () => {
     if (result?.kind !== 'inline') throw new Error('expected inline fallback result')
     expect(result.network.routes).toHaveLength(1)
     expect(result.network.routes[0].shape.geometry.coordinates).toEqual(shapeFeature.geometry.coordinates)
+  })
+})
+
+
+describe('circular route queries', () => {
+  beforeEach(() => resetMemoryCacheForTests())
+
+  const meta = {
+    duration: 0, size_after: 0, rows_read: 0, rows_written: 0, last_row_id: 0, changed_db: false, changes: 0,
+  }
+  const result = <T>(rows: T[]): D1Result<T> => ({ success: true, meta, results: rows })
+  const circularShape = {
+    type: 'Feature' as const,
+    properties: {},
+    geometry: { type: 'LineString' as const, coordinates: [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]] as [number, number][] },
+  }
+  const openShape = {
+    type: 'Feature' as const,
+    properties: {},
+    geometry: { type: 'LineString' as const, coordinates: [[0, 0], [1, 0], [2, 0]] as [number, number][] },
+  }
+
+  it('accepts reverse stop order only for a shape that is actually circular', async () => {
+    const queries: string[] = []
+    const rows = [
+      {
+        route_name: 'Forward', pattern_id: 'forward', direction: 0 as const, subroute_name: 'Forward',
+        departure_name: 'A', destination_name: 'B', shape_key: 'forward.json',
+        board_sequence: 1, alight_sequence: 3, min_sequence: 1, max_sequence: 5,
+      },
+      {
+        route_name: 'Loop', pattern_id: 'loop', direction: 0 as const, subroute_name: 'Loop',
+        departure_name: 'A', destination_name: 'A', shape_key: 'loop.json',
+        board_sequence: 4, alight_sequence: 2, min_sequence: 1, max_sequence: 5,
+      },
+      {
+        route_name: 'Not loop', pattern_id: 'open', direction: 0 as const, subroute_name: 'Not loop',
+        departure_name: 'A', destination_name: 'B', shape_key: 'open.json',
+        board_sequence: 4, alight_sequence: 2, min_sequence: 1, max_sequence: 5,
+      },
+    ]
+    const database = {
+      prepare(query: string) {
+        queries.push(query)
+        const statement = {
+          bind: () => statement,
+          first: async <T>() => ({ active_version: 'v1' }) as T,
+          all: async <T>() => result(rows as T[]),
+        } as D1PreparedStatement
+        return statement
+      },
+    } as D1Database
+    const reads: string[] = []
+    const bucket = {
+      async get(key: string) {
+        reads.push(key)
+        const shape = key === 'loop.json' ? circularShape : openShape
+        return { json: async <T>() => shape as T } as unknown as R2ObjectBody
+      },
+    } as unknown as R2Bucket
+
+    const routes = await getDirectRoutes({ TRANSIT_DB: database, TRANSIT_SHAPES: bucket }, 'Test', 'from', 'to')
+
+    expect(routes.map((route) => route.routeName)).toEqual(['Forward', 'Loop'])
+    expect(routes.find((route) => route.routeName === 'Loop')?.stopCount).toBe(3)
+    expect(reads.sort()).toEqual(['loop.json', 'open.json'])
+    expect(queries.at(-1)).toContain('alight.stop_sequence != board.stop_sequence')
+    expect(queries.at(-1)).not.toContain('alight.stop_sequence > board.stop_sequence')
+  })
+
+  it('allows either transfer leg to cross the seam of a circular pattern', async () => {
+    const queries: string[] = []
+    const forwardRows = [{
+      pattern_id: 'loop', route_uid: 'R1', route_name: 'Loop', departure_name: 'A', destination_name: 'A',
+      shape_key: 'loop.json', board_sequence: 4, alight_sequence: 2, min_sequence: 1, max_sequence: 5,
+      transfer_place_id: 'T1', place_name: 'Transfer A', latitude: 25, longitude: 121,
+    }]
+    const backwardRows = [{
+      pattern_id: 'second', route_uid: 'R2', route_name: 'Second', departure_name: 'C', destination_name: 'D',
+      shape_key: 'second.json', board_sequence: 1, alight_sequence: 3, min_sequence: 1, max_sequence: 5,
+      transfer_place_id: 'T2', place_name: 'Transfer B', latitude: 25, longitude: 121,
+    }]
+    const database = {
+      prepare(query: string) {
+        queries.push(query)
+        const statement = {
+          bind: () => statement,
+          first: async <T>() => ({ active_version: 'v1' }) as T,
+        } as D1PreparedStatement
+        return statement
+      },
+      batch: async () => [result(forwardRows), result(backwardRows)],
+    } as unknown as D1Database
+    const bucket = {
+      async get(key: string) {
+        if (key !== 'loop.json') return null
+        return { json: async <T>() => circularShape as T } as unknown as R2ObjectBody
+      },
+    } as unknown as R2Bucket
+
+    const plans = await getOneTransferRoutes({ TRANSIT_DB: database, TRANSIT_SHAPES: bucket }, 'Test', 'from', 'to')
+
+    expect(plans).toHaveLength(1)
+    expect(plans[0].first.stopCount).toBe(3)
+    expect(plans[0].second.stopCount).toBe(2)
+    expect(plans[0].totalStops).toBe(5)
+    expect(queries.filter((query) => query.includes('CROSS JOIN pattern_stops transfer'))).toHaveLength(2)
+    expect(queries.some((query) => query.includes('transfer.stop_sequence > anchor.stop_sequence'))).toBe(false)
+    expect(queries.some((query) => query.includes('transfer.stop_sequence < anchor.stop_sequence'))).toBe(false)
   })
 })

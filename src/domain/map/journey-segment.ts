@@ -46,7 +46,7 @@ function unwrapCircularShape(shape: ShapePosition[]): {
   }
 }
 
-function isCircularShape(shape: ShapePosition[]): boolean {
+export function isCircularShape(shape: ShapePosition[]): boolean {
   if (shape.length < 4) return false
   return approximateDistanceMeters(shape[0], shape[shape.length - 1]) <= CIRCULAR_SHAPE_MAX_GAP_METERS
 }

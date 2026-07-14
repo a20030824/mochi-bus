@@ -1,3 +1,4 @@
+import { isCircularShape } from '../../domain/map/journey-segment'
 import type { RouteMapVariant } from '../../domain/map/map-model'
 import type { LonLat } from '../../domain/map/network-pick'
 import { simplifyLine } from '../../domain/map/simplify'
@@ -36,6 +37,52 @@ type ShapeFeature = RouteMapVariant['shape']
 export type TransitBindings = {
   TRANSIT_DB: D1Database
   TRANSIT_SHAPES: R2Bucket
+}
+
+type ReachableLegRow = {
+  shape_key: string
+  board_sequence: number
+  alight_sequence: number
+  min_sequence: number
+  max_sequence: number
+}
+
+type ReachableLeg<T extends ReachableLegRow> = T & { stop_count: number }
+
+function journeyStopCount(row: ReachableLegRow): number {
+  if (row.alight_sequence > row.board_sequence) return row.alight_sequence - row.board_sequence
+  return row.max_sequence - row.board_sequence
+    + row.alight_sequence - row.min_sequence + 1
+}
+
+async function isCircularPatternShape(env: TransitBindings, shapeKey: string): Promise<boolean> {
+  const object = await env.TRANSIT_SHAPES.get(shapeKey)
+  if (!object) return false
+  try {
+    const shape = await object.json<ShapeFeature>()
+    return isCircularShape(shape.geometry.coordinates as Array<[number, number]>)
+  } catch {
+    return false
+  }
+}
+
+async function reachableLegs<T extends ReachableLegRow>(
+  env: TransitBindings,
+  rows: T[],
+  circularity = new Map<string, Promise<boolean>>(),
+): Promise<Array<ReachableLeg<T>>> {
+  const checked = await Promise.all(rows.map(async (row): Promise<ReachableLeg<T> | null> => {
+    if (row.alight_sequence < row.board_sequence) {
+      let check = circularity.get(row.shape_key)
+      if (!check) {
+        check = isCircularPatternShape(env, row.shape_key)
+        circularity.set(row.shape_key, check)
+      }
+      if (!await check) return null
+    }
+    return { ...row, stop_count: journeyStopCount(row) }
+  }))
+  return checked.filter((row): row is ReachableLeg<T> => row !== null)
 }
 
 // 每個查詢都要先知道 active_version,但它只在 sync 換版時才變;
@@ -467,53 +514,64 @@ export async function getDirectRoutes(
 
   const result = await env.TRANSIT_DB.prepare(`
     SELECT DISTINCT r.route_name, p.pattern_id, p.direction, p.subroute_name,
-      p.departure_name, p.destination_name,
+      p.departure_name, p.destination_name, p.shape_key,
       board.stop_sequence AS board_sequence,
-      alight.stop_sequence AS alight_sequence
+      alight.stop_sequence AS alight_sequence,
+      (SELECT MIN(path.stop_sequence)
+        FROM pattern_stops path
+        WHERE path.version = board.version AND path.pattern_id = board.pattern_id) AS min_sequence,
+      (SELECT MAX(path.stop_sequence)
+        FROM pattern_stops path
+        WHERE path.version = board.version AND path.pattern_id = board.pattern_id) AS max_sequence
     FROM pattern_stops board
     JOIN pattern_stops alight
       ON alight.version = board.version
       AND alight.pattern_id = board.pattern_id
-      AND alight.stop_sequence > board.stop_sequence
+      AND alight.stop_sequence != board.stop_sequence
     JOIN patterns p
       ON p.version = board.version AND p.pattern_id = board.pattern_id
     JOIN routes r
       ON r.version = p.version AND r.route_uid = p.route_uid
     WHERE board.version = ? AND p.city_code = ?
       AND board.place_id = ? AND alight.place_id = ?
-    ORDER BY (alight.stop_sequence - board.stop_sequence), r.route_name
-    LIMIT 24
-  `).bind(version, city, fromPlaceId, toPlaceId).all<{
-    route_name: string
-    pattern_id: string
-    direction: 0 | 1
-    subroute_name: string
-    departure_name: string
-    destination_name: string
-    board_sequence: number
-    alight_sequence: number
-  }>()
+  `).bind(version, city, fromPlaceId, toPlaceId).all<DirectLegRow>()
 
-  return result.results.map((row) => ({
-    routeName: row.route_name,
-    variantKey: row.pattern_id,
-    direction: row.direction,
-    label: `${row.departure_name} → ${row.destination_name}`,
-    subRouteName: row.subroute_name,
-    boardSequence: row.board_sequence,
-    alightSequence: row.alight_sequence,
-    stopCount: row.alight_sequence - row.board_sequence,
-  }))
+  const best = new Map<string, ReachableLeg<DirectLegRow>>()
+  for (const row of await reachableLegs(env, result.results)) {
+    const existing = best.get(row.pattern_id)
+    if (!existing || row.stop_count < existing.stop_count) best.set(row.pattern_id, row)
+  }
+
+  return [...best.values()]
+    .sort((a, b) => a.stop_count - b.stop_count || a.route_name.localeCompare(b.route_name, 'zh-Hant', { numeric: true }))
+    .slice(0, 24)
+    .map((row) => ({
+      routeName: row.route_name,
+      variantKey: row.pattern_id,
+      direction: row.direction,
+      label: `${row.departure_name} → ${row.destination_name}`,
+      subRouteName: row.subroute_name,
+      boardSequence: row.board_sequence,
+      alightSequence: row.alight_sequence,
+      stopCount: row.stop_count,
+    }))
 }
 
-type TransferLegRow = {
+type DirectLegRow = ReachableLegRow & {
+  route_name: string
+  pattern_id: string
+  direction: 0 | 1
+  subroute_name: string
+  departure_name: string
+  destination_name: string
+}
+
+type TransferLegRow = ReachableLegRow & {
   pattern_id: string
   route_uid: string
   route_name: string
   departure_name: string
   destination_name: string
-  board_sequence: number
-  alight_sequence: number
   transfer_place_id: string
   place_name: string
   latitude: number
@@ -530,11 +588,8 @@ export async function getOneTransferRoutes(
   if (!version || fromPlaceId === toPlaceId) return []
 
   // SQL 只做便宜的兩端展開(各數百列、走索引),步行距離的空間接合交給
-  // pairTransferLegs 在記憶體用網格做。舊版把接合塞在 SQL 的經緯度 box join,
-  // 用不到索引,台南規模(2,500+ 站位)會直接撞 D1 的 CPU 上限。
-  // anchor 先用 MATERIALIZED CTE 固定住(本站的十幾列,走 place 索引),
-  // 再往 pattern_stops 的主鍵 join。不釘住的話查詢計畫器可能反過來
-  // 先掃整個版本的 pattern_stops(單次 50 萬+列讀取)。
+  // pairTransferLegs 在記憶體用網格做。環狀 pattern 可能需要跨過站序首尾，
+  // 因此先取同 pattern 的所有其他站；只有反向站序會再讀 R2 shape 驗證閉環。
   const [forward, backward] = await env.TRANSIT_DB.batch([
     env.TRANSIT_DB.prepare(`
       WITH anchor AS MATERIALIZED (
@@ -543,16 +598,22 @@ export async function getOneTransferRoutes(
         WHERE version = ? AND place_id = ?
       )
       SELECT p.pattern_id, p.route_uid, r.route_name,
-        p.departure_name, p.destination_name,
+        p.departure_name, p.destination_name, p.shape_key,
         anchor.stop_sequence AS board_sequence,
         transfer.stop_sequence AS alight_sequence,
         transfer.place_id AS transfer_place_id,
-        place.place_name, place.latitude, place.longitude
+        place.place_name, place.latitude, place.longitude,
+        (SELECT MIN(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS min_sequence,
+        (SELECT MAX(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS max_sequence
       FROM anchor
       CROSS JOIN pattern_stops transfer
         ON transfer.version = anchor.version
         AND transfer.pattern_id = anchor.pattern_id
-        AND transfer.stop_sequence > anchor.stop_sequence
+        AND transfer.stop_sequence != anchor.stop_sequence
       JOIN patterns p ON p.version = anchor.version AND p.pattern_id = anchor.pattern_id
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
       JOIN stop_places place ON place.version = anchor.version AND place.place_id = transfer.place_id
@@ -565,16 +626,22 @@ export async function getOneTransferRoutes(
         WHERE version = ? AND place_id = ?
       )
       SELECT p.pattern_id, p.route_uid, r.route_name,
-        p.departure_name, p.destination_name,
+        p.departure_name, p.destination_name, p.shape_key,
         transfer.stop_sequence AS board_sequence,
         anchor.stop_sequence AS alight_sequence,
         transfer.place_id AS transfer_place_id,
-        place.place_name, place.latitude, place.longitude
+        place.place_name, place.latitude, place.longitude,
+        (SELECT MIN(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS min_sequence,
+        (SELECT MAX(path.stop_sequence)
+          FROM pattern_stops path
+          WHERE path.version = anchor.version AND path.pattern_id = anchor.pattern_id) AS max_sequence
       FROM anchor
       CROSS JOIN pattern_stops transfer
         ON transfer.version = anchor.version
         AND transfer.pattern_id = anchor.pattern_id
-        AND transfer.stop_sequence < anchor.stop_sequence
+        AND transfer.stop_sequence != anchor.stop_sequence
       JOIN patterns p ON p.version = anchor.version AND p.pattern_id = anchor.pattern_id
       JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
       JOIN stop_places place ON place.version = anchor.version AND place.place_id = transfer.place_id
@@ -582,7 +649,12 @@ export async function getOneTransferRoutes(
     `).bind(version, toPlaceId, city),
   ])
 
-  const toCandidate = (row: TransferLegRow): TransferLegCandidate => ({
+  const circularity = new Map<string, Promise<boolean>>()
+  const [forwardRows, backwardRows] = await Promise.all([
+    reachableLegs(env, forward.results as TransferLegRow[], circularity),
+    reachableLegs(env, backward.results as TransferLegRow[], circularity),
+  ])
+  const toCandidate = (row: ReachableLeg<TransferLegRow>): TransferLegCandidate => ({
     patternId: row.pattern_id,
     routeUid: row.route_uid,
     routeName: row.route_name,
@@ -593,13 +665,10 @@ export async function getOneTransferRoutes(
     longitude: row.longitude,
     boardSequence: row.board_sequence,
     alightSequence: row.alight_sequence,
-    stopCount: row.alight_sequence - row.board_sequence,
+    stopCount: row.stop_count,
   })
 
-  return pairTransferLegs(
-    (forward.results as TransferLegRow[]).map(toCandidate),
-    (backward.results as TransferLegRow[]).map(toCandidate),
-  )
+  return pairTransferLegs(forwardRows.map(toCandidate), backwardRows.map(toCandidate))
 }
 
 export async function getJourneyLegStopRefs(
