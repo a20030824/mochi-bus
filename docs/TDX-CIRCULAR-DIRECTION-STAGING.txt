@@ -1,1 +1,0 @@
-Temporary staging note for the circular direction diagnostic pass.
