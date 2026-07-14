@@ -1,16 +1,16 @@
 name: Apply circular query fix
 
 on:
-  push:
-    branches:
-      - fix/circular-journey-segments
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.event.head_commit.message != 'fix(map): support circular route queries'
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'fix/circular-journey-segments'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
