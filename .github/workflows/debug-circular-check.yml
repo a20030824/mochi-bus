@@ -30,3 +30,4 @@ jobs:
           name: circular-typecheck
           path: typecheck.log
           if-no-files-found: error
+      # Temporary diagnostic workflow; removed after the source fix is verified.
