@@ -1,4 +1,4 @@
-name: Circular query diagnostic payload
+name: Circular query typecheck diagnostic payload
 
 on:
   workflow_dispatch:
@@ -16,32 +16,18 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
           import base64
-          import json
           import subprocess
 
           install = subprocess.run(['npm', 'ci', '--silent'], text=True, capture_output=True)
-          checks = []
           if install.returncode:
-              checks.append({'stage': 'npm-ci', 'code': install.returncode, 'output': (install.stdout + install.stderr)[-3000:]})
+              stage = 'npm-ci'
+              output = install.stdout + install.stderr
           else:
-              commands = [
-                  ('cf-typegen', ['npm', 'run', 'cf-typegen:check']),
-                  ('unit-tests', ['npm', 'test', '--', '--reporter=verbose']),
-                  ('typecheck', ['npm', 'run', 'typecheck']),
-                  ('vite-build', ['npm', 'run', 'build:map']),
-                  ('wrangler-dry-run', ['npx', 'wrangler', 'deploy', '--dry-run']),
-              ]
-              for stage, command in commands:
-                  result = subprocess.run(command, text=True, capture_output=True)
-                  checks.append({
-                      'stage': stage,
-                      'code': result.returncode,
-                      'output': (result.stdout + result.stderr)[-3000:],
-                  })
-                  if result.returncode:
-                      break
+              result = subprocess.run(['npm', 'run', 'typecheck'], text=True, capture_output=True)
+              stage = 'typecheck'
+              output = result.stdout + result.stderr
 
-          report = base64.b64encode(json.dumps(checks, ensure_ascii=False).encode()).decode()
+          report = base64.b64encode(f'{stage}\n{output[-6000:]}'.encode()).decode()
           path = Path('src/infrastructure/transit/snapshot-repository.ts')
           text = path.read_text()
           prefix = '// circular-query-diagnostic-base64:'
