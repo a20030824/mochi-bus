@@ -1,4 +1,4 @@
-name: Debug circular query checks
+name: Debug circular query typecheck
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ jobs:
   check:
     if: github.event_name == 'workflow_dispatch' || github.head_ref == 'fix/circular-journey-segments'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -23,13 +23,10 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci --silent
-      - name: Cloudflare typegen check
-        run: npm run cf-typegen:check
-      - name: Unit tests
-        run: npm test -- --reporter=verbose
-      - name: TypeScript
-        run: npm run typecheck
-      - name: Vite build
-        run: npm run build:map
-      - name: Wrangler dry-run
-        run: npx wrangler deploy --dry-run
+      - name: Capture TypeScript output
+        run: npm run typecheck > typecheck.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: circular-typecheck
+          path: typecheck.log
+          if-no-files-found: error
