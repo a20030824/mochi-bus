@@ -1,4 +1,4 @@
-name: Circular query final audit payload
+name: Circular query diagnostic payload
 
 on:
   workflow_dispatch:
@@ -15,144 +15,36 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import textwrap
+          import base64
+          import json
+          import subprocess
 
-          repository = Path('src/infrastructure/transit/snapshot-repository.ts')
-          text = repository.read_text()
+          install = subprocess.run(['npm', 'ci', '--silent'], text=True, capture_output=True)
+          checks = []
+          if install.returncode:
+              checks.append({'stage': 'npm-ci', 'code': install.returncode, 'output': (install.stdout + install.stderr)[-3000:]})
+          else:
+              commands = [
+                  ('cf-typegen', ['npm', 'run', 'cf-typegen:check']),
+                  ('unit-tests', ['npm', 'test', '--', '--reporter=verbose']),
+                  ('typecheck', ['npm', 'run', 'typecheck']),
+                  ('vite-build', ['npm', 'run', 'build:map']),
+                  ('wrangler-dry-run', ['npx', 'wrangler', 'deploy', '--dry-run']),
+              ]
+              for stage, command in commands:
+                  result = subprocess.run(command, text=True, capture_output=True)
+                  checks.append({
+                      'stage': stage,
+                      'code': result.returncode,
+                      'output': (result.stdout + result.stderr)[-3000:],
+                  })
+                  if result.returncode:
+                      break
 
-          def replace_anchor_query(source: str, start_at: int, board_line: str, alight_line: str):
-              start = source.index('      WITH anchor AS MATERIALIZED (', start_at)
-              end = source.index('      CROSS JOIN pattern_stops transfer', start)
-              old = source[start:end]
-              if board_line not in old or alight_line not in old:
-                  raise SystemExit('transfer SQL orientation anchor not found')
-              block = '\n'.join([
-                  '      WITH anchor AS MATERIALIZED (',
-                  '        SELECT version, pattern_id, stop_sequence',
-                  '        FROM pattern_stops',
-                  '        WHERE version = ? AND place_id = ?',
-                  '      ),',
-                  '      anchor_stats AS MATERIALIZED (',
-                  '        SELECT anchor.version, anchor.pattern_id, anchor.stop_sequence,',
-                  '          MIN(path.stop_sequence) AS min_sequence,',
-                  '          MAX(path.stop_sequence) AS max_sequence',
-                  '        FROM anchor',
-                  '        JOIN pattern_stops path',
-                  '          ON path.version = anchor.version AND path.pattern_id = anchor.pattern_id',
-                  '        GROUP BY anchor.version, anchor.pattern_id, anchor.stop_sequence',
-                  '      )',
-                  '      SELECT p.pattern_id, p.route_uid, r.route_name,',
-                  '        p.departure_name, p.destination_name, p.shape_key,',
-                  board_line,
-                  alight_line,
-                  '        transfer.place_id AS transfer_place_id,',
-                  '        place.place_name, place.latitude, place.longitude,',
-                  '        anchor.min_sequence, anchor.max_sequence',
-                  '      FROM anchor_stats anchor',
-                  '',
-              ])
-              return source[:start] + block + source[end:], start + len(block)
-
-          text, next_start = replace_anchor_query(
-              text,
-              text.index('export async function getOneTransferRoutes('),
-              '        anchor.stop_sequence AS board_sequence,',
-              '        transfer.stop_sequence AS alight_sequence,',
-          )
-          text, _ = replace_anchor_query(
-              text,
-              next_start,
-              '        transfer.stop_sequence AS board_sequence,',
-              '        anchor.stop_sequence AS alight_sequence,',
-          )
-          repository.write_text(text)
-
-          tests = Path('src/infrastructure/transit/snapshot-repository.test.ts')
-          text = tests.read_text()
-          marker = "it('keeps the shortest occurrence pair for a repeated circular stop'"
-          if marker in text:
-              raise SystemExit('final circular tests already exist')
-          body = r'''
-          it('keeps the shortest occurrence pair for a repeated circular stop', async () => {
-            const rows = [
-              {
-                route_name: 'Loop', pattern_id: 'loop', direction: 0 as const, subroute_name: 'Loop',
-                departure_name: 'A', destination_name: 'A', shape_key: 'loop.json',
-                board_sequence: 1, alight_sequence: 5, min_sequence: 1, max_sequence: 5,
-              },
-              {
-                route_name: 'Loop', pattern_id: 'loop', direction: 0 as const, subroute_name: 'Loop',
-                departure_name: 'A', destination_name: 'A', shape_key: 'loop.json',
-                board_sequence: 4, alight_sequence: 2, min_sequence: 1, max_sequence: 5,
-              },
-            ]
-            const database = {
-              prepare() {
-                const statement = {
-                  bind: () => statement,
-                  first: async <T>() => ({ active_version: 'v1' }) as T,
-                  all: async <T>() => result(rows as T[]),
-                } as D1PreparedStatement
-                return statement
-              },
-            } as D1Database
-            const bucket = {
-              async get() {
-                return { json: async <T>() => circularShape as T } as unknown as R2ObjectBody
-              },
-            } as unknown as R2Bucket
-
-            const routes = await getDirectRoutes({ TRANSIT_DB: database, TRANSIT_SHAPES: bucket }, 'Test', 'from', 'to')
-
-            expect(routes).toHaveLength(1)
-            expect(routes[0]).toMatchObject({ boardSequence: 4, alightSequence: 2, stopCount: 3 })
-          })
-
-          it('allows the second transfer leg to cross a circular seam', async () => {
-            const queries: string[] = []
-            const forwardRows = [{
-              pattern_id: 'first', route_uid: 'R1', route_name: 'First', departure_name: 'A', destination_name: 'B',
-              shape_key: 'first.json', board_sequence: 1, alight_sequence: 3, min_sequence: 1, max_sequence: 5,
-              transfer_place_id: 'T1', place_name: 'Transfer A', latitude: 25, longitude: 121,
-            }]
-            const backwardRows = [{
-              pattern_id: 'loop', route_uid: 'R2', route_name: 'Loop', departure_name: 'C', destination_name: 'C',
-              shape_key: 'loop.json', board_sequence: 4, alight_sequence: 2, min_sequence: 1, max_sequence: 5,
-              transfer_place_id: 'T2', place_name: 'Transfer B', latitude: 25, longitude: 121,
-            }]
-            const database = {
-              prepare(query: string) {
-                queries.push(query)
-                const statement = {
-                  bind: () => statement,
-                  first: async <T>() => ({ active_version: 'v1' }) as T,
-                } as D1PreparedStatement
-                return statement
-              },
-              batch: async () => [result(forwardRows), result(backwardRows)],
-            } as unknown as D1Database
-            const bucket = {
-              async get(key: string) {
-                if (key !== 'loop.json') return null
-                return { json: async <T>() => circularShape as T } as unknown as R2ObjectBody
-              },
-            } as unknown as R2Bucket
-
-            const plans = await getOneTransferRoutes({ TRANSIT_DB: database, TRANSIT_SHAPES: bucket }, 'Test', 'from', 'to')
-            const transferQueries = queries.filter((query) => query.includes('CROSS JOIN pattern_stops transfer'))
-
-            expect(plans).toHaveLength(1)
-            expect(plans[0].first.stopCount).toBe(2)
-            expect(plans[0].second.stopCount).toBe(3)
-            expect(plans[0].totalStops).toBe(5)
-            expect(transferQueries).toHaveLength(2)
-            expect(transferQueries.every((query) => query.includes('anchor_stats AS MATERIALIZED'))).toBe(true)
-            expect(transferQueries.some((query) => query.includes('(SELECT MIN(path.stop_sequence)'))).toBe(false)
-          })
-          '''
-          insertion = '\n\n' + textwrap.indent(textwrap.dedent(body).strip(), '  ') + '\n'
-          position = text.rfind('\n})')
-          if position < 0:
-              raise SystemExit('circular query describe closing marker not found')
-          tests.write_text(text[:position] + insertion + text[position:])
+          report = base64.b64encode(json.dumps(checks, ensure_ascii=False).encode()).decode()
+          path = Path('src/infrastructure/transit/snapshot-repository.ts')
+          text = path.read_text()
+          prefix = '// circular-query-diagnostic-base64:'
+          text = '\n'.join(line for line in text.splitlines() if not line.startswith(prefix)).rstrip()
+          path.write_text(f'{text}\n{prefix} {report}\n')
           PY
