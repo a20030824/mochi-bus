@@ -70,23 +70,22 @@ jobs:
           set -e
           cat /tmp/route-timetables-validation.log
           exit "$status"
+      - name: Collect generated sources
+        if: failure()
+        run: |
+          mkdir -p /tmp/route-timetable-generated/web/map /tmp/route-timetable-generated/src/routes /tmp/route-timetable-generated/src/domain/map /tmp/route-timetable-generated/test/e2e
+          cp /tmp/route-timetables-validation.log /tmp/route-timetable-generated/
+          cp web/map/main.ts web/map/style.css /tmp/route-timetable-generated/web/map/
+          cp src/routes/map.ts /tmp/route-timetable-generated/src/routes/
+          cp src/domain/map/timetable.ts src/domain/map/timetable.test.ts /tmp/route-timetable-generated/src/domain/map/
+          cp test/e2e/map-timetable.spec.ts /tmp/route-timetable-generated/test/e2e/
       - name: Upload validation error
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: route-timetable-validation-error
-          path: /tmp/route-timetables-validation.log
+          path: /tmp/route-timetable-generated
           retention-days: 2
-      - name: Preserve generated sources for repair
-        if: failure()
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/domain/map/timetable.ts src/domain/map/timetable.test.ts src/routes/map.ts web/map/main.ts web/map/style.css test/e2e/map-timetable.spec.ts .github/workflows/ci.yml
-          if ! git diff --cached --quiet; then
-            git commit -m "wip(map): stage route timetable implementation"
-            git push origin HEAD:${{ github.head_ref }}
-          fi
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
       - name: Verify timetable flow
