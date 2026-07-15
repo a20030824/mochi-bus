@@ -439,6 +439,37 @@ button { cursor: pointer; }
 .map-drawer::-webkit-scrollbar-thumb, .map-route-grid::-webkit-scrollbar-thumb, .map-categories::-webkit-scrollbar-thumb { border-radius: 1px; background: #847d70; }
 .map-drawer::-webkit-scrollbar-thumb:hover, .map-route-grid::-webkit-scrollbar-thumb:hover, .map-categories::-webkit-scrollbar-thumb:hover { background: #b85f49; }
 
+
+.route-service-summary { margin: -2px 0 11px; padding: 9px 10px; border-left: 3px solid #b85f49; background: rgba(235, 229, 217, .72); color: #4d4d46; font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1.45; }
+.route-view-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.route-view-actions > :only-child { grid-column: 1 / -1; }
+.route-timetable-button { border-color: #4f685b; background: #4f685b; color: #fffaf0; }
+.route-timetable-button:hover { background: #3f594c; }
+.map-drawer:has(.timetable-panel) { max-height: min(72vh, 720px); }
+.timetable-panel { display: grid; gap: 11px; }
+.timetable-stop-field { display: grid; gap: 5px; color: #67685f; font-size: 11px; font-weight: 800; letter-spacing: .04em; }
+.timetable-stop-field select { width: 100%; padding: 10px 34px 10px 11px; border: 1px solid #c9c2b4; border-radius: 3px; outline: 0; background: #faf6ed; color: #292a25; font-size: 13px; font-weight: 750; }
+.timetable-stop-field select:focus { border-color: #4f685b; box-shadow: 0 0 0 2px rgba(79, 104, 91, .14); }
+.timetable-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 1px; scrollbar-width: none; }
+.timetable-tabs::-webkit-scrollbar { display: none; }
+.timetable-tab { flex: none; min-height: 34px; padding: 6px 11px; border: 1px solid #c9c2b4; border-radius: 999px; background: transparent; color: #67685f; font-size: 12px; font-weight: 800; }
+.timetable-tab.active { border-color: #292a25; background: #292a25; color: #f4efe4; }
+.timetable-content { min-height: 120px; }
+.timetable-overview { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; padding: 10px 11px; border: 1px solid #d3cabb; border-left: 4px solid #b85f49; border-radius: 3px; background: #ebe5d9; }
+.timetable-overview span { overflow: hidden; color: #67685f; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.timetable-overview strong { flex: none; font-size: 14px; font-variant-numeric: tabular-nums; }
+.timetable-hour-list { overflow: hidden; border-top: 1px solid #d6cec0; }
+.timetable-hour-row { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 8px; padding: 8px 2px; border-bottom: 1px solid #ded6c9; }
+.timetable-hour-row > strong { padding-top: 3px; color: #4f685b; font-size: 18px; font-variant-numeric: tabular-nums; line-height: 1; }
+.timetable-hour-row > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.timetable-minute { display: grid; min-width: 30px; height: 26px; padding: 0 6px; place-items: center; border-radius: 2px; background: #ebe5d9; color: #292a25; font-size: 12px; font-variant-numeric: tabular-nums; }
+.timetable-minute.next { background: #b85f49; color: #fffaf0; font-weight: 850; box-shadow: 0 0 0 2px rgba(184, 95, 73, .14); }
+.timetable-period-list { display: grid; gap: 7px; }
+.timetable-period { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid #d3cabb; border-radius: 3px; background: #ebe5d9; }
+.timetable-period strong { font-variant-numeric: tabular-nums; }
+.timetable-period span { color: #4f685b; font-size: 12px; font-weight: 800; }
+.timetable-note { margin: 10px 1px 0; color: #777066; font-size: 11px; line-height: 1.5; }
+
 @media (max-width: 640px) {
   .map-drawer {
     right: 10px;
@@ -452,6 +483,8 @@ button { cursor: pointer; }
   .map-status { max-width: calc(100% - 110px); }
   .selection-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .leaflet-control-zoom { display: none; }
+  .map-drawer:has(.timetable-panel) { max-height: 68vh; }
+  .timetable-hour-row { grid-template-columns: 36px minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

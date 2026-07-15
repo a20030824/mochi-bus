@@ -56,6 +56,52 @@ type RouteMapVariant = {
   updatedAt: string | null
 }
 
+
+type TimetableStop = {
+  stopUid: string
+  stopName: string
+  sequence: number
+  hasTimes: boolean
+}
+
+type TimetablePeriod = {
+  startTime: string
+  endTime: string
+  minHeadwayMinutes: number
+  maxHeadwayMinutes: number
+}
+
+type TimetableService = {
+  id: string
+  label: string
+  days: number[]
+  today: boolean
+  times: string[]
+  periods: TimetablePeriod[]
+  firstTime: string | null
+  lastTime: string | null
+}
+
+type RouteTimetable = {
+  mode: 'stop' | 'departure' | 'frequency' | 'none'
+  selectedStop: Omit<TimetableStop, 'hasTimes'> | null
+  departureStop: Omit<TimetableStop, 'hasTimes'> | null
+  stops: TimetableStop[]
+  timedStopCount: number
+  services: TimetableService[]
+}
+
+type RouteTimetableResponse = {
+  schemaVersion: number
+  city: string
+  routeName: string
+  variantKey: string
+  routeUid: string
+  direction: 0 | 1 | 2
+  source: 'snapshot' | 'tdx'
+  timetable: RouteTimetable
+}
+
 type JourneyLegPreviewOptions = {
   selected?: boolean
   onSelect?: () => void
@@ -252,6 +298,7 @@ let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = '
 let routeReturnsToTrip = false
 let activeRouteColor = '#b85f49'
 let previewRequest = 0
+let timetableRequest = 0
 // 行程候選離開前的鏡頭只存可序列化值;路線 detail 的 fit 不應覆蓋它。
 let tripResultsCamera: MapCameraState | undefined
 let tripResultsCameraCity: string | undefined
@@ -1302,6 +1349,265 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
   setViewBack(variantBack)
 }
 
+
+function timetableUrl(variant: RouteMapVariant, stopUid?: string): string {
+  const params = new URLSearchParams({
+    city: activeCity!.code,
+    route: variant.routeName,
+    routeUid: variant.routeUid,
+    variant: variant.variantKey,
+    direction: String(variant.direction),
+  })
+  if (variant.subRouteUid) params.set('subRouteUid', variant.subRouteUid)
+  if (stopUid) params.set('stopUid', stopUid)
+  return `/api/v1/map/timetable?${params}`
+}
+
+async function fetchRouteTimetable(variant: RouteMapVariant, stopUid?: string, signal?: AbortSignal): Promise<RouteTimetableResponse> {
+  const response = await tdxFetch(timetableUrl(variant, stopUid), { signal })
+  const data = await response.json() as RouteTimetableResponse & { error?: string }
+  if (!response.ok) throw new Error(data.error ?? '目前無法取得時刻表')
+  return data
+}
+
+function currentTimetableService(timetable: RouteTimetable): TimetableService | undefined {
+  return timetable.services.find((service) => service.today) ?? timetable.services[0]
+}
+
+function timetableSummaryText(timetable: RouteTimetable): string | null {
+  const service = currentTimetableService(timetable)
+  if (!service?.firstTime || !service.lastTime) return null
+  if (timetable.mode === 'frequency') {
+    const headways = service.periods.flatMap((period) => [period.minHeadwayMinutes, period.maxHeadwayMinutes])
+    const minimum = headways.length ? Math.min(...headways) : null
+    const maximum = headways.length ? Math.max(...headways) : null
+    const headway = minimum !== null && maximum !== null
+      ? minimum === maximum ? `${minimum} 分一班` : `${minimum}–${maximum} 分一班`
+      : ''
+    return `營運 ${service.firstTime}–${service.lastTime}${headway ? ` · ${headway}` : ''}`
+  }
+  const prefix = timetable.mode === 'departure'
+    ? `${timetable.departureStop?.stopName ?? '起點'}發車`
+    : timetable.selectedStop?.stopName ?? ''
+  return `${prefix}${prefix ? ' · ' : ''}首班 ${service.firstTime} · 末班 ${service.lastTime}`
+}
+
+async function hydrateRouteTimetableSummary(
+  variant: RouteMapVariant,
+  summary: HTMLElement,
+  button: HTMLButtonElement,
+  bounds: L.LatLngBounds,
+  requestId: number,
+) {
+  try {
+    const data = await fetchRouteTimetable(variant)
+    if (requestId !== timetableRequest || !drawer.contains(summary)) return
+    if (data.timetable.mode === 'none' || !data.timetable.services.length) return
+    const text = timetableSummaryText(data.timetable)
+    if (text) {
+      summary.textContent = text
+      summary.hidden = false
+    }
+    button.hidden = false
+    button.addEventListener('click', () => void openRouteTimetable(variant))
+    if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
+  } catch {
+    // 時刻是輔助資訊，失敗時不打斷路線地圖與車輛定位。
+  }
+}
+
+async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
+  stopVehicleRefresh()
+  const back = () => drawVariant(variant)
+  const { requestId, signal } = beginNavRequest()
+  timetableRequest += 1
+  drawer.replaceChildren(
+    drawerBack(`返回 ${variant.routeName}`, back),
+    heading('時刻', variant.label),
+    paragraph('正在整理表定班次…'),
+  )
+  setStatus(`${variant.routeName} · 正在讀取時刻`)
+  setViewBack(back)
+  try {
+    const data = await fetchRouteTimetable(variant, stopUid, signal)
+    if (isStaleNav(requestId)) return
+    renderRouteTimetable(variant, data.timetable)
+  } catch (error) {
+    if (isStaleNav(requestId)) return
+    const message = error instanceof Error ? error.message : '目前無法取得時刻表'
+    drawer.replaceChildren(
+      drawerBack(`返回 ${variant.routeName}`, back),
+      heading('時刻', message),
+      retryButton(() => void openRouteTimetable(variant, stopUid)),
+    )
+    setStatus(message, true)
+  }
+}
+
+function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {
+  const back = () => drawVariant(variant)
+  const panel = document.createElement('div')
+  panel.className = 'timetable-panel'
+  if (timetable.mode === 'none' || !timetable.services.length) {
+    panel.appendChild(paragraph('這個方向目前沒有公開的表定班次資料。'))
+    drawer.replaceChildren(drawerBack(`返回 ${variant.routeName}`, back), heading('時刻', variant.label), panel)
+    setStatus(`${variant.routeName} · 無公開時刻資料`)
+    setViewBack(back)
+    return
+  }
+
+  const timedStops = timetable.stops.filter((stop) => stop.hasTimes)
+  if (timetable.mode === 'stop' && timedStops.length > 1) {
+    const field = document.createElement('label')
+    field.className = 'timetable-stop-field'
+    const label = document.createElement('span')
+    label.textContent = '站牌'
+    const select = document.createElement('select')
+    select.setAttribute('aria-label', '站牌')
+    timedStops.forEach((stop) => {
+      const option = document.createElement('option')
+      option.value = stop.stopUid
+      option.textContent = `${stop.sequence}. ${stop.stopName}`
+      option.selected = stop.stopUid === timetable.selectedStop?.stopUid
+      select.appendChild(option)
+    })
+    select.addEventListener('change', () => void openRouteTimetable(variant, select.value))
+    field.replaceChildren(label, select)
+    panel.appendChild(field)
+  }
+
+  const tabs = document.createElement('div')
+  tabs.className = 'timetable-tabs'
+  tabs.setAttribute('role', 'tablist')
+  tabs.setAttribute('aria-label', '服務日期')
+  const content = document.createElement('div')
+  content.className = 'timetable-content'
+  const renderService = (service: TimetableService, activeButton: HTMLButtonElement) => {
+    tabs.querySelectorAll<HTMLButtonElement>('button').forEach((candidate) => {
+      const active = candidate === activeButton
+      candidate.classList.toggle('active', active)
+      candidate.setAttribute('aria-selected', String(active))
+    })
+    content.replaceChildren(timetableServiceContent(timetable, service))
+  }
+  timetable.services.forEach((service, index) => {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'timetable-tab'
+    button.setAttribute('role', 'tab')
+    button.textContent = service.today ? '今天' : service.label
+    if (service.today) button.title = service.label
+    button.addEventListener('click', () => renderService(service, button))
+    tabs.appendChild(button)
+    if (index === 0) queueMicrotask(() => renderService(service, button))
+  })
+  panel.appendChild(tabs)
+  panel.appendChild(content)
+  drawer.replaceChildren(drawerBack(`返回 ${variant.routeName}`, back), heading('時刻', variant.label), panel)
+  const context = timetable.mode === 'stop'
+    ? timetable.selectedStop?.stopName
+    : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'
+  setStatus(`${variant.routeName} · ${context ?? '時刻'}`)
+  setViewBack(back)
+}
+
+function timetableServiceContent(timetable: RouteTimetable, service: TimetableService): HTMLElement {
+  const fragment = document.createElement('div')
+  const overview = document.createElement('div')
+  overview.className = 'timetable-overview'
+  const context = document.createElement('span')
+  context.textContent = timetable.mode === 'stop'
+    ? timetable.selectedStop?.stopName ?? '所選站牌'
+    : timetable.mode === 'departure'
+      ? `${timetable.departureStop?.stopName ?? '起點'}發車`
+      : service.label
+  const range = document.createElement('strong')
+  range.textContent = service.firstTime && service.lastTime
+    ? `${service.firstTime} — ${service.lastTime}`
+    : '班次資料'
+  overview.replaceChildren(context, range)
+  fragment.appendChild(overview)
+
+  if (service.times.length) fragment.appendChild(timetableHourList(service))
+  if (service.periods.length) {
+    const periods = document.createElement('div')
+    periods.className = 'timetable-period-list'
+    service.periods.forEach((period) => {
+      const row = document.createElement('div')
+      row.className = 'timetable-period'
+      const hours = document.createElement('strong')
+      hours.textContent = `${period.startTime}–${period.endTime}`
+      const headway = document.createElement('span')
+      headway.textContent = period.minHeadwayMinutes === period.maxHeadwayMinutes
+        ? `${period.minHeadwayMinutes} 分一班`
+        : `${period.minHeadwayMinutes}–${period.maxHeadwayMinutes} 分一班`
+      row.replaceChildren(hours, headway)
+      periods.appendChild(row)
+    })
+    fragment.appendChild(periods)
+  }
+
+  const note = document.createElement('p')
+  note.className = 'timetable-note'
+  note.textContent = timetable.mode === 'stop'
+    ? '表定到站時間，實際仍可能受路況影響。'
+    : timetable.mode === 'departure'
+      ? '目前只提供起點發車時間，沿途到站時間會受路況影響。'
+      : '此路線以班距提供服務，實際發車仍可能調整。'
+  fragment.appendChild(note)
+  return fragment
+}
+
+function timetableHourList(service: TimetableService): HTMLElement {
+  const list = document.createElement('div')
+  list.className = 'timetable-hour-list'
+  const grouped = new Map<string, string[]>()
+  service.times.forEach((time) => {
+    const [hour, minute] = time.split(':')
+    const minutes = grouped.get(hour) ?? []
+    minutes.push(minute)
+    grouped.set(hour, minutes)
+  })
+  const nowMinutes = taipeiClockMinutes()
+  const next = service.today ? service.times.find((time) => timetableMinutes(time) >= nowMinutes) : undefined
+  grouped.forEach((minutes, hour) => {
+    const row = document.createElement('div')
+    row.className = 'timetable-hour-row'
+    const hourNode = document.createElement('strong')
+    hourNode.textContent = hour
+    const minuteList = document.createElement('div')
+    minutes.forEach((minute) => {
+      const value = `${hour}:${minute}`
+      const chip = document.createElement('span')
+      chip.className = 'timetable-minute'
+      chip.textContent = minute
+      chip.setAttribute('aria-label', value)
+      if (value === next) {
+        chip.classList.add('next')
+        chip.title = '下一班'
+      }
+      minuteList.appendChild(chip)
+    })
+    row.replaceChildren(hourNode, minuteList)
+    list.appendChild(row)
+  })
+  return list
+}
+
+function timetableMinutes(value: string): number {
+  const [hour, minute] = value.split(':').map(Number)
+  return hour * 60 + minute
+}
+
+function taipeiClockMinutes(): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date())
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0)
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
+  return hour * 60 + minute
+}
+
 function drawVariant(variant: RouteMapVariant) {
   interactionMode = 'route'
   if (!routeReturnsToTrip) clearTripState()
@@ -1351,12 +1657,26 @@ function drawVariant(variant: RouteMapVariant) {
   // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
   const goBack = () => backActionFor(routeViewBack(backContext()).target)()
   change.addEventListener('click', goBack)
+  const timetableSummary = document.createElement('p')
+  timetableSummary.className = 'route-service-summary'
+  timetableSummary.hidden = true
+  const timetableButton = document.createElement('button')
+  timetableButton.type = 'button'
+  timetableButton.className = 'quiet-button route-timetable-button'
+  timetableButton.textContent = '時刻'
+  timetableButton.hidden = true
+  const actions = document.createElement('div')
+  actions.className = 'route-view-actions'
+  actions.replaceChildren(timetableButton, change)
   drawer.replaceChildren(
     heading(variant.routeName, variant.label),
     paragraph(variant.subRouteName),
-    change,
+    timetableSummary,
+    actions,
   )
   if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
+  const summaryRequest = ++timetableRequest
+  void hydrateRouteTimetableSummary(variant, timetableSummary, timetableButton, bounds, summaryRequest)
   setViewBack(goBack)
   const params = new URLSearchParams({
     city: activeCity!.code,
