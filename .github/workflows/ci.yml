@@ -65,7 +65,21 @@ jobs:
           path: /tmp/route-timetables-implementation.log
           retention-days: 2
       - run: npm ci
-      - run: npm run check
+      - name: Validate timetable implementation
+        run: |
+          set +e
+          npm run check > /tmp/route-timetables-validation.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/route-timetables-validation.log
+          exit "$status"
+      - name: Upload validation error
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-timetable-validation-error
+          path: /tmp/route-timetables-validation.log
+          retention-days: 2
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
       - name: Verify timetable flow
