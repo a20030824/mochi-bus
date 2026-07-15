@@ -157,7 +157,8 @@ button { cursor: pointer; }
 }
 
 /* 內容超出抽屜時的「下面還有」暗示:sticky 漸層貼在捲動視窗底部,
-   蓋過經過的卡片;捲到底時它只疊在 padding 上,和抽屜底色融為一體。 */
+   蓋過經過的卡片;開關由 scroll-fade.ts 控制,放得下或捲到底就收掉,
+   不然常駐漸層會把最後一個元件洗白。 */
 .map-drawer::after {
   content: "";
   position: sticky;
@@ -167,8 +168,11 @@ button { cursor: pointer; }
   height: 30px;
   margin: -30px -18px -18px;
   background: linear-gradient(to bottom, rgba(244, 239, 228, 0), rgba(244, 239, 228, .96));
+  opacity: 0;
+  transition: opacity .18s ease;
   pointer-events: none;
 }
+.map-drawer.scrollable-below::after { opacity: 1; }
 
 .drawer-heading h1 { margin: 5px 0 7px; font-size: 30px; line-height: 1; letter-spacing: -.045em; }
 .drawer-heading p, .drawer-copy { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.5; }
@@ -210,8 +214,11 @@ button { cursor: pointer; }
   height: 26px;
   margin-top: -26px;
   background: linear-gradient(to bottom, rgba(244, 239, 228, 0), rgba(244, 239, 228, .96));
+  opacity: 0;
+  transition: opacity .18s ease;
   pointer-events: none;
 }
+.map-route-grid.scrollable-below::after { opacity: 1; }
 .map-search {
   width: 100%;
   margin-bottom: 10px;
