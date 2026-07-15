@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   implement:
+    # This workflow exists only on the feature branch and removes itself after success.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
