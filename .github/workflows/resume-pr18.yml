@@ -1,0 +1,134 @@
+name: Resume PR 18
+
+on:
+  push:
+    branches:
+      - fix/timetable-stop-camera
+
+permissions:
+  contents: write
+
+jobs:
+  rebase-and-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Merge latest main and reapply the focused fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+
+          git merge --no-commit --no-ff origin/main || true
+          unexpected_conflicts="$(git diff --name-only --diff-filter=U | grep -vE '^(web/map/main\.ts|test/e2e/map-timetable\.spec\.ts)$' || true)"
+          if [ -n "$unexpected_conflicts" ]; then
+            echo "Unexpected merge conflicts:"
+            echo "$unexpected_conflicts"
+            exit 1
+          fi
+
+          # Start the two overlapping files from latest main, then reapply only PR #18's intended behavior.
+          git checkout origin/main -- web/map/main.ts test/e2e/map-timetable.spec.ts
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          main_path = Path('web/map/main.ts')
+          text = main_path.read_text()
+
+          old_fit = "if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())"
+          new_fit = "if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })"
+          if text.count(old_fit) != 2:
+              raise SystemExit(f'expected 2 route fitBounds calls, found {text.count(old_fit)}')
+          text = text.replace(old_fit, new_fit)
+
+          function_anchor = """    setStatus(message, true)
+  }
+}
+
+function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {"""
+          function_replacement = """    setStatus(message, true)
+  }
+}
+
+function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 'hasTimes'>) {
+  selectionLayer.clearLayers()
+  const feature = variant.stops.features.find((candidate) => candidate.properties.stopUid === stop.stopUid)
+  if (!feature) return
+  const [longitude, latitude] = feature.geometry.coordinates
+  setDrawerAwareView([latitude, longitude], 15)
+  const marker = unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(selectionLayer)
+  marker.getElement()?.classList.add('timetable-stop-focus')
+  marker.getElement()?.setAttribute('data-stop-uid', stop.stopUid)
+}
+
+function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {"""
+          if text.count(function_anchor) != 1:
+              raise SystemExit('could not locate timetable function insertion point')
+          text = text.replace(function_anchor, function_replacement)
+
+          focus_anchor = """  const context = timetable.mode === 'stop'
+    ? timetable.selectedStop?.stopName
+    : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'
+  setStatus(`${variant.routeName} · ${context ?? '時刻'}`)"""
+          focus_replacement = """  const context = timetable.mode === 'stop'
+    ? timetable.selectedStop?.stopName
+    : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'
+  if (timetable.mode === 'stop' && timetable.selectedStop) {
+    queueMicrotask(() => focusTimetableStop(variant, timetable.selectedStop!))
+  } else {
+    selectionLayer.clearLayers()
+  }
+  setStatus(`${variant.routeName} · ${context ?? '時刻'}`)"""
+          if text.count(focus_anchor) != 1:
+              raise SystemExit('could not locate timetable focus insertion point')
+          text = text.replace(focus_anchor, focus_replacement)
+          main_path.write_text(text)
+
+          test_path = Path('test/e2e/map-timetable.spec.ts')
+          test_text = test_path.read_text()
+          import_anchor = "import { expect, test, type Page } from '@playwright/test'\n"
+          import_replacement = import_anchor + "import { calculateCameraPadding } from '../../src/domain/map/camera-padding'\n"
+          if test_text.count(import_anchor) != 1:
+              raise SystemExit('could not locate Playwright import')
+          test_text = test_text.replace(import_anchor, import_replacement, 1)
+
+          poll_anchor = """  await expect(drawer.locator('.timetable-overview')).toContainText('嘉義火車站')
+  await expect(drawer.locator('.timetable-hour-row').first()).toContainText('12')
+  await expect(drawer.getByRole('tab', { name: '週六' })).toBeVisible()"""
+          poll_replacement = """  await expect(drawer.locator('.timetable-overview')).toContainText('嘉義火車站')
+  await expect(drawer.locator('.timetable-hour-row').first()).toContainText('12')
+  await expect.poll(async () => {
+    const geometry = await page.evaluate(() => {
+      const map = document.getElementById('map')!.getBoundingClientRect()
+      const drawer = document.getElementById('map-drawer')!.getBoundingClientRect()
+      const marker = document.querySelector<SVGElement>('.timetable-stop-focus[data-stop-uid="C2"]')?.getBoundingClientRect()
+      return {
+        map: { left: map.left, top: map.top, right: map.right, bottom: map.bottom, width: map.width, height: map.height },
+        drawer: { left: drawer.left, top: drawer.top, right: drawer.right, bottom: drawer.bottom, width: drawer.width, height: drawer.height },
+        marker: marker ? { left: marker.left, top: marker.top, right: marker.right, bottom: marker.bottom } : null,
+      }
+    })
+    if (!geometry.marker) return false
+    const padding = calculateCameraPadding(geometry.map, geometry.drawer)
+    const expectedX = (geometry.map.left + padding.paddingTopLeft[0] + geometry.map.right - padding.paddingBottomRight[0]) / 2
+    const expectedY = (geometry.map.top + padding.paddingTopLeft[1] + geometry.map.bottom - padding.paddingBottomRight[1]) / 2
+    const markerX = (geometry.marker.left + geometry.marker.right) / 2
+    const markerY = (geometry.marker.top + geometry.marker.bottom) / 2
+    return Math.abs(markerX - expectedX) <= 10 && Math.abs(markerY - expectedY) <= 10
+  }).toBe(true)
+  await expect(drawer.getByRole('tab', { name: '週六' })).toBeVisible()"""
+          if test_text.count(poll_anchor) != 1:
+              raise SystemExit('could not locate timetable camera assertion insertion point')
+          test_text = test_text.replace(poll_anchor, poll_replacement)
+          test_path.write_text(test_text)
+          PY
+
+          git add web/map/main.ts test/e2e/map-timetable.spec.ts
+          git commit -m "fix(map): rebase timetable stop focus onto latest UI"
+          git push origin HEAD:fix/timetable-stop-camera
