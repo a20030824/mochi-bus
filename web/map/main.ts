@@ -23,6 +23,7 @@ import {
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
+import { attachScrollFade } from '../lib/scroll-fade'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
 
@@ -211,6 +212,7 @@ const regions: Array<{
 
 const mapNode = requiredElement('map')
 const drawer = requiredElement('map-drawer')
+attachScrollFade(drawer)
 const statusNode = requiredElement('map-status')
 const networkButton = document.createElement('button')
 networkButton.className = 'network-toggle'
@@ -726,6 +728,7 @@ function renderRoutePicker() {
   stopResults.className = 'place-search-results'
   const routeGrid = document.createElement('div')
   routeGrid.className = 'map-route-grid'
+  attachScrollFade(routeGrid)
 
   const counts = new Map<string, number>()
   routes.forEach((route) => counts.set(route.category, (counts.get(route.category) ?? 0) + 1))

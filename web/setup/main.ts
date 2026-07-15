@@ -15,6 +15,7 @@ import {
   type FavoriteBoard,
   type FavoriteBus,
 } from '../boards/store'
+import { attachScrollFade } from '../lib/scroll-fade'
 
 type RouteItem = {
   routeName: string
@@ -41,6 +42,7 @@ type SuggestionBus = FavoriteBus & { label?: string }
 const city = document.querySelector('#city') as unknown as HTMLSelectElement
 const filter = document.querySelector('#route-filter') as HTMLInputElement
 const grid = document.querySelector('#route-grid') as HTMLDivElement
+attachScrollFade(grid)
 const categories = document.querySelector('#categories') as HTMLDivElement
 const message = document.querySelector('#message') as HTMLParagraphElement
 const directionStep = document.querySelector('#direction-step') as HTMLDivElement
