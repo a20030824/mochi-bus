@@ -13,7 +13,7 @@ def replace_once(path: str, old: str, new: str) -> None:
 replace_once(
     "web/map/main.ts",
     """function setDrawerAwareView(center: L.LatLngExpression, zoom: number) {\n  map.setView(center, zoom, { animate: false })\n  const offset = cameraPanOffset(drawerAwareCameraPadding())\n  if (offset[0] || offset[1]) map.panBy(offset, { animate: false })\n}\n""",
-    """function setDrawerAwareView(center: L.LatLngExpression, zoom: number) {\n  const target = L.latLng(center)\n  const offset = cameraPanOffset(drawerAwareCameraPadding())\n  const projectedCenter = map.project(target, zoom).add(L.point(offset[0], offset[1]))\n  map.setView(map.unproject(projectedCenter, zoom), zoom, { animate: false })\n}\n""",
+    """function setDrawerAwareView(center: L.LatLngExpression, zoom: number) {\n  map.stop()\n  const target = L.latLng(center)\n  const offset = cameraPanOffset(drawerAwareCameraPadding())\n  const projectedCenter = map.project(target, zoom).add(L.point(offset[0], offset[1]))\n  map.setView(map.unproject(projectedCenter, zoom), zoom, { animate: false })\n}\n""",
 )
 
 replace_once(
