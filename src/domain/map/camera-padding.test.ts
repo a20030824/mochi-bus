@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   calculateCameraPadding,
+  cameraPanOffset,
   DEFAULT_CAMERA_PADDING_OPTIONS,
   type CameraRect,
 } from './camera-padding'
@@ -95,6 +96,20 @@ describe('camera padding', () => {
     calculateCameraPadding(mapRect, drawerRect)
 
     expect({ mapRect, drawerRect }).toEqual(before)
+  })
+
+  it('converts drawer padding into the pan needed to center a point in the visible map', () => {
+    const desktop = calculateCameraPadding(
+      rect(0, 0, 1440, 900),
+      rect(1022, 400, 1422, 882),
+    )
+    const mobile = calculateCameraPadding(
+      rect(0, 0, 390, 844),
+      rect(10, 481, 380, 834),
+    )
+
+    expect(cameraPanOffset(desktop)).toEqual([210.5, -22.5])
+    expect(cameraPanOffset(mobile)).toEqual([0, 160.5])
   })
 
   it('treats the bottom-sheet threshold as inclusive and the value just below it as a side panel', () => {

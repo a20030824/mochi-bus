@@ -69,6 +69,15 @@ export function calculateCameraPadding(
   }
 }
 
+export function cameraPanOffset(padding: CameraPadding): [number, number] {
+  const [left, top] = padding.paddingTopLeft
+  const [right, bottom] = padding.paddingBottomRight
+  return [
+    (nonNegativeFinite(right, 0) - nonNegativeFinite(left, 0)) / 2,
+    (nonNegativeFinite(bottom, 0) - nonNegativeFinite(top, 0)) / 2,
+  ]
+}
+
 type RectSize = { width: number; height: number }
 type RectOverlap = RectSize & { left: number; top: number; right: number; bottom: number }
 
