@@ -19,7 +19,7 @@ replace_once(
 replace_once(
     "web/map/main.ts",
     """function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {\n""",
-    """function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 'hasTimes'>) {\n  selectionLayer.clearLayers()\n  const feature = variant.stops.features.find((candidate) => candidate.properties.stopUid === stop.stopUid)\n  if (!feature) return\n  const [longitude, latitude] = feature.geometry.coordinates\n  const marker = unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(selectionLayer)\n  marker.getElement()?.classList.add('timetable-stop-focus')\n  marker.getElement()?.setAttribute('data-stop-uid', stop.stopUid)\n  setDrawerAwareView([latitude, longitude], Math.max(map.getZoom(), 15))\n}\n\nfunction renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {\n""",
+    """function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 'hasTimes'>) {\n  selectionLayer.clearLayers()\n  const feature = variant.stops.features.find((candidate) => candidate.properties.stopUid === stop.stopUid)\n  if (!feature) return\n  const [longitude, latitude] = feature.geometry.coordinates\n  setDrawerAwareView([latitude, longitude], Math.max(map.getZoom(), 15))\n  const marker = unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(selectionLayer)\n  marker.getElement()?.classList.add('timetable-stop-focus')\n  marker.getElement()?.setAttribute('data-stop-uid', stop.stopUid)\n}\n\nfunction renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {\n""",
 )
 
 replace_once(
