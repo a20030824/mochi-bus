@@ -45,10 +45,19 @@ jobs:
           end = source.index(end_marker, start)
           script = dedent(source[start:end])
           script = script.replace(".write_text(r'''", ".write_text((r'''")
+          script = script.replace(".replace('          ', '')", ".lstrip('\\n')")
           script = script.replace(
-              ".replace('          ', '')",
-              ".replace('\\n          ', '\\n').lstrip()",
+              "              field.append(label, select)",
+              "              field.appendChild(label)\\n              field.appendChild(select)",
           )
+          script = script.replace(
+              "            panel.append(tabs, content)",
+              "            panel.appendChild(tabs)\\n            panel.appendChild(content)",
+          )
+          script = script.replace("            overview.append(context, range)", "            overview.replaceChildren(context, range)")
+          script = script.replace("                row.append(hours, headway)", "                row.replaceChildren(hours, headway)")
+          script = script.replace("              row.append(hourNode, minuteList)", "              row.replaceChildren(hourNode, minuteList)")
+          script = script.replace("            actions.append(timetableButton, change)", "            actions.replaceChildren(timetableButton, change)")
           Path('/tmp/route-timetables.py').write_text(script)
           PY
           set +e
