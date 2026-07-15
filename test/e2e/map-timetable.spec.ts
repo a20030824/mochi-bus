@@ -52,11 +52,12 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
   await page.goto(`/map?city=ChiayiCounty&route=7211&variant=${encodeURIComponent(variant.variantKey)}`)
 
   const drawer = page.locator('#map-drawer')
-  await expect(drawer.getByRole('button', { name: '時刻' })).toBeVisible()
+  // 時刻摘要列本身就是時刻表入口:載入完成前是佔位、完成後才可點。
   await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')
-  await drawer.getByRole('button', { name: '時刻' }).click()
+  await drawer.getByRole('button', { name: '查看時刻表' }).click()
 
-  await expect(drawer.getByRole('heading', { name: '時刻' })).toBeVisible()
+  await expect(drawer.getByRole('heading', { name: '7211' })).toBeVisible()
+  await expect(drawer.locator('.drawer-heading p')).toContainText('時刻')
   const stopSelect = drawer.getByRole('combobox', { name: '站牌' })
   await expect(stopSelect).toBeVisible()
   await stopSelect.selectOption('C2')

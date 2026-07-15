@@ -213,9 +213,16 @@ function renderRoutes() {
   grid.replaceChildren(...visible.map((item) => {
     const button = document.createElement('button')
     button.className = 'route-choice'
-    button.textContent = item.departure && item.destination
-      ? item.routeName + ' · ' + item.departure + ' → ' + item.destination
-      : item.routeName
+    // 編號當主角、起迄站當第二行小字:塞在同一行會在窄格子裡折成三四行,沒辦法掃視。
+    const name = document.createElement('b')
+    name.textContent = item.routeName
+    button.appendChild(name)
+    if (item.departure && item.destination) {
+      const path = document.createElement('small')
+      path.textContent = item.departure + ' → ' + item.destination
+      button.appendChild(path)
+      button.title = item.routeName + ' · ' + item.departure + ' → ' + item.destination
+    }
     button.onclick = () => void chooseRoute(item)
     return button
   }))
