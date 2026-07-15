@@ -41,11 +41,19 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --silent
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium >/dev/null
       - name: Test map camera and mobile entry UI
-        run: npm run test:e2e -- test/e2e/map-camera-padding.spec.ts
+        shell: bash
+        run: |
+          set +e
+          npx playwright test test/e2e/map-camera-padding.spec.ts --reporter=line
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            find test-results -name error-context.md -print -exec cat {} \; || true
+          fi
+          exit "$status"
 
   deploy:
     name: Deploy production
