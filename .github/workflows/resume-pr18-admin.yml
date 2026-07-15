@@ -1,17 +1,18 @@
 name: Resume PR 18 Admin
 
 on:
-  pull_request:
+  issues:
     types:
       - opened
 
 permissions:
   actions: write
   contents: write
+  issues: write
 
 jobs:
   rebase-and-apply:
-    if: github.event.pull_request.number == 22
+    if: github.event.issue.title == 'run-pr18-handoff-20260716'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -135,3 +136,8 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
           git add -A web/map/main.ts test/e2e/map-timetable.spec.ts .github
           git commit -m "fix(map): rebase timetable stop focus onto latest UI"
           git push origin HEAD:fix/timetable-stop-camera
+      - name: Report handoff result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment "${{ github.event.issue.number }}" --body "PR #18 handoff workflow finished with status: ${{ job.status }}"
