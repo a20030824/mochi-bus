@@ -1345,7 +1345,7 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
     list,
   )
-  if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
+  if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
   setViewBack(variantBack)
 }
 
@@ -1410,7 +1410,7 @@ async function hydrateRouteTimetableSummary(
     }
     button.hidden = false
     button.addEventListener('click', () => void openRouteTimetable(variant))
-    if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
+    if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
   } catch {
     // 時刻是輔助資訊，失敗時不打斷路線地圖與車輛定位。
   }
@@ -1442,6 +1442,17 @@ async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
     )
     setStatus(message, true)
   }
+}
+
+function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 'hasTimes'>) {
+  selectionLayer.clearLayers()
+  const feature = variant.stops.features.find((candidate) => candidate.properties.stopUid === stop.stopUid)
+  if (!feature) return
+  const [longitude, latitude] = feature.geometry.coordinates
+  setDrawerAwareView([latitude, longitude], 15)
+  const marker = unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(selectionLayer)
+  marker.getElement()?.classList.add('timetable-stop-focus')
+  marker.getElement()?.setAttribute('data-stop-uid', stop.stopUid)
 }
 
 function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {
@@ -1507,6 +1518,11 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
   const context = timetable.mode === 'stop'
     ? timetable.selectedStop?.stopName
     : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'
+  if (timetable.mode === 'stop' && timetable.selectedStop) {
+    queueMicrotask(() => focusTimetableStop(variant, timetable.selectedStop!))
+  } else {
+    selectionLayer.clearLayers()
+  }
   setStatus(`${variant.routeName} · ${context ?? '時刻'}`)
   setViewBack(back)
 }
@@ -1674,7 +1690,7 @@ function drawVariant(variant: RouteMapVariant) {
     timetableSummary,
     actions,
   )
-  if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
+  if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
   const summaryRequest = ++timetableRequest
   void hydrateRouteTimetableSummary(variant, timetableSummary, timetableButton, bounds, summaryRequest)
   setViewBack(goBack)

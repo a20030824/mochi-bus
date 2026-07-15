@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { calculateCameraPadding } from '../../src/domain/map/camera-padding'
 
 const variant = {
   variantKey: 'CHI-7211:0', routeName: '7211', routeUid: 'CHI7211', subRouteUid: 'CHI-7211', direction: 0 as const,
@@ -63,6 +64,25 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
   await expect(stopSelect).toHaveValue('C2')
   await expect(drawer.locator('.timetable-overview')).toContainText('嘉義火車站')
   await expect(drawer.locator('.timetable-hour-row').first()).toContainText('12')
+  await expect.poll(async () => {
+    const geometry = await page.evaluate(() => {
+      const map = document.getElementById('map')!.getBoundingClientRect()
+      const drawer = document.getElementById('map-drawer')!.getBoundingClientRect()
+      const marker = document.querySelector<SVGElement>('.timetable-stop-focus[data-stop-uid="C2"]')?.getBoundingClientRect()
+      return {
+        map: { left: map.left, top: map.top, right: map.right, bottom: map.bottom, width: map.width, height: map.height },
+        drawer: { left: drawer.left, top: drawer.top, right: drawer.right, bottom: drawer.bottom, width: drawer.width, height: drawer.height },
+        marker: marker ? { left: marker.left, top: marker.top, right: marker.right, bottom: marker.bottom } : null,
+      }
+    })
+    if (!geometry.marker) return false
+    const padding = calculateCameraPadding(geometry.map, geometry.drawer)
+    const expectedX = (geometry.map.left + padding.paddingTopLeft[0] + geometry.map.right - padding.paddingBottomRight[0]) / 2
+    const expectedY = (geometry.map.top + padding.paddingTopLeft[1] + geometry.map.bottom - padding.paddingBottomRight[1]) / 2
+    const markerX = (geometry.marker.left + geometry.marker.right) / 2
+    const markerY = (geometry.marker.top + geometry.marker.bottom) / 2
+    return Math.abs(markerX - expectedX) <= 10 && Math.abs(markerY - expectedY) <= 10
+  }).toBe(true)
   await expect(drawer.getByRole('tab', { name: '週六' })).toBeVisible()
 
   const geometry = await drawer.evaluate((element) => {
