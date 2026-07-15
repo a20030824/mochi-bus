@@ -44,6 +44,7 @@ jobs:
           start = source.index(start_marker) + len(start_marker)
           end = source.index(end_marker, start)
           script = dedent(source[start:end])
+          script = script.replace(".write_text(r'''", ".write_text((r'''")
           script = script.replace(
               ".replace('          ', '')",
               ".replace('\\n          ', '\\n').lstrip()",
