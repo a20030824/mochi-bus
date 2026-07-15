@@ -87,7 +87,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: route-timetable-validation-error
-          path: /tmp/route-timetables-validation.log
+          path: |
+            /tmp/route-timetables-validation.log
+            web/map/main.ts
+            web/map/style.css
+            src/routes/map.ts
+            src/domain/map/timetable.ts
+            src/domain/map/timetable.test.ts
+            test/e2e/map-timetable.spec.ts
           retention-days: 2
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
