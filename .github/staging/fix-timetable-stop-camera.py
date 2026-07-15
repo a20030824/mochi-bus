@@ -19,7 +19,7 @@ replace_once(
 replace_once(
     "web/map/main.ts",
     """  const context = timetable.mode === 'stop'\n    ? timetable.selectedStop?.stopName\n    : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'\n  setStatus(`${variant.routeName} · ${context ?? '時刻'}`)\n  setViewBack(back)\n}\n""",
-    """  const context = timetable.mode === 'stop'\n    ? timetable.selectedStop?.stopName\n    : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'\n  if (timetable.mode === 'stop' && timetable.selectedStop) focusTimetableStop(variant, timetable.selectedStop)\n  else selectionLayer.clearLayers()\n  setStatus(`${variant.routeName} · ${context ?? '時刻'}`)\n  setViewBack(back)\n}\n""",
+    """  const context = timetable.mode === 'stop'\n    ? timetable.selectedStop?.stopName\n    : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'\n  if (timetable.mode === 'stop' && timetable.selectedStop) {\n    queueMicrotask(() => focusTimetableStop(variant, timetable.selectedStop!))\n  } else {\n    selectionLayer.clearLayers()\n  }\n  setStatus(`${variant.routeName} · ${context ?? '時刻'}`)\n  setViewBack(back)\n}\n""",
 )
 
 replace_once(
