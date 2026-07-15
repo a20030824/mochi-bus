@@ -48,44 +48,29 @@ jobs:
           script = script.replace(".replace('          ', '')", ".lstrip('\\n')")
           Path('/tmp/route-timetables.py').write_text(script)
           PY
-          set +e
-          python /tmp/route-timetables.py > /tmp/route-timetables-implementation.log 2>&1
-          status=$?
-          set -e
-          cat /tmp/route-timetables-implementation.log
-          exit "$status"
-      - name: Upload implementation error
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: route-timetable-implementation-error
-          path: /tmp/route-timetables-implementation.log
-          retention-days: 2
+          python /tmp/route-timetables.py
+      - name: Normalize generated DOM updates
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('web/map/main.ts')
+          text = path.read_text()
+          replacements = {
+            '    field.append(label, select)': '    field.replaceChildren(label, select)',
+            '  panel.append(tabs, content)': '  panel.appendChild(tabs)\n  panel.appendChild(content)',
+            '  overview.append(context, range)': '  overview.replaceChildren(context, range)',
+            '      row.append(hours, headway)': '      row.replaceChildren(hours, headway)',
+            '    row.append(hourNode, minuteList)': '    row.replaceChildren(hourNode, minuteList)',
+            '  actions.append(timetableButton, change)': '  actions.replaceChildren(timetableButton, change)',
+          }
+          for old, new in replacements.items():
+            if text.count(old) != 1:
+              raise SystemExit(f'expected one match for {old!r}, found {text.count(old)}')
+            text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
       - run: npm ci
-      - name: Validate timetable implementation
-        run: |
-          set +e
-          npm run check > /tmp/route-timetables-validation.log 2>&1
-          status=$?
-          set -e
-          cat /tmp/route-timetables-validation.log
-          exit "$status"
-      - name: Collect generated sources
-        if: failure()
-        run: |
-          mkdir -p /tmp/route-timetable-generated/web/map /tmp/route-timetable-generated/src/routes /tmp/route-timetable-generated/src/domain/map /tmp/route-timetable-generated/test/e2e
-          cp /tmp/route-timetables-validation.log /tmp/route-timetable-generated/
-          cp web/map/main.ts web/map/style.css /tmp/route-timetable-generated/web/map/
-          cp src/routes/map.ts /tmp/route-timetable-generated/src/routes/
-          cp src/domain/map/timetable.ts src/domain/map/timetable.test.ts /tmp/route-timetable-generated/src/domain/map/
-          cp test/e2e/map-timetable.spec.ts /tmp/route-timetable-generated/test/e2e/
-      - name: Upload validation error
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: route-timetable-validation-error
-          path: /tmp/route-timetable-generated
-          retention-days: 2
+      - run: npm run check
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
       - name: Verify timetable flow
