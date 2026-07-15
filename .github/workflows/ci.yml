@@ -46,18 +46,6 @@ jobs:
           script = dedent(source[start:end])
           script = script.replace(".write_text(r'''", ".write_text((r'''")
           script = script.replace(".replace('          ', '')", ".lstrip('\\n')")
-          script = script.replace(
-              "              field.append(label, select)",
-              "              field.appendChild(label)\\n              field.appendChild(select)",
-          )
-          script = script.replace(
-              "            panel.append(tabs, content)",
-              "            panel.appendChild(tabs)\\n            panel.appendChild(content)",
-          )
-          script = script.replace("            overview.append(context, range)", "            overview.replaceChildren(context, range)")
-          script = script.replace("                row.append(hours, headway)", "                row.replaceChildren(hours, headway)")
-          script = script.replace("              row.append(hourNode, minuteList)", "              row.replaceChildren(hourNode, minuteList)")
-          script = script.replace("            actions.append(timetableButton, change)", "            actions.replaceChildren(timetableButton, change)")
           Path('/tmp/route-timetables.py').write_text(script)
           PY
           set +e
@@ -87,15 +75,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: route-timetable-validation-error
-          path: |
-            /tmp/route-timetables-validation.log
-            web/map/main.ts
-            web/map/style.css
-            src/routes/map.ts
-            src/domain/map/timetable.ts
-            src/domain/map/timetable.test.ts
-            test/e2e/map-timetable.spec.ts
+          path: /tmp/route-timetables-validation.log
           retention-days: 2
+      - name: Preserve generated sources for repair
+        if: failure()
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/domain/map/timetable.ts src/domain/map/timetable.test.ts src/routes/map.ts web/map/main.ts web/map/style.css test/e2e/map-timetable.spec.ts .github/workflows/ci.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "wip(map): stage route timetable implementation"
+            git push origin HEAD:${{ github.head_ref }}
+          fi
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
       - name: Verify timetable flow
