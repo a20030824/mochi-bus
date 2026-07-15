@@ -377,7 +377,7 @@ async function initialise() {
       const city = cities.find((candidate) => candidate.code === cityCode)
       if (city) {
         activeCity = city
-              if (routeName) {
+        if (routeName) {
           await loadRoute(routeName, params.get('variant'))
         } else {
           await chooseCity(city)
@@ -595,7 +595,6 @@ async function chooseCity(city: MapCity) {
   lastDirectRoutes = []
   lastTransferPlans = []
   selectedDirectIndex = 0
-  map.setView(city.center, 11)
   setDocumentTitle(`${city.name}公車地圖`)
   setStatus(`${city.name} · 正在整理路線…`)
   drawer.replaceChildren(drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…'))
