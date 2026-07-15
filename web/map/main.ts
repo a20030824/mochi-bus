@@ -1299,14 +1299,22 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
   stopMarkers = []
   const bounds = L.latLngBounds([])
   const previewsByKey = new Map<string, { line: LeafletGeoJSON; style: L.PathOptions }>()
-  variants.forEach((variant, index) => {
+  // 支線常常走同一條走廊、幾何幾乎重疊:反序繪製讓列表第一項壓在最上,
+  // 其餘降透明度,地圖上看到的顏色才對得上列表的第一個色帶。
+  variants.map((variant, index) => ({ variant, index })).reverse().forEach(({ variant, index }) => {
     const color = routePalette[index % routePalette.length]
-    const style = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
+    const style = { color, weight: 5.5, opacity: index === 0 ? .62 : .3, lineCap: 'round' as const, lineJoin: 'round' as const }
     const { line, target } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, style)
     addPreviewStopDots(variant.stops, color, previewLayer)
     bindHoverTooltip(target, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
-    target.on('mouseover', () => line.setStyle({ ...style, weight: 8, opacity: .9 }))
-    target.on('mouseout', () => line.setStyle(style))
+    target.on('mouseover', () => {
+      line.setStyle({ ...style, weight: 8, opacity: .9 })
+      line.bringToFront()
+    })
+    target.on('mouseout', () => {
+      line.setStyle(style)
+      if (index !== 0) previewsByKey.get(variants[0].variantKey)?.line.bringToFront()
+    })
     target.on('click', (event) => {
       L.DomEvent.stopPropagation(event)
       drawVariant(variant)
@@ -1330,10 +1338,12 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     button.addEventListener('mouseenter', () => {
       const preview = previewsByKey.get(variant.variantKey)
       preview?.line.setStyle({ ...preview.style, weight: 8, opacity: .9 })
+      preview?.line.bringToFront()
     })
     button.addEventListener('mouseleave', () => {
       const preview = previewsByKey.get(variant.variantKey)
       preview?.line.setStyle(preview.style)
+      if (variant.variantKey !== variants[0].variantKey) previewsByKey.get(variants[0].variantKey)?.line.bringToFront()
     })
     return button
   }))
@@ -1392,27 +1402,28 @@ function timetableSummaryText(timetable: RouteTimetable): string | null {
   return `${prefix}${prefix ? ' · ' : ''}首班 ${service.firstTime} · 末班 ${service.lastTime}`
 }
 
+// 摘要列從一開始就佔位(pending),資料到了原地變成可點的時刻表入口;
+// 版面高度不變,就不需要第二次 fitBounds,畫面也不會跳。
 async function hydrateRouteTimetableSummary(
   variant: RouteMapVariant,
-  summary: HTMLElement,
-  button: HTMLButtonElement,
-  bounds: L.LatLngBounds,
+  summary: HTMLButtonElement,
   requestId: number,
 ) {
   try {
     const data = await fetchRouteTimetable(variant)
     if (requestId !== timetableRequest || !drawer.contains(summary)) return
-    if (data.timetable.mode === 'none' || !data.timetable.services.length) return
-    const text = timetableSummaryText(data.timetable)
-    if (text) {
-      summary.textContent = text
-      summary.hidden = false
+    if (data.timetable.mode === 'none' || !data.timetable.services.length) {
+      summary.remove()
+      return
     }
-    button.hidden = false
-    button.addEventListener('click', () => void openRouteTimetable(variant))
-    if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
+    summary.textContent = timetableSummaryText(data.timetable) ?? '查看時刻表'
+    summary.classList.remove('pending')
+    summary.disabled = false
+    summary.setAttribute('aria-label', '查看時刻表')
+    summary.addEventListener('click', () => void openRouteTimetable(variant))
   } catch {
-    // 時刻是輔助資訊，失敗時不打斷路線地圖與車輛定位。
+    // 時刻是輔助資訊,拿不到就整列收掉,不打斷路線地圖與車輛定位。
+    if (requestId === timetableRequest && drawer.contains(summary)) summary.remove()
   }
 }
 
@@ -1423,7 +1434,7 @@ async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
   timetableRequest += 1
   drawer.replaceChildren(
     drawerBack(`返回 ${variant.routeName}`, back),
-    heading('時刻', variant.label),
+    heading(variant.routeName, `時刻 · ${variant.label}`),
     paragraph('正在整理表定班次…'),
   )
   setStatus(`${variant.routeName} · 正在讀取時刻`)
@@ -1437,7 +1448,7 @@ async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
     const message = error instanceof Error ? error.message : '目前無法取得時刻表'
     drawer.replaceChildren(
       drawerBack(`返回 ${variant.routeName}`, back),
-      heading('時刻', message),
+      heading(variant.routeName, message),
       retryButton(() => void openRouteTimetable(variant, stopUid)),
     )
     setStatus(message, true)
@@ -1450,7 +1461,7 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
   panel.className = 'timetable-panel'
   if (timetable.mode === 'none' || !timetable.services.length) {
     panel.appendChild(paragraph('這個方向目前沒有公開的表定班次資料。'))
-    drawer.replaceChildren(drawerBack(`返回 ${variant.routeName}`, back), heading('時刻', variant.label), panel)
+    drawer.replaceChildren(drawerBack(`返回 ${variant.routeName}`, back), heading(variant.routeName, `時刻 · ${variant.label}`), panel)
     setStatus(`${variant.routeName} · 無公開時刻資料`)
     setViewBack(back)
     return
@@ -1495,20 +1506,26 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
     button.type = 'button'
     button.className = 'timetable-tab'
     button.setAttribute('role', 'tab')
-    button.textContent = service.today ? '今天' : service.label
-    if (service.today) button.title = service.label
+    // 「週日」→「日」:七個 tab 才擠得進一行;完整名稱留在 aria-label 與 title。
+    button.textContent = service.today ? '今天' : timetableTabLabel(service.label)
+    button.setAttribute('aria-label', service.label)
+    button.title = service.label
     button.addEventListener('click', () => renderService(service, button))
     tabs.appendChild(button)
     if (index === 0) queueMicrotask(() => renderService(service, button))
   })
   panel.appendChild(tabs)
   panel.appendChild(content)
-  drawer.replaceChildren(drawerBack(`返回 ${variant.routeName}`, back), heading('時刻', variant.label), panel)
+  drawer.replaceChildren(drawerBack(`返回 ${variant.routeName}`, back), heading(variant.routeName, `時刻 · ${variant.label}`), panel)
   const context = timetable.mode === 'stop'
     ? timetable.selectedStop?.stopName
     : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'
   setStatus(`${variant.routeName} · ${context ?? '時刻'}`)
   setViewBack(back)
+}
+
+function timetableTabLabel(label: string): string {
+  return /^週.$/.test(label) ? label.slice(1) : label
 }
 
 function timetableServiceContent(timetable: RouteTimetable, service: TimetableService): HTMLElement {
@@ -1523,7 +1540,7 @@ function timetableServiceContent(timetable: RouteTimetable, service: TimetableSe
       : service.label
   const range = document.createElement('strong')
   range.textContent = service.firstTime && service.lastTime
-    ? `${service.firstTime} — ${service.lastTime}`
+    ? `${service.firstTime}–${service.lastTime}`
     : '班次資料'
   overview.replaceChildren(context, range)
   fragment.appendChild(overview)
@@ -1657,26 +1674,24 @@ function drawVariant(variant: RouteMapVariant) {
   // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
   const goBack = () => backActionFor(routeViewBack(backContext()).target)()
   change.addEventListener('click', goBack)
-  const timetableSummary = document.createElement('p')
-  timetableSummary.className = 'route-service-summary'
-  timetableSummary.hidden = true
-  const timetableButton = document.createElement('button')
-  timetableButton.type = 'button'
-  timetableButton.className = 'quiet-button route-timetable-button'
-  timetableButton.textContent = '時刻'
-  timetableButton.hidden = true
+  const timetableSummary = document.createElement('button')
+  timetableSummary.type = 'button'
+  timetableSummary.className = 'route-service-summary pending'
+  timetableSummary.textContent = '正在讀取時刻…'
+  timetableSummary.disabled = true
   const actions = document.createElement('div')
   actions.className = 'route-view-actions'
-  actions.replaceChildren(timetableButton, change)
+  actions.replaceChildren(change)
   drawer.replaceChildren(
     heading(variant.routeName, variant.label),
-    paragraph(variant.subRouteName),
+    // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
+    ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
     timetableSummary,
     actions,
   )
   if (bounds.isValid()) map.fitBounds(bounds, drawerAwareCameraPadding())
   const summaryRequest = ++timetableRequest
-  void hydrateRouteTimetableSummary(variant, timetableSummary, timetableButton, bounds, summaryRequest)
+  void hydrateRouteTimetableSummary(variant, timetableSummary, summaryRequest)
   setViewBack(goBack)
   const params = new URLSearchParams({
     city: activeCity!.code,

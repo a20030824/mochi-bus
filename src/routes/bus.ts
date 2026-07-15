@@ -24,7 +24,7 @@ import {
   type TDXEnv,
   type TDXWarning,
 } from '../lib/tdx'
-import { appIcon, renderAmbiguousPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
+import { appIcon, renderAmbiguousPage, renderErrorPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
 import { getSnapshotRouteCatalog, getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { mapCities } from '../config/map-cities'
 import { siteSearchDescription } from '../seo'
@@ -385,10 +385,10 @@ function renderPageError(c: Context<Env>, error: unknown) {
       : error instanceof TDXServiceError && error.rateLimited ? 429 : 503
   const setupUrl = `/setup?${toBusSearchParams({ ...defaultBusQuery, stopName: defaultBusQuery.stopName }).toString()}`
   const title = isQueryError ? '找不到這班公車' : '暫時無法取得公車資料'
-  const actions = isQueryError
-    ? `<p><a href="${escapeHTML(setupUrl)}">重新選擇路線與站牌</a></p>`
-    : '<p><a href="/">回到首頁</a> · <a href="/map">打開地圖</a></p>'
-  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font-family:system-ui;max-width:520px;margin:80px auto;padding:24px;background:#f7f2e8;color:#29251f}a{color:#a44f39}</style><h1>${escapeHTML(title)}</h1><p>${escapeHTML(message)}</p>${actions}`, status)
+  const actionsHTML = isQueryError
+    ? `<a href="${escapeHTML(setupUrl)}">重新選擇路線與站牌</a>`
+    : '<a href="/">回到首頁</a><a href="/map">打開地圖</a>'
+  return c.html(renderErrorPage({ title, message, actionsHTML, requestUrl: c.req.url }), status)
 }
 
 function jsonError(c: Context<Env>, error: unknown) {
