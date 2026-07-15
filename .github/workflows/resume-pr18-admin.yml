@@ -3,7 +3,7 @@ name: Resume PR 18 Admin
 on:
   pull_request:
     types:
-      - reopened
+      - opened
 
 permissions:
   actions: write
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   rebase-and-apply:
-    if: github.event.pull_request.number == 21
+    if: github.event.pull_request.number == 22
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -131,7 +131,7 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
           test_path.write_text(test_text)
           PY
 
-          rm -f .github/pr18-resume-trigger .github/pr18-run-trigger
+          rm -f .github/pr18-resume-trigger .github/pr18-run-trigger .github/pr18-run-trigger-2
           git add -A web/map/main.ts test/e2e/map-timetable.spec.ts .github
           git commit -m "fix(map): rebase timetable stop focus onto latest UI"
           git push origin HEAD:fix/timetable-stop-camera
