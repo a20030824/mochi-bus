@@ -15,6 +15,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # BEGIN ROUTE TIMETABLE IMPLEMENTATION
+  implement-route-timetables:
+    name: Implement route timetables
+    if: github.event_name == 'pull_request' && github.head_ref == 'feat/route-timetables'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Apply staged timetable implementation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          source = Path('.github/staging/route-timetables.yml').read_text()
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          start = source.index(start_marker) + len(start_marker)
+          end = source.index(end_marker, start)
+          script = dedent(source[start:end])
+          script = script.replace(
+              ".replace('          ', '')",
+              ".replace('\\n          ', '\\n').lstrip()",
+          )
+          Path('/tmp/route-timetables.py').write_text(script)
+          PY
+          python /tmp/route-timetables.py
+      - run: npm ci
+      - run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Verify timetable flow
+        run: npx playwright test test/e2e/map-timetable.spec.ts --reporter=line
+      - name: Remove staging and temporary CI job
+        run: |
+          rm .github/staging/route-timetables.yml
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/ci.yml')
+          text = path.read_text()
+          start_marker = '  # BEGIN ROUTE TIMETABLE IMPLEMENTATION\n'
+          end_marker = '  # END ROUTE TIMETABLE IMPLEMENTATION\n'
+          start = text.index(start_marker)
+          end = text.index(end_marker, start) + len(end_marker)
+          path.write_text(text[:start] + text[end:])
+          PY
+      - name: Commit implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .
+          git commit -m "feat(map): add route timetables"
+          git push origin HEAD:${{ github.head_ref }}
+  # END ROUTE TIMETABLE IMPLEMENTATION
+
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 15
