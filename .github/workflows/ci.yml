@@ -5,6 +5,9 @@ on:
     branches:
       - main
   pull_request:
+  issues:
+    types:
+      - opened
   workflow_dispatch:
 
 permissions:
@@ -16,6 +19,7 @@ concurrency:
 
 jobs:
   quality:
+    if: github.event_name != 'issues'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -30,6 +34,7 @@ jobs:
       - run: npm run check
 
   map-ui:
+    if: github.event_name != 'issues'
     name: Map UI regression
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -58,16 +63,17 @@ jobs:
           retention-days: 7
 
   resume-pr18:
-    if: github.event_name == 'pull_request' && github.event.pull_request.number == 22
+    if: github.event_name == 'issues' && github.event.issue.title == 'run-pr18-handoff-final-20260716'
     permissions:
       contents: write
+      issues: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-      - name: Rebuild PR #18 cleanly on latest production main
+      - name: Rebuild PR #18 as one clean commit on latest production main
         shell: bash
         run: |
           set -euo pipefail
@@ -171,7 +177,12 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
 
           git add web/map/main.ts test/e2e/map-timetable.spec.ts
           git commit -m "fix(map): focus selected timetable stop"
-          git push --force-with-lease=refs/heads/fix/timetable-stop-camera:536df7f5e1f05e203e6da175e7fdb56954f08e25 origin HEAD:refs/heads/fix/timetable-stop-camera
+          git push --force origin HEAD:refs/heads/fix/timetable-stop-camera
+      - name: Report result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment "${{ github.event.issue.number }}" --body "PR #18 handoff finished with status: ${{ job.status }}"
 
   deploy:
     name: Deploy production
