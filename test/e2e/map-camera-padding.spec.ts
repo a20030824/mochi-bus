@@ -237,8 +237,9 @@ test.describe('mobile region and city entry', () => {
       await page.setViewportSize(viewport)
       await mockMobileEntry(page)
       await page.goto('/map')
-      await page.getByRole('button', { name: '南部', exact: true }).click()
-      await expect(page.getByRole('heading', { name: '南部', exact: true })).toBeVisible()
+      const drawer = page.locator('#map-drawer')
+      await drawer.getByRole('button', { name: '南部', exact: true }).click()
+      await expect(drawer.getByRole('heading', { name: '南部', exact: true })).toBeVisible()
 
       await expect.poll(async () => {
         const geometry = await mobileEntryGeometry(page)
@@ -259,10 +260,11 @@ test.describe('mobile region and city entry', () => {
       await page.setViewportSize(viewport)
       await mockMobileEntry(page)
       await page.goto('/map')
-      await page.getByRole('button', { name: '南部', exact: true }).click()
-      await page.getByRole('button', { name: '臺南', exact: true }).click()
-      await expect(page.getByRole('heading', { name: '臺南', exact: true })).toBeVisible()
-      await expect(page.getByRole('textbox', { name: '篩選路線，或搜尋站牌名稱' })).toBeVisible()
+      const drawer = page.locator('#map-drawer')
+      await drawer.getByRole('button', { name: '南部', exact: true }).click()
+      await drawer.getByRole('button', { name: '臺南', exact: true }).click()
+      await expect(drawer.getByRole('heading', { name: '臺南', exact: true })).toBeVisible()
+      await expect(drawer.getByRole('textbox', { name: '篩選路線，或搜尋站牌名稱' })).toBeVisible()
 
       await expect.poll(async () => {
         const [geometry, point] = await Promise.all([
