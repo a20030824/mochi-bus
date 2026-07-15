@@ -50,7 +50,19 @@ jobs:
           )
           Path('/tmp/route-timetables.py').write_text(script)
           PY
-          python /tmp/route-timetables.py
+          set +e
+          python /tmp/route-timetables.py > /tmp/route-timetables-implementation.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/route-timetables-implementation.log
+          exit "$status"
+      - name: Upload implementation error
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-timetable-implementation-error
+          path: /tmp/route-timetables-implementation.log
+          retention-days: 2
       - run: npm ci
       - run: npm run check
       - name: Install Chromium
