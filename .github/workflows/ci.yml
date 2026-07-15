@@ -63,10 +63,9 @@ jobs:
           retention-days: 7
 
   resume-pr18:
-    if: github.event_name == 'issues' && github.event.issue.title == 'run-pr18-handoff-final-20260716'
+    if: (github.event_name == 'issues' && github.event.issue.title == 'run-pr18-handoff-final-20260716') || (github.event_name == 'pull_request' && github.event.pull_request.number == 25)
     permissions:
       contents: write
-      issues: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -178,11 +177,6 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
           git add web/map/main.ts test/e2e/map-timetable.spec.ts
           git commit -m "fix(map): focus selected timetable stop"
           git push --force origin HEAD:refs/heads/fix/timetable-stop-camera
-      - name: Report result
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh issue comment "${{ github.event.issue.number }}" --body "PR #18 handoff finished with status: ${{ job.status }}"
 
   deploy:
     name: Deploy production
