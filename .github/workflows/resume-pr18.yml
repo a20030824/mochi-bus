@@ -1,20 +1,22 @@
 name: Resume PR 18
 
 on:
-  push:
-    branches:
-      - fix/timetable-stop-camera
+  pull_request:
+    types:
+      - opened
 
 permissions:
   contents: write
 
 jobs:
   rebase-and-apply:
+    if: github.base_ref == 'fix/timetable-stop-camera' && startsWith(github.head_ref, 'agent/run-pr18-resume')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: fix/timetable-stop-camera
           fetch-depth: 0
       - name: Merge latest main and reapply the focused fix
         shell: bash
@@ -129,6 +131,7 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
           test_path.write_text(test_text)
           PY
 
-          git add web/map/main.ts test/e2e/map-timetable.spec.ts
+          rm -f .github/pr18-resume-trigger .github/pr18-run-trigger
+          git add web/map/main.ts test/e2e/map-timetable.spec.ts .github/pr18-resume-trigger .github/pr18-run-trigger
           git commit -m "fix(map): rebase timetable stop focus onto latest UI"
           git push origin HEAD:fix/timetable-stop-camera
