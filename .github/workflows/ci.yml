@@ -75,24 +75,17 @@ jobs:
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
       - name: Verify timetable flow
         run: npx playwright test test/e2e/map-timetable.spec.ts --reporter=line
-      - name: Remove staging and temporary CI job
-        run: |
-          rm .github/staging/route-timetables.yml
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('.github/workflows/ci.yml')
-          text = path.read_text()
-          start_marker = '  # BEGIN ROUTE TIMETABLE IMPLEMENTATION\n'
-          end_marker = '  # END ROUTE TIMETABLE IMPLEMENTATION\n'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start) + len(end_marker)
-          path.write_text(text[:start] + text[end:])
-          PY
-      - name: Commit implementation
+      - name: Commit product implementation
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .
+          git add \
+            src/domain/map/timetable.ts \
+            src/domain/map/timetable.test.ts \
+            src/routes/map.ts \
+            web/map/main.ts \
+            web/map/style.css \
+            test/e2e/map-timetable.spec.ts
           git commit -m "feat(map): add route timetables"
           git push origin HEAD:${{ github.head_ref }}
   # END ROUTE TIMETABLE IMPLEMENTATION
