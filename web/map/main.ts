@@ -23,6 +23,12 @@ import {
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
+import {
+  formatJourneyWait,
+  splitEtaLabel,
+  type EtaSource,
+} from '../lib/eta-presentation'
+import { splitRouteDisplayName } from '../lib/route-display'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
@@ -151,6 +157,7 @@ type DirectRoute = PlaceRoute & {
   alightSequence: number
   stopCount: number
   etaMinutes?: number | null
+  etaSource?: EtaSource
 }
 
 type TransferLeg = {
@@ -172,7 +179,14 @@ type TransferPlan = {
   second: TransferLeg
   firstEtaMinutes?: number | null
   secondEtaMinutes?: number | null
+  firstEtaSource?: EtaSource
+  secondEtaSource?: EtaSource
   transferEstimate?: TransferEstimate
+}
+
+type JourneyEtaValue = {
+  minutes: number | null
+  source: EtaSource
 }
 
 type CityNetwork = {
@@ -332,7 +346,7 @@ let networkHoverFrame: number | undefined
 let networkHoverLatLng: L.LatLng | undefined
 let vehicleRefreshTimer: number | undefined
 
-const routePalette = ['#b85f49', '#4f685b', '#55718a', '#b08a47', '#765b78', '#6f7561']
+const routePalette = ['#b85f49', '#4f685b', '#8a674f', '#b08a47', '#765b78', '#6f7561']
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 const TRIP_NEARBY_FAR_DISTANCE_METERS = 250
 
@@ -602,7 +616,7 @@ function showRegion(regionCode: RegionCode) {
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
-  setStatus(`${region.name} · 選擇縣市`)
+  clearStatus()
   const regionCities = cities.filter((city) => city.region === regionCode)
   for (const city of regionCities) {
     L.marker(city.center, {
@@ -670,7 +684,6 @@ async function chooseCity(city: MapCity) {
     category = '全部'
     renderRoutePicker()
     setDrawerAwareView(city.center, 11)
-    setStatus(`${city.name} · ${routes.length} 條路線`)
   } catch {
     if (isStaleNav(requestId)) return
     setStatus('目前無法載入這個縣市的路線。', true)
@@ -736,10 +749,10 @@ function renderRoutePicker() {
     return
   }
   const back = drawerBack('返回縣市', () => showRegion(activeCity!.region))
-  const title = heading(activeCity.name, '不用設定起終點，直接看一條公車。')
+  const title = heading(activeCity.name, `${routes.length} 條路線，不用設定起終點，直接看一條公車。`)
   const search = document.createElement('input')
   search.className = 'map-search'
-  search.placeholder = '篩選路線，或搜尋站牌名稱'
+  search.placeholder = '路線或站牌名稱'
   search.setAttribute('aria-label', '篩選路線，或搜尋站牌名稱')
   const categories = document.createElement('div')
   categories.className = 'map-categories'
@@ -762,7 +775,7 @@ function renderRoutePicker() {
     categories.replaceChildren(...names.map((name) => {
       const button = document.createElement('button')
       button.className = `map-chip${category === name ? ' active' : ''}`
-      button.textContent = name
+      button.textContent = name === '幸福／社區' ? '幸福・社區' : name
       button.addEventListener('click', () => {
         category = name
         listRegion.scrollTop = 0
@@ -777,7 +790,16 @@ function renderRoutePicker() {
     routeGrid.replaceChildren(...visible.map((route) => {
       const button = document.createElement('button')
       button.className = 'map-route-button'
-      button.textContent = route.routeName
+      button.setAttribute('aria-label', route.routeName)
+      const display = splitRouteDisplayName(route.routeName)
+      const name = document.createElement('strong')
+      name.textContent = display.name
+      button.appendChild(name)
+      if (display.note) {
+        const note = document.createElement('small')
+        note.textContent = display.note
+        button.appendChild(note)
+      }
       button.addEventListener('click', () => void loadRoute(route.routeName))
       return button
     }))
@@ -807,6 +829,7 @@ function renderRoutePicker() {
     queueStopSearch()
   })
   render()
+  clearStatus()
   setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
 }
 
@@ -894,7 +917,7 @@ function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
   labelNode.textContent = label
   const action = document.createElement('span')
   action.className = 'trip-endpoint-action'
-  action.textContent = '↻'
+  action.textContent = '›'
   action.setAttribute('aria-hidden', 'true')
   const name = document.createElement('strong')
   name.className = 'trip-endpoint-name'
@@ -1246,7 +1269,6 @@ function backActionFor(target: RouteBackTarget): () => void {
     return () => {
       if (lastVariantChoices) {
         renderVariantPicker(lastVariantChoices.routeName, lastVariantChoices.variants)
-        setStatus(`${lastVariantChoices.routeName} · 選擇行駛方向`)
       } else {
         renderRoutePicker()
       }
@@ -1277,7 +1299,7 @@ function drawTripEndpoints() {
     unifiedStopMarker(fromCoordinate, true, '#b85f49').bindTooltip('出發位置', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
   }
   if (toCoordinate) {
-    unifiedStopMarker(toCoordinate, true, '#55718a').bindTooltip('目的地', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
+    unifiedStopMarker(toCoordinate, true, '#4f685b').bindTooltip('目的地', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
   }
 }
 
@@ -1333,7 +1355,6 @@ async function loadRoute(
       drawVariant(data.variants[0])
     } else {
       renderVariantPicker(routeName, data.variants)
-      setStatus(`${routeName} · 選擇行駛方向`)
     }
   } catch (error) {
     if (isStaleNav(requestId)) return
@@ -1389,13 +1410,15 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
   list.replaceChildren(...variants.map((variant, index) => {
     const button = document.createElement('button')
     button.className = 'variant-button'
-    button.style.borderLeft = `4px solid ${routePalette[index % routePalette.length]}`
+    button.style.setProperty('--route-color', routePalette[index % routePalette.length])
     const strong = document.createElement('strong')
     strong.textContent = variant.label
-    const small = document.createElement('span')
-    small.textContent = variant.subRouteName
     button.appendChild(strong)
-    button.appendChild(small)
+    if (variant.subRouteName && variant.subRouteName !== variant.routeName) {
+      const small = document.createElement('span')
+      small.textContent = variant.subRouteName
+      button.appendChild(small)
+    }
     button.addEventListener('click', () => drawVariant(variant))
     button.addEventListener('mouseenter', () => {
       const preview = previewsByKey.get(variant.variantKey)
@@ -1421,6 +1444,7 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     content: [list],
   })
   if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
+  clearStatus()
   setViewBack(variantBack)
 }
 
@@ -1482,7 +1506,7 @@ async function hydrateRouteTimetableSummary(
       summary.remove()
       return
     }
-    summary.textContent = timetableSummaryText(data.timetable) ?? '查看時刻表'
+    renderTimetableSummary(summary, timetableSummaryText(data.timetable) ?? '查看時刻表')
     summary.classList.remove('pending')
     summary.disabled = false
     summary.setAttribute('aria-label', '查看時刻表')
@@ -1491,6 +1515,21 @@ async function hydrateRouteTimetableSummary(
     // 時刻是輔助資訊,拿不到就整列收掉,不打斷路線地圖與車輛定位。
     if (requestId === timetableRequest && drawer.contains(summary)) summary.remove()
   }
+}
+
+function renderTimetableSummary(summary: HTMLButtonElement, text: string) {
+  const parts = text.split(/(\d{2}:\d{2}(?:–\d{2}:\d{2})?|\d+(?:–\d+)?(?=\s*分))/g)
+  const copy = document.createElement('span')
+  parts.filter(Boolean).forEach((part) => {
+    if (!/^\d/.test(part)) {
+      copy.appendChild(document.createTextNode(part))
+      return
+    }
+    const number = document.createElement('strong')
+    number.textContent = part
+    copy.appendChild(number)
+  })
+  summary.replaceChildren(copy)
 }
 
 async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
@@ -1640,7 +1679,7 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
   } else {
     selectionLayer.clearLayers()
   }
-  setStatus(`${variant.routeName} · ${context ?? '時刻'}`)
+  clearStatus()
   setViewBack(back)
 }
 
@@ -1788,7 +1827,7 @@ function drawVariant(variant: RouteMapVariant) {
   }).addTo(routeLayer)
 
   const bounds = casing.getBounds()
-  setStatus(`${variant.routeName} · ${variant.stops.features.length} 站`)
+  clearStatus()
   const canReturnToVariantPicker = !routeReturnsToTrip
     && variantPickerUsed
     && lastVariantChoices?.routeName === variant.routeName
@@ -1810,7 +1849,7 @@ function drawVariant(variant: RouteMapVariant) {
     mode: 'compact',
     content: [
       drawerBack(routeViewBack(backContext()).label, goBack),
-      heading(variant.routeName, variant.label),
+      heading(variant.routeName, `${variant.label} · ${variant.stops.features.length} 站`),
       // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
       ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
       timetableSummary,
@@ -2155,12 +2194,17 @@ function renderNearbyPlaces() {
     mode: 'map-list',
     header: [
       drawerBack(hasTripResults() ? '返回行程候選' : '路線列表', nearbyBack),
-      heading('附近站牌', '點任一站牌，就會預覽所有經過路線。'),
+      heading(
+        '附近站牌',
+        lastNearbyPlaces.length
+          ? `${lastNearbyPlaces.length} 個附近站牌，點任一站牌預覽所有經過路線。`
+          : '附近沒有站牌。',
+      ),
     ],
     content: [list],
     footer: [tripModeButton()],
   })
-  setStatus(lastNearbyPlaces.length ? `找到 ${lastNearbyPlaces.length} 個附近站牌` : '附近沒有站牌')
+  clearStatus()
   const [latitude, longitude] = lastNearbyOrigin
   history.replaceState(null, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
   setDocumentTitle(`${activeCity.name}公車地圖`)
@@ -2248,18 +2292,23 @@ async function loadDirectRoutes() {
 }
 
 async function fetchJourneyEta(legs: Array<{ key: string; patternId: string; sequence: number }>) {
-  if (!activeCity || !legs.length) return new Map<string, number | null>()
+  if (!activeCity || !legs.length) return new Map<string, JourneyEtaValue>()
   try {
     const response = await tdxFetch('/api/v1/map/journey-eta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ city: activeCity.code, legs }),
     })
-    if (!response.ok) return new Map<string, number | null>()
-    const data = await response.json() as { estimates?: Array<{ key: string; minutes: number | null }> }
-    return new Map((data.estimates ?? []).map((estimate) => [estimate.key, estimate.minutes]))
+    if (!response.ok) return new Map<string, JourneyEtaValue>()
+    const data = await response.json() as {
+      estimates?: Array<{ key: string; minutes: number | null; source?: EtaSource }>
+    }
+    return new Map((data.estimates ?? []).map((estimate) => [
+      estimate.key,
+      { minutes: estimate.minutes, source: estimate.source ?? 'none' },
+    ]))
   } catch {
-    return new Map<string, number | null>()
+    return new Map<string, JourneyEtaValue>()
   }
 }
 
@@ -2269,10 +2318,14 @@ async function rankDirectRoutesByEta(routesToRank: DirectRoute[]): Promise<Direc
     patternId: route.variantKey,
     sequence: route.boardSequence,
   })))
-  return routesToRank.map((route, index) => ({
-    ...route,
-    etaMinutes: estimates.get(`direct:${index}`) ?? null,
-  })).sort((a, b) =>
+  return routesToRank.map((route, index) => {
+    const estimate = estimates.get(`direct:${index}`)
+    return {
+      ...route,
+      etaMinutes: estimate?.minutes ?? null,
+      etaSource: estimate?.source ?? 'none',
+    }
+  }).sort((a, b) =>
     (a.etaMinutes ?? Number.POSITIVE_INFINITY) - (b.etaMinutes ?? Number.POSITIVE_INFINITY)
     || a.stopCount - b.stopCount,
   )
@@ -2284,8 +2337,10 @@ async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPl
     { key: `transfer:${index}:second`, patternId: plan.second.variantKey, sequence: plan.second.boardSequence },
   ]))
   return plans.map((plan, index) => {
-    const firstEta = estimates.get(`transfer:${index}:first`) ?? null
-    const secondEta = estimates.get(`transfer:${index}:second`) ?? null
+    const firstEstimate = estimates.get(`transfer:${index}:first`)
+    const secondEstimate = estimates.get(`transfer:${index}:second`)
+    const firstEta = firstEstimate?.minutes ?? null
+    const secondEta = secondEstimate?.minutes ?? null
     const estimate = estimateTransfer({
       firstStopCount: plan.first.stopCount,
       secondStopCount: plan.second.stopCount,
@@ -2297,6 +2352,8 @@ async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPl
       ...plan,
       firstEtaMinutes: firstEta,
       secondEtaMinutes: secondEta,
+      firstEtaSource: firstEstimate?.source ?? 'none',
+      secondEtaSource: secondEstimate?.source ?? 'none',
       transferEstimate: estimate,
     }
   }).sort((a, b) =>
@@ -2329,9 +2386,8 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     const name = document.createElement('strong')
     name.textContent = route.routeName
     const count = document.createElement('span')
-    count.textContent = route.etaMinutes === null || route.etaMinutes === undefined
-      ? `${route.stopCount} 站`
-      : `${route.etaMinutes} 分到站 · ${route.stopCount} 站`
+    const wait = formatJourneyWait(route.etaMinutes, route.etaSource)
+    count.textContent = wait ? `${wait} · ${route.stopCount} 站` : `${route.stopCount} 站`
     top.appendChild(name)
     top.appendChild(count)
     const detail = document.createElement('small')
@@ -2346,7 +2402,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     const detailButton = document.createElement('button')
     detailButton.type = 'button'
     detailButton.className = 'direct-route-detail'
-    detailButton.textContent = '完整路線'
+    detailButton.textContent = '完整路線 ›'
     detailButton.setAttribute('aria-label', `查看 ${route.routeName} 完整路線`)
     detailButton.addEventListener('click', (event) => {
       event.stopPropagation()
@@ -2369,7 +2425,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     content: [list],
     footer: [reset],
   })
-  setStatus(directRoutes.length ? `找到 ${directRoutes.length} 個直達方向` : '沒有直達車')
+  clearStatus()
   setViewBack(resumeDestinationSelection)
 }
 
@@ -2399,7 +2455,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     const title = document.createElement('div')
     title.className = 'transfer-title'
     const transfer = document.createElement('strong')
-    transfer.textContent = `${plan.transferName} 轉乘${plan.transferWalkMeters ? ` · 步行 ${plan.transferWalkMeters} m` : ''}`
+    transfer.textContent = '一次轉乘'
     const count = document.createElement('span')
     const estimatePresentation = plan.transferEstimate
       ? describeTransferEstimate(plan.transferEstimate)
@@ -2427,7 +2483,9 @@ function renderTransferPlans(plans: TransferPlan[]) {
       routeName.textContent = leg.routeName
       const stops = document.createElement('small')
       const eta = legIndex === 0 ? plan.firstEtaMinutes : plan.secondEtaMinutes
-      stops.textContent = `${eta === null || eta === undefined ? '' : `${eta} 分到站 · `}${leg.stopCount} 站 · ${leg.label}`
+      const etaSource = legIndex === 0 ? plan.firstEtaSource : plan.secondEtaSource
+      const wait = formatJourneyWait(eta, etaSource)
+      stops.textContent = `${wait ? `${wait} · ` : ''}${leg.stopCount} 站 · ${leg.label}`
       button.appendChild(order)
       button.appendChild(routeName)
       button.appendChild(stops)
@@ -2436,6 +2494,21 @@ function renderTransferPlans(plans: TransferPlan[]) {
         openTripRoute(leg.routeName, leg.variantKey, color)
       })
       card.appendChild(button)
+      if (legIndex === 0) {
+        const connection = document.createElement('div')
+        connection.className = 'transfer-connection'
+        const icon = document.createElement('span')
+        icon.textContent = '↳'
+        icon.setAttribute('aria-hidden', 'true')
+        const copy = document.createElement('strong')
+        copy.textContent = `於 ${plan.transferName} 轉乘`
+        const walk = document.createElement('small')
+        walk.textContent = plan.transferWalkMeters ? `步行約 ${plan.transferWalkMeters} m` : '同站轉乘'
+        connection.appendChild(icon)
+        connection.appendChild(copy)
+        connection.appendChild(walk)
+        card.appendChild(connection)
+      }
     })
     list.appendChild(card)
   })
@@ -2450,7 +2523,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     content: [list],
     footer: [tripModeButton()],
   })
-  setStatus(plans.length ? `找到 ${plans.length} 個一次轉乘方案` : '沒有合理的一次轉乘方案')
+  clearStatus()
   setViewBack(resumeDestinationSelection)
 }
 
@@ -2728,9 +2801,10 @@ function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLBu
   let selected = activeCity ? isFavoriteDirection(activeCity.code, place.placeId, bus) : false
 
   const render = () => {
-    control.textContent = selected ? '×' : '＋'
+    control.textContent = '⌂'
     control.title = selected ? '從首頁移除這個方向' : '將這個方向加入首頁'
     control.setAttribute('aria-label', control.title)
+    control.setAttribute('aria-pressed', String(selected))
     control.classList.toggle('selected', selected)
   }
 
@@ -2801,14 +2875,21 @@ async function showPlaceRoutes(place: NearbyPlace) {
       button.className = 'place-route-button'
       const color = routeColor(route.routeName)
       row.style.setProperty('--route-color', color)
+      const tick = document.createElement('span')
+      tick.className = 'route-color-tick'
+      tick.setAttribute('aria-hidden', 'true')
       const line = document.createElement('span')
+      line.className = 'place-route-main'
       const routeName = document.createElement('strong')
       routeName.textContent = route.routeName
-      const direction = document.createElement('span')
-      direction.textContent = route.label
-      const eta = document.createElement('b')
-      eta.className = 'place-route-eta'
-      eta.textContent = route.etaLabel
+      const eta = etaPresentationNode(route.etaLabel)
+      eta.classList.add('place-route-eta')
+      if (route.source === 'schedule') eta.classList.add('estimated')
+      if ((route.source === 'realtime' || route.source === 'stale-realtime')
+        && route.estimateSeconds !== null
+        && route.estimateSeconds <= 180) {
+        eta.classList.add('urgent')
+      }
       if (route.source === 'stale-realtime') {
         const freshness = document.createElement('small')
         freshness.className = 'eta-freshness'
@@ -2819,6 +2900,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
       line.appendChild(eta)
       const detail = document.createElement('small')
       detail.textContent = route.label
+      button.appendChild(tick)
       button.appendChild(line)
       button.appendChild(detail)
       button.addEventListener('click', () => void loadRoute(
@@ -2846,7 +2928,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
     map.panTo([place.latitude, place.longitude])
     history.replaceState(null, '', `/map?city=${activeCity.code}&place=${encodeURIComponent(place.placeId)}`)
     setDocumentTitle(`${place.name} 到站時間`)
-    setStatus(`${place.name} · ${data.routes.length} 個行車方向`)
+    clearStatus()
   } catch (error) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '站牌路線讀取失敗'
@@ -2878,6 +2960,28 @@ function paragraph(text: string): HTMLElement {
   const node = document.createElement('p')
   node.className = 'drawer-copy'
   node.textContent = text
+  return node
+}
+
+function etaPresentationNode(label: string): HTMLSpanElement {
+  const parts = splitEtaLabel(label)
+  const node = document.createElement('span')
+  if (parts.prefix) {
+    const prefix = document.createElement('small')
+    prefix.className = 'eta-prefix'
+    prefix.textContent = parts.prefix
+    node.appendChild(prefix)
+  }
+  const value = document.createElement('b')
+  value.className = 'eta-value'
+  value.textContent = parts.value
+  node.appendChild(value)
+  if (parts.suffix) {
+    const suffix = document.createElement('small')
+    suffix.className = 'eta-suffix'
+    suffix.textContent = parts.suffix
+    node.appendChild(suffix)
+  }
   return node
 }
 
@@ -2913,7 +3017,16 @@ function buttonGrid(items: Array<{ label: string; onClick: () => void }>): HTMLE
 
 function setStatus(text: string, error = false) {
   statusNode.textContent = text
+  statusNode.classList.remove('dismissed')
   statusNode.classList.toggle('error', error)
+  statusNode.removeAttribute('aria-hidden')
+}
+
+function clearStatus() {
+  statusNode.textContent = ''
+  statusNode.classList.add('dismissed')
+  statusNode.classList.remove('error')
+  statusNode.setAttribute('aria-hidden', 'true')
 }
 
 // 跟著畫面更新分頁標題:多分頁與瀏覽紀錄裡才認得出「哪一條路線、哪一站」。

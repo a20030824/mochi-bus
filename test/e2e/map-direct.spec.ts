@@ -121,8 +121,8 @@ test.describe('direct journey candidate selection', () => {
     const resultHeading = page.getByRole('heading', { name: '起點 → 終點', exact: true })
     await expect(resultHeading).toBeVisible()
     const compactDetail = cards.nth(0).getByRole('button', { name: '查看 A 完整路線', exact: true })
-    await expect(compactDetail).toHaveText('完整路線')
-    await expect.poll(() => compactDetail.evaluate((button) => getComputedStyle(button).position)).toBe('absolute')
+    await expect(compactDetail).toHaveText('完整路線 ›')
+    await expect.poll(() => compactDetail.evaluate((button) => getComputedStyle(button).position)).toBe('static')
     const originalViewport = page.viewportSize()!
     await page.setViewportSize({ width: 390, height: 844 })
     expect(await resultHeading.evaluate((heading) => parseFloat(getComputedStyle(heading).fontSize))).toBeLessThanOrEqual(24)
@@ -141,11 +141,28 @@ test.describe('direct journey candidate selection', () => {
 
     const zoomIn = page.getByRole('button', { name: 'Zoom in', exact: true })
     await expect(zoomIn).toHaveCount(1)
-    const mapPane = page.locator('.leaflet-map-pane')
-    await expect(mapPane).toHaveCount(1)
     await zoomIn.click()
     await zoomIn.click()
-    const cameraBeforeDetail = await mapPane.getAttribute('style')
+    // Leaflet 可用不同的內部 transform 表示同一個鏡頭；比較使用者實際看見的
+    // 上／下車標籤位置，才能穩定驗證從路線詳情返回時沒有搶走視角。
+    const readJourneyCamera = () => journeyLabels.evaluateAll((labels) => JSON.stringify(labels.map((label) => {
+      const bounds = label.getBoundingClientRect()
+      return { x: Math.round(bounds.x), y: Math.round(bounds.y) }
+    })))
+    let cameraBeforeDetail = ''
+    let stableCameraSamples = 0
+    await expect.poll(async () => {
+      const nextCamera = await readJourneyCamera()
+      if (nextCamera === cameraBeforeDetail) stableCameraSamples += 1
+      else {
+        cameraBeforeDetail = nextCamera
+        stableCameraSamples = 0
+      }
+      return stableCameraSamples
+    }, {
+      intervals: [100, 100, 150, 200, 250],
+      timeout: 10_000,
+    }).toBeGreaterThanOrEqual(3)
 
     await cards.nth(1).getByRole('button', { name: '查看 B 完整路線', exact: true }).click()
     await expect.poll(() => routeDetailCalls.length).toBe(5)
@@ -156,7 +173,7 @@ test.describe('direct journey candidate selection', () => {
     await backToTrip.click()
     await expect(page.locator('.direct-route-card')).toHaveCount(2)
     await expect(page.locator('.direct-route-card').nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
-    await expect.poll(() => mapPane.getAttribute('style')).toBe(cameraBeforeDetail)
+    await expect.poll(readJourneyCamera).toBe(cameraBeforeDetail)
 
     directResponseMode = 'one'
     var chooseDestinationAgain = page.getByRole('button', { name: '重新選目的地', exact: false })

@@ -21,7 +21,7 @@ test('aligns the selected origin with destination search and keeps the compact i
   await page.setViewportSize({ width: 420, height: 312 })
 
   const summary = drawer.getByRole('button', { name: '更換出發站牌：公園南路' })
-  await expect(summary).toContainText('↻')
+  await expect(summary).toContainText('›')
   await expect(summary).not.toContainText('更換')
   const geometry = await drawer.evaluate((element) => {
     const summaryRect = element.querySelector<HTMLElement>('.trip-matched-summary')!.getBoundingClientRect()

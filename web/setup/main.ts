@@ -94,6 +94,7 @@ function renderBoards() {
   const value = boards()
   const active = activeBoardId()
   boardList.replaceChildren()
+  addBoardButton.classList.toggle('empty-state', value.length === 0)
   if (!value.length) {
     boardList.innerHTML = '<p class="empty">這裡還空著，加一塊常用站牌吧。</p>'
     return

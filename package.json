@@ -16,6 +16,7 @@
     "deploy": "npm run build:map && wrangler deploy --minify",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:visual": "playwright test test/e2e/map-visual.spec.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run cf-typegen:check && npm run test && npm run typecheck && npm run build:map && wrangler deploy --dry-run",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example",
