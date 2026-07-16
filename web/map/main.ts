@@ -1704,32 +1704,25 @@ function drawVariant(variant: RouteMapVariant) {
     && variantPickerUsed
     && lastVariantChoices?.routeName === variant.routeName
     && (lastVariantChoices?.variants.length ?? 0) > 1
-  const change = document.createElement('button')
-  change.className = 'quiet-button'
   const backContext = () => ({
     returnToTrip: routeReturnsToTrip,
     hasTripResults: hasTripResults(),
     canReturnToVariantPicker,
     hasStopBackAction: Boolean(routeBackAction),
   })
-  change.textContent = routeViewBack(backContext()).label
   // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
   const goBack = () => backActionFor(routeViewBack(backContext()).target)()
-  change.addEventListener('click', goBack)
   const timetableSummary = document.createElement('button')
   timetableSummary.type = 'button'
   timetableSummary.className = 'route-service-summary pending'
   timetableSummary.textContent = '正在讀取時刻…'
   timetableSummary.disabled = true
-  const actions = document.createElement('div')
-  actions.className = 'route-view-actions'
-  actions.replaceChildren(change)
   drawer.replaceChildren(
+    drawerBack(routeViewBack(backContext()).label, goBack),
     heading(variant.routeName, variant.label),
     // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
     ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
     timetableSummary,
-    actions,
   )
   if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
   const summaryRequest = ++timetableRequest
