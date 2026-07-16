@@ -87,6 +87,7 @@ test('keeps the selected origin aligned with the destination search', async ({ p
   await drawer.getByRole('button', { name: '路線規劃：選擇出發位置與目的地' }).click()
   await drawer.getByRole('textbox', { name: '搜尋出發站牌' }).fill('公園南路')
   await drawer.getByRole('button', { name: /公園南路/ }).click()
+  // 先完成選點，再縮到回報畫面的尺寸，避免把入口重疊問題混入這個狀態測試。
   await page.setViewportSize({ width: 420, height: 312 })
 
   await expect(drawer.getByRole('heading', { name: '選擇目的地' })).toBeVisible()
@@ -105,4 +106,3 @@ test('keeps the selected origin aligned with the destination search', async ({ p
   expect(geometry.widthDifference).toBeLessThanOrEqual(1)
   expect(geometry.verticalGap).toBeGreaterThanOrEqual(9)
 })
-
