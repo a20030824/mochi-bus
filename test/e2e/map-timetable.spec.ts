@@ -37,14 +37,20 @@ function timetable(stopUid = 'C1') {
   }
 }
 
-async function mockRoute(page: Page) {
+function singleServiceTimetable(stopUid = 'C1') {
+  const data = timetable(stopUid)
+  data.timetable.services = data.timetable.services.filter((service) => service.label === '每日')
+  return data
+}
+
+async function mockRoute(page: Page, singleService = false) {
   await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
   await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [{ code: 'ChiayiCounty', name: '嘉義縣', region: 'south', center: [23.46, 120.35] }] } }))
   await page.route(/\/api\/v1\/map\/route(?:\?|$)/, (route) => route.fulfill({ json: { variants: [variant] } }))
   await page.route('**/api/v1/map/vehicles*', (route) => route.fulfill({ json: { vehicles: [] } }))
   await page.route('**/api/v1/map/timetable*', (route) => {
     const stopUid = new URL(route.request().url()).searchParams.get('stopUid') ?? 'C1'
-    return route.fulfill({ json: timetable(stopUid) })
+    return route.fulfill({ json: singleService ? singleServiceTimetable(stopUid) : timetable(stopUid) })
   })
 }
 
@@ -63,13 +69,10 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
 
   await expect(drawer.getByRole('heading', { name: '7211' })).toBeVisible()
   await expect(drawer.locator('.drawer-heading p')).toContainText('時刻')
-  const expectedWeekday = await page.evaluate(() => new Intl.DateTimeFormat('zh-TW', {
-    timeZone: 'Asia/Taipei', weekday: 'short',
-  }).format(new Date()).replace(/^星期/, '週'))
-  const todayTab = drawer.locator('.timetable-tab[aria-current="date"]')
-  await expect(todayTab).toHaveText(expectedWeekday)
-  await expect(todayTab).toHaveAttribute('aria-selected', 'true')
-  await expect(todayTab).toHaveAttribute('aria-label', new RegExp(`${expectedWeekday}.*今天`))
+  const activeTab = drawer.locator('.timetable-tab[aria-selected="true"]')
+  await expect(activeTab).toHaveText('每日')
+  await expect(activeTab).toHaveAttribute('aria-label', '每日')
+  await expect(drawer.getByText('今天', { exact: true })).toHaveCount(0)
 
   const stopSelect = drawer.getByRole('combobox', { name: '站牌' })
   await expect(stopSelect).toBeVisible()
@@ -108,6 +111,17 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
 })
 
 
+test('hides service tabs when only one timetable group exists', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockRoute(page, true)
+  await page.goto(`/map?city=ChiayiCounty&route=7211&variant=${encodeURIComponent(variant.variantKey)}`)
+
+  const drawer = page.locator('#map-drawer')
+  await drawer.getByRole('button', { name: '查看時刻表' }).click()
+  await expect(drawer.locator('.timetable-tabs')).toHaveCount(0)
+  await expect(drawer.locator('.timetable-overview span')).toHaveText('嘉義公園 · 每日')
+  await expect(drawer.getByText('今天', { exact: true })).toHaveCount(0)
+})
 test('does not show a scrollbar when a short route detail drawer already fits', async ({ page }) => {
   await page.setViewportSize({ width: 636, height: 381 })
   await mockRoute(page)
