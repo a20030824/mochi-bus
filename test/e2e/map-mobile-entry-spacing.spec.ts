@@ -59,6 +59,7 @@ test('does not show a scrollbar when a short region drawer already fits', async 
   const drawer = page.locator('#map-drawer')
   await drawer.getByRole('button', { name: '東部' }).click()
   await expect(drawer.getByRole('heading', { name: '東部' })).toBeVisible()
+  await expect(drawer).toHaveAttribute('data-mode', 'compact')
 
   await expect.poll(() => drawer.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(false)
   const geometry = await drawer.evaluate((element) => ({
