@@ -102,7 +102,9 @@ jobs:
           expect(controls.regionTopGap).toBeGreaterThanOrEqual(0)
           await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
           '''
-          drawer_test = replace_once(drawer_test, marker, replacement, 'route catalogue controls assertion')
+          if marker not in drawer_test:
+              raise SystemExit('route catalogue controls assertion: marker not found')
+          drawer_test = drawer_test.replace(marker, replacement, 1)
           drawer_test_path.write_text(drawer_test, encoding='utf-8')
 
           trip_test_path = Path('test/e2e/map-trip-selection-layout.spec.ts')
