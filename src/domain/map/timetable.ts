@@ -111,21 +111,7 @@ export function buildRouteTimetable(
   }
 
   const todayIndex = taipeiDayIndex(now)
-  const services = [...builders.entries()].map(([id, builder]): TimetableService => {
-    const times = [...builder.times].sort(compareTimes)
-    const periods = [...builder.periods.values()].sort((a, b) => compareTimes(a.startTime, b.startTime))
-    return {
-      id,
-      label: serviceDayLabel(builder.days),
-      days: builder.days,
-      today: builder.days.includes(todayIndex),
-      times,
-      periods,
-      firstTime: times[0] ?? periods[0]?.startTime ?? null,
-      lastTime: times.at(-1) ?? periods.at(-1)?.endTime ?? null,
-    }
-  }).filter((service) => service.times.length || service.periods.length)
-    .sort((a, b) => Number(b.today) - Number(a.today) || (a.days[0] ?? 8) - (b.days[0] ?? 8))
+  const services = normalizeServices(builders, todayIndex)
 
   const departure = stops[0] ?? null
   return {
@@ -198,6 +184,70 @@ function serviceDays(serviceDay?: Record<string, number>): number[] {
   return DAY_KEYS.flatMap((key, index) => serviceDay[key] === 1 ? [index] : [])
 }
 
+function normalizeServices(builders: Map<string, ServiceBuilder>, todayIndex: number): TimetableService[] {
+  const grouped = new Map<string, { days: number[]; times: string[]; periods: TimetablePeriod[] }>()
+  for (let day = 0; day < 7; day += 1) {
+    const times = new Set<string>()
+    const periods = new Map<string, TimetablePeriod>()
+    for (const builder of builders.values()) {
+      if (!builder.days.includes(day)) continue
+      builder.times.forEach((value) => times.add(value))
+      builder.periods.forEach((period, key) => periods.set(key, period))
+    }
+    if (!times.size && !periods.size) continue
+    const sortedTimes = [...times].sort(compareTimes)
+    const sortedPeriods = [...periods.values()].sort(comparePeriods)
+    const signature = JSON.stringify([sortedTimes, sortedPeriods])
+    const existing = grouped.get(signature)
+    if (existing) existing.days.push(day)
+    else grouped.set(signature, { days: [day], times: sortedTimes, periods: sortedPeriods })
+  }
+
+  const services = [...grouped.values()].map((group) => serviceModel(
+    group.days,
+    group.times,
+    group.periods,
+    todayIndex,
+  ))
+  const unspecified = builders.get('unspecified')
+  if (unspecified) {
+    const times = [...unspecified.times].sort(compareTimes)
+    const periods = [...unspecified.periods.values()].sort(comparePeriods)
+    if (times.length || periods.length) services.push(serviceModel([], times, periods, todayIndex))
+  }
+  return services.sort((a, b) => Number(b.today) - Number(a.today)
+    || daysUntilService(a.days, todayIndex) - daysUntilService(b.days, todayIndex)
+    || (a.days[0] ?? 8) - (b.days[0] ?? 8))
+}
+
+function serviceModel(
+  days: number[],
+  times: string[],
+  periods: TimetablePeriod[],
+  todayIndex: number,
+): TimetableService {
+  return {
+    id: days.length ? days.join('-') : 'unspecified',
+    label: serviceDayLabel(days),
+    days,
+    today: days.includes(todayIndex),
+    times,
+    periods,
+    firstTime: times[0] ?? periods[0]?.startTime ?? null,
+    lastTime: times.at(-1) ?? periods.at(-1)?.endTime ?? null,
+  }
+}
+
+function comparePeriods(a: TimetablePeriod, b: TimetablePeriod): number {
+  return compareTimes(a.startTime, b.startTime)
+    || compareTimes(a.endTime, b.endTime)
+    || a.minHeadwayMinutes - b.minHeadwayMinutes
+    || a.maxHeadwayMinutes - b.maxHeadwayMinutes
+}
+
+function daysUntilService(days: number[], todayIndex: number): number {
+  return days.length ? Math.min(...days.map((day) => (day - todayIndex + 7) % 7)) : 8
+}
 function serviceDayLabel(days: number[]): string {
   const signature = days.join(',')
   if (signature === '0,1,2,3,4,5,6') return '每日'
