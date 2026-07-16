@@ -195,7 +195,8 @@ button { cursor: pointer; }
 .locate-button {
   width: 100%;
   min-height: 40px;
-  margin-top: 10px;
+  /* drawer 的 sticky scroll-fade 以負邊距疊回底部；多留一格才不會視覺上黏邊。 */
+  margin: 10px 0 24px;
   border: 1px dashed #b8ad99;
   border-radius: 3px;
   background: transparent;

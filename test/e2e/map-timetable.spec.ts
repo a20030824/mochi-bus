@@ -29,8 +29,9 @@ function timetable(stopUid = 'C1') {
         { stopUid: 'C3', stopName: '朴子轉運站', sequence: 3, hasTimes: true },
       ],
       services: [
-        { id: '1-2-3-4-5', label: '平日', days: [1, 2, 3, 4, 5], today: true, times: [time(6), time(7), time(22)], periods: [], firstTime: time(6), lastTime: time(22) },
+        // 故意把非今日服務放前面，確認 UI 依 today 選取，而不是偷靠陣列順序。
         { id: '6', label: '週六', days: [6], today: false, times: [time(7), time(19)], periods: [], firstTime: time(7), lastTime: time(19) },
+        { id: '0-1-2-3-4-5-6', label: '每日', days: [0, 1, 2, 3, 4, 5, 6], today: true, times: [time(6), time(7), time(22)], periods: [], firstTime: time(6), lastTime: time(22) },
       ],
     },
   }
@@ -59,6 +60,14 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
 
   await expect(drawer.getByRole('heading', { name: '7211' })).toBeVisible()
   await expect(drawer.locator('.drawer-heading p')).toContainText('時刻')
+  const expectedWeekday = await page.evaluate(() => new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei', weekday: 'short',
+  }).format(new Date()).replace(/^星期/, '週'))
+  const todayTab = drawer.locator('.timetable-tab[aria-current="date"]')
+  await expect(todayTab).toHaveText(expectedWeekday)
+  await expect(todayTab).toHaveAttribute('aria-selected', 'true')
+  await expect(todayTab).toHaveAttribute('aria-label', new RegExp(`${expectedWeekday}.*今天`))
+
   const stopSelect = drawer.getByRole('combobox', { name: '站牌' })
   await expect(stopSelect).toBeVisible()
   await stopSelect.selectOption('C2')

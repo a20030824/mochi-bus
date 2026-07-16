@@ -1512,22 +1512,39 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
       const active = candidate === activeButton
       candidate.classList.toggle('active', active)
       candidate.setAttribute('aria-selected', String(active))
+      candidate.tabIndex = active ? 0 : -1
     })
     content.replaceChildren(timetableServiceContent(timetable, service))
   }
-  timetable.services.forEach((service, index) => {
+  const serviceButtons = new Map<string, HTMLButtonElement>()
+  timetable.services.forEach((service) => {
     const button = document.createElement('button')
     button.type = 'button'
     button.className = 'timetable-tab'
     button.setAttribute('role', 'tab')
-    // 「週日」→「日」:七個 tab 才擠得進一行;完整名稱留在 aria-label 與 title。
-    button.textContent = service.today ? '今天' : timetableTabLabel(service.label)
-    button.setAttribute('aria-label', service.label)
-    button.title = service.label
+    button.setAttribute('aria-selected', 'false')
+    button.tabIndex = -1
+    if (service.today) {
+      const weekday = taipeiWeekdayLabel()
+      const serviceContext = service.label === weekday ? '' : `，${service.label}`
+      button.textContent = weekday
+      button.setAttribute('aria-label', `${weekday}（今天${serviceContext}）`)
+      button.setAttribute('aria-current', 'date')
+      button.title = serviceContext ? `今天 · ${service.label}` : '今天'
+    } else {
+      // 「週日」→「日」:七個 tab 才擠得進一行;完整名稱留在 aria-label 與 title。
+      button.textContent = timetableTabLabel(service.label)
+      button.setAttribute('aria-label', service.label)
+      button.title = service.label
+    }
     button.addEventListener('click', () => renderService(service, button))
     tabs.appendChild(button)
-    if (index === 0) queueMicrotask(() => renderService(service, button))
+    serviceButtons.set(service.id, button)
   })
+  // 不依賴 API 排序：明確找 today；沒有 today 才退回第一個可用服務日。
+  const initialService = currentTimetableService(timetable)
+  const initialButton = initialService ? serviceButtons.get(initialService.id) : undefined
+  if (initialService && initialButton) queueMicrotask(() => renderService(initialService, initialButton))
   panel.appendChild(tabs)
   panel.appendChild(content)
   drawer.replaceChildren(drawerBack(`返回 ${variant.routeName}`, back), heading(variant.routeName, `時刻 · ${variant.label}`), panel)
@@ -1633,6 +1650,12 @@ function timetableHourList(service: TimetableService): HTMLElement {
 function timetableMinutes(value: string): number {
   const [hour, minute] = value.split(':').map(Number)
   return hour * 60 + minute
+}
+
+function taipeiWeekdayLabel(): string {
+  return new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei', weekday: 'short',
+  }).format(new Date()).replace(/^星期/, '週')
 }
 
 function taipeiClockMinutes(): number {
