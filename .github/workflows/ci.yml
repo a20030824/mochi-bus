@@ -49,18 +49,13 @@ jobs:
 
           page_path = Path('src/map-page.ts')
           page = page_path.read_text(encoding='utf-8')
-          inline = '''  <style>
-            .map-drawer[data-mode="map-list"] > .drawer-back,
-            .map-drawer[data-mode="results"] > .drawer-back {
-              align-self: flex-start;
-              max-width: 100%;
-              text-align: left;
-            }
-          </style>
-          '''
-          if page.count(inline) != 1:
-              raise SystemExit(f'inline map style: expected one match, found {page.count(inline)}')
-          page_path.write_text(page.replace(inline, '', 1), encoding='utf-8')
+          start_marker = '  <style>\n    .map-drawer[data-mode="map-list"] > .drawer-back,'
+          end_marker = '  <link rel="modulepreload" href="/assets/map.js">'
+          start = page.find(start_marker)
+          end = page.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit(f'inline map style bounds not found: start={start}, end={end}')
+          page_path.write_text(page[:start] + page[end:], encoding='utf-8')
           PY
       - name: Commit stylesheet fix
         run: |
