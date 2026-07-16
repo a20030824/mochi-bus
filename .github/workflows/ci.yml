@@ -44,8 +44,8 @@ jobs:
       - run: npm ci --silent
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
-      - name: Test map camera and timetable UI
-        run: npx playwright test test/e2e/map-camera-padding.spec.ts test/e2e/map-timetable.spec.ts --reporter=line,html
+      - name: Test map camera, mobile entry, and timetable UI
+        run: npx playwright test test/e2e/map-camera-padding.spec.ts test/e2e/map-mobile-entry-spacing.spec.ts test/e2e/map-timetable.spec.ts --reporter=line,html
       - name: Upload Playwright diagnostics
         if: always()
         uses: actions/upload-artifact@v4
