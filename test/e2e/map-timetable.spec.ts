@@ -54,6 +54,9 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
   await page.goto(`/map?city=ChiayiCounty&route=7211&variant=${encodeURIComponent(variant.variantKey)}`)
 
   const drawer = page.locator('#map-drawer')
+  // 路線詳情跟其他抽屜次頁一致：退路在最上方，不再佔用底部整列。
+  await expect(drawer.locator(':scope > .drawer-back')).toHaveText('← 更換路線')
+  await expect(drawer.locator('.route-view-actions')).toHaveCount(0)
   // 時刻摘要列本身就是時刻表入口:載入完成前是佔位、完成後才可點。
   await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')
   await drawer.getByRole('button', { name: '查看時刻表' }).click()

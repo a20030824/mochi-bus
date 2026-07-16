@@ -509,8 +509,6 @@ button { cursor: pointer; }
 .route-service-summary:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .route-service-summary.pending { color: #8d867a; cursor: default; }
 .route-service-summary.pending::after { content: ""; }
-.route-view-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.route-view-actions > :only-child { grid-column: 1 / -1; }
 .map-drawer:has(.timetable-panel) { max-height: min(72vh, 720px); }
 .timetable-panel { display: grid; gap: 11px; }
 .timetable-stop-field { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .04em; }
