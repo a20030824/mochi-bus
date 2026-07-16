@@ -190,7 +190,15 @@ button { cursor: pointer; }
 
 .drawer-heading h1 { margin: 5px 0 7px; font-size: 30px; line-height: 1; letter-spacing: -.045em; }
 .drawer-heading p, .drawer-copy { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-.drawer-back { margin: 0 0 12px; padding: 6px 0; border: 0; background: transparent; }
+.drawer-back {
+  align-self: flex-start;
+  max-width: 100%;
+  margin: 0 0 12px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
 
 .selection-grid, .map-route-grid {
   display: grid;
