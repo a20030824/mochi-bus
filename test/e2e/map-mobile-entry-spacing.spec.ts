@@ -41,3 +41,30 @@ for (const viewport of mobileViewports) {
     expect(geometry.horizontalOverflow).toBe(false)
   })
 }
+
+
+test('does not show a scrollbar when a short region drawer already fits', async ({ page }) => {
+  await page.setViewportSize({ width: 636, height: 381 })
+  await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/api/v1/map/cities', (route) => route.fulfill({
+    json: {
+      cities: [
+        { code: 'YilanCounty', name: '宜蘭', region: 'east', center: [24.70, 121.74] },
+        { code: 'HualienCounty', name: '花蓮', region: 'east', center: [23.99, 121.61] },
+        { code: 'TaitungCounty', name: '臺東', region: 'east', center: [22.75, 121.15] },
+      ],
+    },
+  }))
+
+  await page.goto('/map')
+  const drawer = page.locator('#map-drawer')
+  await drawer.getByRole('button', { name: '東部' }).click()
+  await expect(drawer.getByRole('heading', { name: '東部' })).toBeVisible()
+
+  await expect.poll(() => drawer.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(false)
+  const geometry = await drawer.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }))
+  expect(geometry.scrollHeight).toBeLessThanOrEqual(geometry.clientHeight + 1)
+})

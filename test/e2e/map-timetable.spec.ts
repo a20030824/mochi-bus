@@ -106,3 +106,19 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
   expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight)
   expect(geometry.overflow).toBe(false)
 })
+
+
+test('does not show a scrollbar when a short route detail drawer already fits', async ({ page }) => {
+  await page.setViewportSize({ width: 636, height: 381 })
+  await mockRoute(page)
+  await page.goto(`/map?city=ChiayiCounty&route=7211&variant=${encodeURIComponent(variant.variantKey)}`)
+
+  const drawer = page.locator('#map-drawer')
+  await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')
+  await expect.poll(() => drawer.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(false)
+  const geometry = await drawer.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }))
+  expect(geometry.scrollHeight).toBeLessThanOrEqual(geometry.clientHeight + 1)
+})
