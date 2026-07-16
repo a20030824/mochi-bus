@@ -42,7 +42,6 @@ for (const viewport of mobileViewports) {
   })
 }
 
-
 test('does not show a scrollbar when a short region drawer already fits', async ({ page }) => {
   await page.setViewportSize({ width: 636, height: 381 })
   await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
