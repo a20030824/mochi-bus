@@ -38,6 +38,14 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <title>${escapeHTML(title)}</title>
   <link rel="stylesheet" href="/assets/map.css">
+  <style>
+    .map-drawer[data-mode="map-list"] > .drawer-back,
+    .map-drawer[data-mode="results"] > .drawer-back {
+      align-self: flex-start;
+      max-width: 100%;
+      text-align: left;
+    }
+  </style>
   <link rel="modulepreload" href="/assets/map.js">
   <link rel="modulepreload" href="/assets/boards.js">
   <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
