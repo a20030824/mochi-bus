@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 const city = { code: 'Tainan', name: '臺南', region: 'south', center: [22.99, 120.21] }
 const routeNames = ['0右', '0左', ...Array.from({ length: 179 }, (_, index) => String(index + 1))]
+// 直接重現回報中的兩種長列表：181 條路線與 29 個行車方向。
 
 function variant(routeName: string) {
   return {
