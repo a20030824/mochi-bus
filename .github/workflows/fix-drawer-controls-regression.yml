@@ -1,0 +1,196 @@
+name: Fix drawer controls regression
+
+on:
+  push:
+    branches:
+      - fix/drawer-controls-regression
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Apply focused UI fixes
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          style_path = Path('web/map/style.css')
+          style = style_path.read_text(encoding='utf-8')
+          style = replace_once(
+              style,
+              '''.map-drawer[data-mode="map-list"],
+          .map-drawer[data-mode="results"] {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+          }
+          .map-drawer[data-mode="map-list"] { max-height: min(56vh, 600px); }
+          ''',
+              '''.map-drawer[data-mode="map-list"],
+          .map-drawer[data-mode="results"] {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+          }
+          .map-drawer[data-mode="map-list"] > :not(.drawer-scroll-region),
+          .map-drawer[data-mode="results"] > :not(.drawer-scroll-region) {
+            flex: 0 0 auto;
+          }
+          .map-drawer[data-mode="map-list"] { max-height: min(56vh, 600px); }
+          ''',
+              'fixed drawer controls',
+          )
+          style = replace_once(style, '  flex: 0 1 auto;\n', '  flex: 1 1 auto;\n', 'scroll region flex')
+          style = replace_once(
+              style,
+              '.trip-matched-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }\n',
+              '.trip-selection-stack { display: grid; gap: 10px; }\n.trip-selection-stack .map-search { margin-bottom: 0; }\n.trip-matched-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }\n',
+              'trip selection stack styles',
+          )
+          style = replace_once(
+              style,
+              '  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto;\n  gap: 3px 8px;\n  min-width: 0;\n',
+              '  display: grid;\n  width: 100%;\n  grid-template-columns: minmax(0, 1fr) auto;\n  gap: 3px 8px;\n  min-width: 0;\n',
+              'summary width',
+          )
+          style_path.write_text(style, encoding='utf-8')
+
+          main_path = Path('web/map/main.ts')
+          main = main_path.read_text(encoding='utf-8')
+          old = '''  const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
+          const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
+          const description = nextKind === 'from'
+            ? '點地圖或搜尋站牌。'
+            : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
+          renderDrawer('compact',
+            drawerBack('取消路線規劃', cancelTripMode),
+            heading(title, description),
+            existingSummary ?? document.createDocumentFragment(),
+            placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)),
+          )
+          '''
+          new = '''  const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
+          const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
+          const description = nextKind === 'from'
+            ? '點地圖或搜尋站牌。'
+            : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
+          const selectionControls = document.createElement('div')
+          selectionControls.className = 'trip-selection-stack'
+          if (existingSummary) selectionControls.appendChild(existingSummary)
+          selectionControls.appendChild(placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)))
+          renderDrawer('compact',
+            drawerBack('取消路線規劃', cancelTripMode),
+            heading(title, description),
+            selectionControls,
+          )
+          '''
+          main = replace_once(main, old, new, 'trip selection layout')
+          if "action.textContent = '↻'" not in main:
+              raise SystemExit('original endpoint change icon must remain unchanged')
+          main_path.write_text(main, encoding='utf-8')
+
+          drawer_test_path = Path('test/e2e/map-drawer-modes.spec.ts')
+          drawer_test = drawer_test_path.read_text(encoding='utf-8')
+          marker = '''  const region = drawer.locator(':scope > .drawer-scroll-region')
+          await expect(region).toHaveCount(1)
+          await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
+          '''
+          replacement = '''  const region = drawer.locator(':scope > .drawer-scroll-region')
+          await expect(region).toHaveCount(1)
+          await expect(drawer.getByRole('button', { name: '全部', exact: true })).toBeVisible()
+          const controls = await drawer.evaluate((element) => {
+            const searchRect = element.querySelector<HTMLElement>('.map-search')!.getBoundingClientRect()
+            const categoriesRect = element.querySelector<HTMLElement>('.map-categories')!.getBoundingClientRect()
+            const chipRect = element.querySelector<HTMLElement>('.map-chip')!.getBoundingClientRect()
+            const regionRect = element.querySelector<HTMLElement>(':scope > .drawer-scroll-region')!.getBoundingClientRect()
+            return {
+              searchHeight: searchRect.height,
+              categoriesHeight: categoriesRect.height,
+              chipTopGap: chipRect.top - categoriesRect.top,
+              chipBottomGap: categoriesRect.bottom - chipRect.bottom,
+              regionTopGap: regionRect.top - categoriesRect.bottom,
+            }
+          })
+          expect(controls.searchHeight).toBeGreaterThanOrEqual(38)
+          expect(controls.categoriesHeight).toBeGreaterThanOrEqual(28)
+          expect(controls.chipTopGap).toBeGreaterThanOrEqual(-1)
+          expect(controls.chipBottomGap).toBeGreaterThanOrEqual(-1)
+          expect(controls.regionTopGap).toBeGreaterThanOrEqual(0)
+          await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
+          '''
+          drawer_test = replace_once(drawer_test, marker, replacement, 'route catalogue controls assertion')
+          drawer_test_path.write_text(drawer_test, encoding='utf-8')
+
+          trip_test_path = Path('test/e2e/map-trip-selection-layout.spec.ts')
+          trip_test_path.write_text(r'''import { expect, test } from '@playwright/test'
+
+          test('aligns the selected origin with destination search and keeps the compact icon', async ({ page }) => {
+            await page.setViewportSize({ width: 420, height: 700 })
+            await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+            await page.route('**/api/v1/map/cities', (route) => route.fulfill({
+              json: { cities: [{ code: 'Tainan', name: '臺南', region: 'south', center: [22.99, 120.21] }] },
+            }))
+            await page.route(/\/api\/v1\/map\/routes(?:\?|$)/, (route) => route.fulfill({
+              json: { routes: [{ routeName: '0右', category: '數字' }] },
+            }))
+            await page.route('**/api/v1/map/search*', (route) => route.fulfill({
+              json: { places: [{ placeId: 'PARK', name: '公園南路', latitude: 23.001, longitude: 120.211 }] },
+            }))
+
+            await page.goto('/map?city=Tainan')
+            const drawer = page.locator('#map-drawer')
+            await drawer.getByRole('button', { name: '路線規劃：選擇出發位置與目的地' }).click()
+            await drawer.getByRole('textbox', { name: '搜尋出發站牌' }).fill('公園南路')
+            await drawer.getByRole('button', { name: /公園南路/ }).click()
+            // 先完成操作，再縮到使用者回報的矮視窗檢查結果版面。
+            await page.setViewportSize({ width: 420, height: 312 })
+
+            await expect(drawer.getByRole('heading', { name: '再點一下目的地' })).toBeVisible()
+            const summary = drawer.getByRole('button', { name: '更換出發站牌：公園南路' })
+            await expect(summary).toContainText('↻')
+            await expect(summary).not.toContainText('更換')
+
+            const geometry = await drawer.evaluate((element) => {
+              const summaryRect = element.querySelector<HTMLElement>('.trip-matched-summary')!.getBoundingClientRect()
+              const searchRect = element.querySelector<HTMLElement>('.place-search .map-search')!.getBoundingClientRect()
+              return {
+                widthDifference: Math.abs(summaryRect.width - searchRect.width),
+                verticalGap: searchRect.top - summaryRect.bottom,
+              }
+            })
+            expect(geometry.widthDifference).toBeLessThanOrEqual(1)
+            expect(geometry.verticalGap).toBeGreaterThanOrEqual(9)
+          })
+          ''', encoding='utf-8')
+          PY
+      - run: npm ci
+      - run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Run focused UI regressions
+        run: npx playwright test test/e2e/map-drawer-modes.spec.ts test/e2e/map-trip-selection-layout.spec.ts --reporter=line
+      - name: Commit verified product changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add web/map/main.ts web/map/style.css test/e2e/map-drawer-modes.spec.ts test/e2e/map-trip-selection-layout.spec.ts
+          git commit -m "fix(map): keep drawer controls visible"
+          git push origin HEAD:fix/drawer-controls-regression
