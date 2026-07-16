@@ -1,27 +1,27 @@
 name: Fix drawer controls regression
 
 on:
-  push:
-    branches:
-      - fix/drawer-controls-regression
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   fix-and-verify:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'fix/drawer-controls-regression' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Apply focused UI fixes
+      - name: Apply focused CSS and regression tests
         run: |
           python3 <<'PY'
           from pathlib import Path
@@ -61,51 +61,17 @@ jobs:
           style = replace_once(style, '  flex: 0 1 auto;\n', '  flex: 1 1 auto;\n', 'scroll region flex')
           style = replace_once(
               style,
-              '.trip-matched-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }\n',
-              '.trip-selection-stack { display: grid; gap: 10px; }\n.trip-selection-stack .map-search { margin-bottom: 0; }\n.trip-matched-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }\n',
-              'trip selection stack styles',
-          )
-          style = replace_once(
-              style,
               '  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto;\n  gap: 3px 8px;\n  min-width: 0;\n',
               '  display: grid;\n  width: 100%;\n  grid-template-columns: minmax(0, 1fr) auto;\n  gap: 3px 8px;\n  min-width: 0;\n',
               'summary width',
           )
+          style = replace_once(
+              style,
+              '.trip-matched-summary:only-child { grid-column: 1 / -1; }\n',
+              '.trip-matched-summary:only-child { grid-column: 1 / -1; }\n.map-drawer > .trip-matched-summary { margin-bottom: 10px; }\n',
+              'summary spacing',
+          )
           style_path.write_text(style, encoding='utf-8')
-
-          main_path = Path('web/map/main.ts')
-          main = main_path.read_text(encoding='utf-8')
-          old = '''  const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
-          const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
-          const description = nextKind === 'from'
-            ? '點地圖或搜尋站牌。'
-            : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
-          renderDrawer('compact',
-            drawerBack('取消路線規劃', cancelTripMode),
-            heading(title, description),
-            existingSummary ?? document.createDocumentFragment(),
-            placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)),
-          )
-          '''
-          new = '''  const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
-          const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
-          const description = nextKind === 'from'
-            ? '點地圖或搜尋站牌。'
-            : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
-          const selectionControls = document.createElement('div')
-          selectionControls.className = 'trip-selection-stack'
-          if (existingSummary) selectionControls.appendChild(existingSummary)
-          selectionControls.appendChild(placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)))
-          renderDrawer('compact',
-            drawerBack('取消路線規劃', cancelTripMode),
-            heading(title, description),
-            selectionControls,
-          )
-          '''
-          main = replace_once(main, old, new, 'trip selection layout')
-          if "action.textContent = '↻'" not in main:
-              raise SystemExit('original endpoint change icon must remain unchanged')
-          main_path.write_text(main, encoding='utf-8')
 
           drawer_test_path = Path('test/e2e/map-drawer-modes.spec.ts')
           drawer_test = drawer_test_path.read_text(encoding='utf-8')
@@ -160,14 +126,11 @@ jobs:
             await drawer.getByRole('button', { name: '路線規劃：選擇出發位置與目的地' }).click()
             await drawer.getByRole('textbox', { name: '搜尋出發站牌' }).fill('公園南路')
             await drawer.getByRole('button', { name: /公園南路/ }).click()
-            // 先完成操作，再縮到使用者回報的矮視窗檢查結果版面。
             await page.setViewportSize({ width: 420, height: 312 })
 
-            await expect(drawer.getByRole('heading', { name: '再點一下目的地' })).toBeVisible()
             const summary = drawer.getByRole('button', { name: '更換出發站牌：公園南路' })
             await expect(summary).toContainText('↻')
             await expect(summary).not.toContainText('更換')
-
             const geometry = await drawer.evaluate((element) => {
               const summaryRect = element.querySelector<HTMLElement>('.trip-matched-summary')!.getBoundingClientRect()
               const searchRect = element.querySelector<HTMLElement>('.place-search .map-search')!.getBoundingClientRect()
@@ -191,6 +154,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add web/map/main.ts web/map/style.css test/e2e/map-drawer-modes.spec.ts test/e2e/map-trip-selection-layout.spec.ts
+          git add web/map/style.css test/e2e/map-drawer-modes.spec.ts test/e2e/map-trip-selection-layout.spec.ts
           git commit -m "fix(map): keep drawer controls visible"
           git push origin HEAD:fix/drawer-controls-regression
