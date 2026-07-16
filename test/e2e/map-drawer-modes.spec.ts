@@ -77,6 +77,25 @@ test('keeps the city route catalogue below half the map with one internal scroll
   await expect(drawer).toHaveAttribute('data-mode', 'map-list')
   const region = drawer.locator(':scope > .drawer-scroll-region')
   await expect(region).toHaveCount(1)
+  await expect(drawer.getByRole('button', { name: '全部', exact: true })).toBeVisible()
+  const controls = await drawer.evaluate((element) => {
+    const searchRect = element.querySelector<HTMLElement>('.map-search')!.getBoundingClientRect()
+    const categoriesRect = element.querySelector<HTMLElement>('.map-categories')!.getBoundingClientRect()
+    const chipRect = element.querySelector<HTMLElement>('.map-chip')!.getBoundingClientRect()
+    const regionRect = element.querySelector<HTMLElement>(':scope > .drawer-scroll-region')!.getBoundingClientRect()
+    return {
+      searchHeight: searchRect.height,
+      categoriesHeight: categoriesRect.height,
+      chipTopGap: chipRect.top - categoriesRect.top,
+      chipBottomGap: categoriesRect.bottom - chipRect.bottom,
+      regionTopGap: regionRect.top - categoriesRect.bottom,
+    }
+  })
+  expect(controls.searchHeight).toBeGreaterThanOrEqual(38)
+  expect(controls.categoriesHeight).toBeGreaterThanOrEqual(28)
+  expect(controls.chipTopGap).toBeGreaterThanOrEqual(-1)
+  expect(controls.chipBottomGap).toBeGreaterThanOrEqual(-1)
+  expect(controls.regionTopGap).toBeGreaterThanOrEqual(0)
   await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
 
   const metrics = await drawerMetrics(page)
