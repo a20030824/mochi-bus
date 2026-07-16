@@ -26,62 +26,42 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
 
-          def replace_once(text: str, old: str, new: str, label: str) -> str:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label}: expected one match, found {count}')
-              return text.replace(old, new, 1)
+          def replace_in_rule(text: str, selector: str, old: str, new: str) -> str:
+              start = text.index(selector)
+              end = text.index('\n}', start) + 2
+              block = text[start:end]
+              if block.count(old) != 1:
+                  raise SystemExit(f'{selector}: expected one {old!r}, found {block.count(old)}')
+              return text[:start] + block.replace(old, new, 1) + text[end:]
 
           style_path = Path('web/map/style.css')
           style = style_path.read_text(encoding='utf-8')
-          style = replace_once(
-              style,
-              '''.map-drawer[data-mode="map-list"],
-          .map-drawer[data-mode="results"] {
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-          }
-          .map-drawer[data-mode="map-list"] { max-height: min(56vh, 600px); }
-          ''',
-              '''.map-drawer[data-mode="map-list"],
-          .map-drawer[data-mode="results"] {
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-          }
-          .map-drawer[data-mode="map-list"] > :not(.drawer-scroll-region),
+          fixed_controls = '''.map-drawer[data-mode="map-list"] > :not(.drawer-scroll-region),
           .map-drawer[data-mode="results"] > :not(.drawer-scroll-region) {
             flex: 0 0 auto;
           }
-          .map-drawer[data-mode="map-list"] { max-height: min(56vh, 600px); }
-          ''',
-              'fixed drawer controls',
-          )
-          style = replace_once(style, '  flex: 0 1 auto;\n', '  flex: 1 1 auto;\n', 'scroll region flex')
-          style = replace_once(
-              style,
-              '  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto;\n  gap: 3px 8px;\n  min-width: 0;\n',
-              '  display: grid;\n  width: 100%;\n  grid-template-columns: minmax(0, 1fr) auto;\n  gap: 3px 8px;\n  min-width: 0;\n',
-              'summary width',
-          )
-          style = replace_once(
-              style,
-              '.trip-matched-summary:only-child { grid-column: 1 / -1; }\n',
-              '.trip-matched-summary:only-child { grid-column: 1 / -1; }\n.map-drawer > .trip-matched-summary { margin-bottom: 10px; }\n',
-              'summary spacing',
-          )
+          '''
+          if fixed_controls not in style:
+              anchor = '.map-drawer[data-mode="map-list"] { max-height: min(56vh, 600px); }\n'
+              if anchor not in style:
+                  raise SystemExit('drawer max-height anchor not found')
+              style = style.replace(anchor, fixed_controls + anchor, 1)
+          style = replace_in_rule(style, '.drawer-scroll-region {', '  flex: 0 1 auto;\n', '  flex: 1 1 auto;\n')
+          style = replace_in_rule(style, '.trip-matched-summary {', '  display: grid;\n', '  display: grid;\n  width: 100%;\n')
+          spacing_rule = '.map-drawer > .trip-matched-summary { margin-bottom: 10px; }\n'
+          if spacing_rule not in style:
+              anchor = '.trip-matched-summary:only-child { grid-column: 1 / -1; }\n'
+              if anchor not in style:
+                  raise SystemExit('trip summary spacing anchor not found')
+              style = style.replace(anchor, anchor + spacing_rule, 1)
           style_path.write_text(style, encoding='utf-8')
 
           drawer_test_path = Path('test/e2e/map-drawer-modes.spec.ts')
           drawer_test = drawer_test_path.read_text(encoding='utf-8')
-          marker = '''  const region = drawer.locator(':scope > .drawer-scroll-region')
-          await expect(region).toHaveCount(1)
-          await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
-          '''
-          replacement = '''  const region = drawer.locator(':scope > .drawer-scroll-region')
-          await expect(region).toHaveCount(1)
-          await expect(drawer.getByRole('button', { name: '全部', exact: true })).toBeVisible()
+          test_start = drawer_test.index("test('keeps the city route catalogue")
+          test_end = drawer_test.index("test('keeps a 29-direction", test_start)
+          section = drawer_test[test_start:test_end]
+          assertion = '''  await expect(drawer.getByRole('button', { name: '全部', exact: true })).toBeVisible()
           const controls = await drawer.evaluate((element) => {
             const searchRect = element.querySelector<HTMLElement>('.map-search')!.getBoundingClientRect()
             const categoriesRect = element.querySelector<HTMLElement>('.map-categories')!.getBoundingClientRect()
@@ -100,11 +80,13 @@ jobs:
           expect(controls.chipTopGap).toBeGreaterThanOrEqual(-1)
           expect(controls.chipBottomGap).toBeGreaterThanOrEqual(-1)
           expect(controls.regionTopGap).toBeGreaterThanOrEqual(0)
-          await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
           '''
-          if marker not in drawer_test:
-              raise SystemExit('route catalogue controls assertion: marker not found')
-          drawer_test = drawer_test.replace(marker, replacement, 1)
+          if assertion not in section:
+              anchor = '  await expect(region).toHaveCount(1)\n'
+              if section.count(anchor) != 1:
+                  raise SystemExit(f'route catalogue region anchor count: {section.count(anchor)}')
+              section = section.replace(anchor, anchor + assertion, 1)
+              drawer_test = drawer_test[:test_start] + section + drawer_test[test_end:]
           drawer_test_path.write_text(drawer_test, encoding='utf-8')
 
           trip_test_path = Path('test/e2e/map-trip-selection-layout.spec.ts')
