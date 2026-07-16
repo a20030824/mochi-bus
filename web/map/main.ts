@@ -883,7 +883,7 @@ function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
   labelNode.textContent = label
   const action = document.createElement('span')
   action.className = 'trip-endpoint-action'
-  action.textContent = '↻'
+  action.textContent = '更換'
   action.setAttribute('aria-hidden', 'true')
   const name = document.createElement('strong')
   name.className = 'trip-endpoint-name'
@@ -985,15 +985,18 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   const existingKind: TripSelectionKind = nextKind === 'from' ? 'to' : 'from'
   const existingSummary = tripMatchedSummary(existingKind)
   const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
-  const title = nextKind === 'from' ? '點一下出發位置' : '再點一下目的地'
+  const title = nextKind === 'from' ? '選擇出發位置' : '選擇目的地'
   const description = nextKind === 'from'
-    ? '點地圖或搜尋站牌。'
-    : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
+    ? '點地圖，或搜尋站牌。'
+    : '起點已選好。點地圖，或搜尋目的地站牌。'
+  const selectionControls = document.createElement('div')
+  selectionControls.className = 'trip-selection-stack'
+  if (existingSummary) selectionControls.appendChild(existingSummary)
+  selectionControls.appendChild(placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)))
   renderDrawer('compact',
     drawerBack('取消路線規劃', cancelTripMode),
     heading(title, description),
-    existingSummary ?? document.createDocumentFragment(),
-    placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)),
+    selectionControls,
   )
   setStatus(nextKind === 'from' ? '路線規劃 · 請點出發位置' : `出發：${selectedFrom?.name ?? ''} · 請點目的地`)
   setViewBack(cancelTripMode)

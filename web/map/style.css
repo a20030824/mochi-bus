@@ -303,9 +303,12 @@ button { cursor: pointer; }
 .place-route-skeleton { height: 66px; border: 1px solid #d5cdbf; border-radius: 3px; background: linear-gradient(100deg, #e8e1d5 20%, #f3ede3 42%, #e8e1d5 64%); background-size: 220% 100%; animation: route-loading 1.1s ease-in-out infinite; }
 @keyframes route-loading { to { background-position-x: -220%; } }
 .nearby-place-button:hover, .place-route-button:hover { border-color: var(--accent); }
+.trip-selection-stack { display: grid; gap: 10px; }
+.trip-selection-stack .map-search { margin-bottom: 0; }
 .trip-matched-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
 .trip-matched-summary {
   display: grid;
+  width: 100%;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 3px 8px;
   min-width: 0;
@@ -322,7 +325,7 @@ button { cursor: pointer; }
 .trip-matched-summary:hover { border-color: var(--green); background: #fffaf0; }
 .trip-matched-summary:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .trip-endpoint-label { overflow: hidden; color: var(--muted); font-size: 11px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
-.trip-endpoint-action { color: #847d70; font-size: 13px; }
+.trip-endpoint-action { color: #847d70; font-size: 12px; font-weight: 750; }
 .trip-endpoint-name { grid-column: 1 / -1; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .trip-endpoint-distance { grid-column: 1 / -1; color: #847d70; font-size: 11px; font-variant-numeric: tabular-nums; }
 .trip-endpoint-distance.far { color: var(--accent-deep); font-weight: 750; }
