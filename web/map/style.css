@@ -156,6 +156,28 @@ button { cursor: pointer; }
   backdrop-filter: blur(14px);
 }
 
+.map-drawer[data-mode="map-list"],
+.map-drawer[data-mode="results"] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.map-drawer[data-mode="map-list"] { max-height: min(56vh, 600px); }
+.map-drawer[data-mode="results"] { max-height: min(64vh, 680px); }
+.map-drawer[data-mode="timetable"] { max-height: min(72vh, 720px); }
+.drawer-scroll-region {
+  display: grid;
+  flex: 0 1 auto;
+  gap: 7px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.drawer-scroll-region.scrollable-below {
+  box-shadow: inset 0 -24px 18px -24px rgba(79, 104, 91, .55);
+}
+
 /* 只有內容真的超出時才提示還能往下。原本的 sticky 偽元素本身會
    增加 scrollHeight，讓短內容也平白多出捲軸；改用不參與排版的 inset shadow。 */
 .map-drawer.scrollable-below {
@@ -193,21 +215,7 @@ button { cursor: pointer; }
 }
 .locate-button:hover { border-color: var(--green); background: var(--surface); }
 .locate-button:disabled { opacity: .6; cursor: wait; }
-.map-route-grid { max-height: 230px; overflow: auto; }
-/* 路線格自己也會捲動,同款 sticky 漸層;佔滿整列、負邊距疊回最後一排。 */
-.map-route-grid::after {
-  content: "";
-  position: sticky;
-  bottom: 0;
-  grid-column: 1 / -1;
-  height: 26px;
-  margin-top: -26px;
-  background: linear-gradient(to bottom, rgba(244, 239, 228, 0), rgba(244, 239, 228, .96));
-  opacity: 0;
-  transition: opacity .18s ease;
-  pointer-events: none;
-}
-.map-route-grid.scrollable-below::after { opacity: 1; }
+.map-route-grid { min-height: 0; }
 .map-search {
   width: 100%;
   margin-bottom: 10px;
@@ -497,7 +505,6 @@ button { cursor: pointer; }
 .route-service-summary:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .route-service-summary.pending { color: #8d867a; cursor: default; }
 .route-service-summary.pending::after { content: ""; }
-.map-drawer:has(.timetable-panel) { max-height: min(72vh, 720px); }
 .timetable-panel { display: grid; gap: 11px; }
 .timetable-stop-field { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .04em; }
 .timetable-stop-field select { width: 100%; padding: 10px 34px 10px 11px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: #faf6ed; color: var(--ink); font-size: 13px; font-weight: 750; }
@@ -527,7 +534,7 @@ button { cursor: pointer; }
     right: 10px;
     bottom: max(10px, env(safe-area-inset-bottom));
     width: calc(100% - 20px);
-    max-height: 68vh;
+    max-height: min(68dvh, calc(100dvh - 20px - env(safe-area-inset-bottom, 0px)));
     border-radius: 4px;
   }
   .drawer-heading h1 { margin: 3px 0 6px; font-size: 24px; line-height: 1.08; letter-spacing: -.035em; overflow-wrap: anywhere; }
@@ -535,7 +542,15 @@ button { cursor: pointer; }
   .map-status { max-width: calc(100% - 110px); }
   .selection-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .leaflet-control-zoom { display: none; }
-  .map-drawer:has(.timetable-panel) { max-height: 68vh; }
+  .map-drawer[data-mode="map-list"] {
+    max-height: min(clamp(320px, 48dvh, 520px), calc(100dvh - 20px - env(safe-area-inset-bottom, 0px)));
+  }
+  .map-drawer[data-mode="results"] {
+    max-height: min(clamp(350px, 58dvh, 620px), calc(100dvh - 20px - env(safe-area-inset-bottom, 0px)));
+  }
+  .map-drawer[data-mode="timetable"] {
+    max-height: min(clamp(360px, 72dvh, 720px), calc(100dvh - 20px - env(safe-area-inset-bottom, 0px)));
+  }
   .timetable-hour-row { grid-template-columns: 36px minmax(0, 1fr); }
 }
 

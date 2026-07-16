@@ -79,6 +79,7 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
   await drawer.getByRole('button', { name: '查看時刻表' }).click()
 
   await expect(drawer.getByRole('heading', { name: '7211' })).toBeVisible()
+  await expect(drawer).toHaveAttribute('data-mode', 'timetable')
   await expect(drawer.locator('.drawer-heading p')).toContainText('時刻')
   const activeTab = drawer.locator('.timetable-tab[aria-selected="true"]')
   await expect(activeTab).toHaveText('每日')
