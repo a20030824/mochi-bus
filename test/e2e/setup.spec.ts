@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 test.describe('/setup page', () => {
   test('golden path: pick a route, pick a stop, see suggestions', async ({ page }) => {
@@ -22,9 +22,6 @@ test.describe('/setup page', () => {
   // fetch 回來後會用「沒有更新」的舊檢查通過,卻讀到已經被清空的
   // selectedRoute,炸出 TypeError。見 web/setup/main.ts 的 hidePicker/backToRoutes。
   test('closing the picker mid-flight does not throw when the delayed fetch resolves', async ({ page }) => {
-    const pageErrors: string[] = []
-    page.on('pageerror', (error) => pageErrors.push(error.stack || String(error)))
-
     await page.route('**/api/v1/stop-routes*', async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 1500))
       await route.continue()
@@ -41,8 +38,6 @@ test.describe('/setup page', () => {
     // 故意在延遲的 fetch 還沒回來時關閉 picker。
     await page.click('#close-picker')
     await page.waitForTimeout(2200)
-
-    expect(pageErrors).toEqual([])
   })
 
   test('Escape closes the picker and returns focus to the trigger button (A11Y-001)', async ({ page }) => {

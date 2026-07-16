@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 const city = {
   code: 'Taipei',
@@ -52,10 +52,8 @@ function routeVariant(routeName: string, variantKey: string, offset: number) {
 
 test.describe('direct journey candidate selection', () => {
   test('selects candidates without opening route detail, supports keyboard, and opens detail explicitly', async ({ page }) => {
-    const pageErrors: string[] = []
     const routeDetailCalls: string[] = []
     let directResponseMode: 'two' | 'one' = 'two'
-    page.on('pageerror', (error) => pageErrors.push(error.message))
 
     await page.route('**/api/v1/map/cities', async (route) => {
       await route.fulfill({ json: { cities: [city] } })
@@ -172,11 +170,9 @@ test.describe('direct journey candidate selection', () => {
     await destinationResult.click()
     await expect(page.locator('.direct-route-card')).toHaveCount(1)
     await expect(page.locator('.direct-route-card').locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
-    expect(pageErrors).toEqual([])
   })
 
   test('loads the selected ninth direct candidate within the bounded preview set', async ({ page }) => {
-    const pageErrors: string[] = []
     const previewRouteCalls: string[] = []
     const largePlaces = {
       from: { placeId: 'Taipei:large-from', name: 'Large From', latitude: 25, longitude: 121 },
@@ -192,7 +188,6 @@ test.describe('direct journey candidate selection', () => {
       alightSequence: 3,
       stopCount: index + 2,
     }))
-    page.on('pageerror', (error) => pageErrors.push(error.message))
 
     await page.route('**/api/v1/map/cities', async (route) => {
       await route.fulfill({ json: { cities: [city] } })
@@ -244,6 +239,5 @@ test.describe('direct journey candidate selection', () => {
     expect(previewRouteCalls.slice(8)).toContain('R9')
     expect(previewRouteCalls.slice(8)).not.toContain('R8')
     expect(new Set(previewRouteCalls.slice(8)).size).toBe(8)
-    expect(pageErrors).toEqual([])
   })
 })

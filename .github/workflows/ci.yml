@@ -48,6 +48,7 @@ jobs:
         run: >-
           npx playwright test
           test/e2e/map-camera-padding.spec.ts
+          test/e2e/map-chrome-layout.spec.ts
           test/e2e/map-drawer-modes.spec.ts
           test/e2e/map-mobile-entry-spacing.spec.ts
           test/e2e/map-timetable.spec.ts

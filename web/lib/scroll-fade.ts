@@ -9,15 +9,28 @@ export function hasScrollableContentBelow(
   return scrollHeight - scrollTop - clientHeight > 4
 }
 
-export function attachScrollFade(element: HTMLElement, className = 'scrollable-below'): void {
+export function attachScrollFade(element: HTMLElement, className = 'scrollable-below'): () => void {
+  let attached = true
   const update = () => {
+    if (!attached) return
     element.classList.toggle(
       className,
       hasScrollableContentBelow(element.scrollHeight, element.scrollTop, element.clientHeight),
     )
   }
   element.addEventListener('scroll', update, { passive: true })
-  new ResizeObserver(update).observe(element)
-  new MutationObserver(update).observe(element, { childList: true, subtree: true })
+  const resizeObserver = new ResizeObserver(update)
+  const mutationObserver = new MutationObserver(update)
+  resizeObserver.observe(element)
+  mutationObserver.observe(element, { childList: true, subtree: true })
   update()
+
+  return () => {
+    if (!attached) return
+    attached = false
+    element.removeEventListener('scroll', update)
+    resizeObserver.disconnect()
+    mutationObserver.disconnect()
+    element.classList.remove(className)
+  }
 }

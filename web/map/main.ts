@@ -23,7 +23,7 @@ import {
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
-import { attachScrollFade } from '../lib/scroll-fade'
+import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
 
@@ -212,25 +212,8 @@ const regions: Array<{
 
 const mapNode = requiredElement('map')
 const drawer = requiredElement('map-drawer')
-attachScrollFade(drawer)
-
-type DrawerMode = 'compact' | 'map-list' | 'results' | 'timetable'
-
-function renderDrawer(mode: DrawerMode, ...children: Node[]): void {
-  drawer.dataset.mode = mode
-  drawer.classList.remove('scrollable-below')
-  drawer.scrollTop = 0
-  drawer.replaceChildren()
-  for (const child of children) drawer.appendChild(child)
-}
-
-function drawerScrollRegion(...children: Node[]): HTMLDivElement {
-  const region = document.createElement('div')
-  region.className = 'drawer-scroll-region'
-  for (const child of children) region.appendChild(child)
-  attachScrollFade(region)
-  return region
-}
+const drawerRenderer = createDrawerRenderer(drawer)
+const renderDrawer = (view: DrawerView) => drawerRenderer.render(view)
 const statusNode = requiredElement('map-status')
 const networkButton = document.createElement('button')
 networkButton.className = 'network-toggle'
@@ -528,14 +511,17 @@ function showTaiwan() {
   map.setView([23.75, 120.9], 7)
   setStatus('選一個區域，看看公車如何穿過城市。')
   renderRegionMarkers()
-  renderDrawer('compact',
-    heading('先從哪裡開始？', '公車不是清單，是城市的骨架。'),
-    buttonGrid(regions.map((region) => ({
-      label: region.name,
-      onClick: () => showRegion(region.code),
-    }))),
-    locateCityButton(),
-  )
+  renderDrawer({
+    mode: 'compact',
+    content: [
+      heading('先從哪裡開始？', '公車不是清單，是城市的骨架。'),
+      buttonGrid(regions.map((region) => ({
+        label: region.name,
+        onClick: () => showRegion(region.code),
+      }))),
+      locateCityButton(),
+    ],
+  })
   history.replaceState(null, '', '/map')
   setDocumentTitle()
   setViewBack(undefined)
@@ -629,14 +615,17 @@ function showRegion(regionCode: RegionCode) {
       title: city.name,
     }).on('click', () => void chooseCity(city)).addTo(selectionLayer)
   }
-  renderDrawer('compact',
-    drawerBack('返回區域', showTaiwan),
-    heading(region.name, '直接點地圖上的縣市，或從這裡選。'),
-    buttonGrid(regionCities.map((city) => ({
-      label: city.name,
-      onClick: () => void chooseCity(city),
-    }))),
-  )
+  renderDrawer({
+    mode: 'compact',
+    content: [
+      drawerBack('返回區域', showTaiwan),
+      heading(region.name, '直接點地圖上的縣市，或從這裡選。'),
+      buttonGrid(regionCities.map((city) => ({
+        label: city.name,
+        onClick: () => void chooseCity(city),
+      }))),
+    ],
+  })
   fitRegionCities(region, regionCities)
   setViewBack(showTaiwan)
 }
@@ -664,7 +653,10 @@ async function chooseCity(city: MapCity) {
   selectedDirectIndex = 0
   setDocumentTitle(`${city.name}公車地圖`)
   setStatus(`${city.name} · 正在整理路線…`)
-  renderDrawer('compact', drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…'))
+  renderDrawer({
+    mode: 'compact',
+    content: [drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…')],
+  })
   setDrawerAwareView(city.center, 11)
   setViewBack(() => showRegion(city.region))
 
@@ -682,11 +674,14 @@ async function chooseCity(city: MapCity) {
   } catch {
     if (isStaleNav(requestId)) return
     setStatus('目前無法載入這個縣市的路線。', true)
-    renderDrawer('compact',
-      drawerBack('返回區域', () => showRegion(city.region)),
-      heading(city.name, '目前無法載入這個縣市的路線。'),
-      retryButton(() => void chooseCity(city)),
-    )
+    renderDrawer({
+      mode: 'compact',
+      content: [
+        drawerBack('返回區域', () => showRegion(city.region)),
+        heading(city.name, '目前無法載入這個縣市的路線。'),
+        retryButton(() => void chooseCity(city)),
+      ],
+    })
     setDrawerAwareView(city.center, 11)
   }
 }
@@ -705,10 +700,13 @@ function renderRoutePicker() {
   if (!routes.length || routesCityCode !== activeCity.code) {
     // 深連結直接進路線(沒經過 chooseCity)後按返回會走到這:目錄還沒載,
     // 先補抓再重畫,不然會看到一片空白的路線選單。
-    renderDrawer('compact',
-      drawerBack('返回縣市', () => showRegion(activeCity!.region)),
-      heading(activeCity.name, '正在載入路線…'),
-    )
+    renderDrawer({
+      mode: 'compact',
+      content: [
+        drawerBack('返回縣市', () => showRegion(activeCity!.region)),
+        heading(activeCity.name, '正在載入路線…'),
+      ],
+    })
     setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
     const cityCode = activeCity.code
     void (async () => {
@@ -725,11 +723,14 @@ function renderRoutePicker() {
         // 同樣不能把失敗畫面搶回使用者已經離開的城市/選單
         if (interactionMode !== 'browse' || activeCity?.code !== cityCode) return
         setStatus('目前無法載入這個縣市的路線。', true)
-        renderDrawer('compact',
-          drawerBack('返回縣市', () => showRegion(activeCity!.region)),
-          heading(activeCity!.name, '目前無法載入這個縣市的路線。'),
-          retryButton(() => renderRoutePicker()),
-        )
+        renderDrawer({
+          mode: 'compact',
+          content: [
+            drawerBack('返回縣市', () => showRegion(activeCity!.region)),
+            heading(activeCity!.name, '目前無法載入這個縣市的路線。'),
+            retryButton(() => renderRoutePicker()),
+          ],
+        })
       }
     })()
     return
@@ -746,7 +747,12 @@ function renderRoutePicker() {
   stopResults.className = 'place-search-results'
   const routeGrid = document.createElement('div')
   routeGrid.className = 'map-route-grid'
-  const listRegion = drawerScrollRegion(stopResults, routeGrid)
+  const drawerSession = renderDrawer({
+    mode: 'map-list',
+    header: [back, title, tripModeButton(), search, categories],
+    content: [stopResults, routeGrid],
+  })
+  const listRegion = drawerSession.scrollRegion!
 
   const counts = new Map<string, number>()
   routes.forEach((route) => counts.set(route.category, (counts.get(route.category) ?? 0) + 1))
@@ -787,18 +793,19 @@ function renderRoutePicker() {
     }
     stopSearchTimer = window.setTimeout(() => {
       void (async () => {
-        const places = await searchPlaces(query)
+        const places = await searchPlaces(query, drawerSession.signal)
+        if (drawerSession.signal.aborted) return
         if (search.value.trim() !== query) return
         stopResults.replaceChildren(...places.slice(0, 6).map((place) => searchResultButton(place, openSearchedPlace)))
       })()
     }, 300)
   }
+  drawerSession.onDispose(() => window.clearTimeout(stopSearchTimer))
   search.addEventListener('input', () => {
     listRegion.scrollTop = 0
     render()
     queueStopSearch()
   })
-  renderDrawer('map-list', back, title, tripModeButton(), search, categories, listRegion)
   render()
   setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
 }
@@ -812,13 +819,17 @@ function tdxFetch(url: string, init?: RequestInit): Promise<Response> {
   })
 }
 
-async function searchPlaces(query: string): Promise<SearchPlace[]> {
+async function searchPlaces(query: string, signal?: AbortSignal): Promise<SearchPlace[]> {
   if (!activeCity) return []
   const params = new URLSearchParams({ city: activeCity.code, q: query })
-  const response = await fetch(`/api/v1/map/search?${params}`)
-  if (!response.ok) return []
-  const data = await response.json() as { places?: SearchPlace[] }
-  return data.places ?? []
+  try {
+    const response = await fetch(`/api/v1/map/search?${params}`, { signal })
+    if (!response.ok) return []
+    const data = await response.json() as { places?: SearchPlace[] }
+    return data.places ?? []
+  } catch {
+    return []
+  }
 }
 
 function searchResultButton(place: SearchPlace, onPick: (place: SearchPlace) => void): HTMLButtonElement {
@@ -963,15 +974,18 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
     list.appendChild(button)
   })
   const backAction = hasTripResults() ? returnToTripResults : () => renderTripSelectionStep(kind)
-  renderDrawer('map-list',
-    drawerBack(hasTripResults() ? '返回行程候選' : '返回選點', backAction),
-    heading(
-      kind === 'from' ? '選擇出發站牌' : '選擇目的地站牌',
-      '點選附近站牌，或重新選位置。',
-    ),
-    drawerScrollRegion(list),
-    reselectTripEndpointButton(kind),
-  )
+  renderDrawer({
+    mode: 'map-list',
+    header: [
+      drawerBack(hasTripResults() ? '返回行程候選' : '返回選點', backAction),
+      heading(
+        kind === 'from' ? '選擇出發站牌' : '選擇目的地站牌',
+        '點選附近站牌，或重新選位置。',
+      ),
+    ],
+    content: [list],
+    footer: [reselectTripEndpointButton(kind)],
+  })
   setStatus(`${kind === 'from' ? '出發' : '目的地'} · ${pending.candidates.length} 個附近站牌`)
   setViewBack(backAction)
 }
@@ -989,12 +1003,17 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   const description = nextKind === 'from'
     ? '點地圖或搜尋站牌。'
     : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
-  renderDrawer('compact',
-    drawerBack('取消路線規劃', cancelTripMode),
-    heading(title, description),
-    existingSummary ?? document.createDocumentFragment(),
-    placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place)),
-  )
+  const searchBox = placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place))
+  const drawerSession = renderDrawer({
+    mode: 'compact',
+    content: [
+      drawerBack('取消路線規劃', cancelTripMode),
+      heading(title, description),
+      existingSummary ?? document.createDocumentFragment(),
+      searchBox.element,
+    ],
+  })
+  drawerSession.onDispose(searchBox.dispose)
   setStatus(nextKind === 'from' ? '路線規劃 · 請點出發位置' : `出發：${selectedFrom?.name ?? ''} · 請點目的地`)
   setViewBack(cancelTripMode)
 }
@@ -1047,7 +1066,10 @@ async function selectTripPlace(kind: TripSelectionKind, place: SearchPlace) {
 
 // 站牌名稱搜尋框:輸入 2 個字以上就打 /api/v1/map/search,
 // 讓不熟地圖的人(或外地人)不用在地圖上大海撈針。
-function placeSearchBox(placeholder: string, onPick: (place: SearchPlace) => void): HTMLElement {
+function placeSearchBox(
+  placeholder: string,
+  onPick: (place: SearchPlace) => void,
+): { element: HTMLElement; dispose: () => void } {
   const wrap = document.createElement('div')
   wrap.className = 'place-search'
   const input = document.createElement('input')
@@ -1057,16 +1079,21 @@ function placeSearchBox(placeholder: string, onPick: (place: SearchPlace) => voi
   const results = document.createElement('div')
   results.className = 'place-search-results'
   let timer: number | undefined
+  let searchController: AbortController | undefined
   input.addEventListener('input', () => {
     window.clearTimeout(timer)
+    searchController?.abort()
     const query = input.value.trim()
     if (query.length < 2) {
       results.replaceChildren()
       return
     }
     timer = window.setTimeout(() => {
+      const controller = new AbortController()
+      searchController = controller
       void (async () => {
-        const places = await searchPlaces(query)
+        const places = await searchPlaces(query, controller.signal)
+        if (controller.signal.aborted) return
         // 回來時使用者可能又改了字,只渲染還是最新查詢的結果
         if (input.value.trim() !== query) return
         if (!places.length) {
@@ -1079,7 +1106,13 @@ function placeSearchBox(placeholder: string, onPick: (place: SearchPlace) => voi
   })
   wrap.appendChild(input)
   wrap.appendChild(results)
-  return wrap
+  return {
+    element: wrap,
+    dispose: () => {
+      window.clearTimeout(timer)
+      searchController?.abort()
+    },
+  }
 }
 
 // 搜尋選中的站牌直接開站牌路線視圖(跟 deep link 進站牌同一條路)。
@@ -1280,7 +1313,10 @@ async function loadRoute(
   const loadingBack = backActionFor(loading.target)
   const { requestId, signal } = beginNavRequest()
   setStatus(`${routeName} · 正在讀取城市裡的路徑…`)
-  renderDrawer('compact', drawerBack(loading.label, loadingBack), heading(routeName, '正在拼起路線與站牌…'))
+  renderDrawer({
+    mode: 'compact',
+    content: [drawerBack(loading.label, loadingBack), heading(routeName, '正在拼起路線與站牌…')],
+  })
   setViewBack(loadingBack)
   try {
     const params = new URLSearchParams({ city: activeCity.code, route: routeName })
@@ -1303,11 +1339,14 @@ async function loadRoute(
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '目前無法取得這條路線。'
     setStatus(message, true)
-    renderDrawer('compact',
-      drawerBack(loading.label, loadingBack),
-      heading(routeName, message),
-      retryButton(() => void loadRoute(routeName, preferredVariant, returnToTrip, color, backAction)),
-    )
+    renderDrawer({
+      mode: 'compact',
+      content: [
+        drawerBack(loading.label, loadingBack),
+        heading(routeName, message),
+        retryButton(() => void loadRoute(routeName, preferredVariant, returnToTrip, color, backAction)),
+      ],
+    })
   }
 }
 
@@ -1373,11 +1412,14 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
   // 行程候選帶著過期的 variantKey 進來時會落到這裡,退路一樣要回候選清單
   const decision = routeLoadingBack({ returnToTrip: routeReturnsToTrip, hasStopBackAction: Boolean(routeBackAction) })
   const variantBack = backActionFor(decision.target)
-  renderDrawer('map-list',
-    drawerBack(decision.label, variantBack),
-    heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
-    drawerScrollRegion(list),
-  )
+  renderDrawer({
+    mode: 'map-list',
+    header: [
+      drawerBack(decision.label, variantBack),
+      heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
+    ],
+    content: [list],
+  })
   if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
   setViewBack(variantBack)
 }
@@ -1456,11 +1498,14 @@ async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
   const back = () => drawVariant(variant)
   const { requestId, signal } = beginNavRequest()
   timetableRequest += 1
-  renderDrawer('timetable',
-    drawerBack(`返回 ${variant.routeName}`, back),
-    heading(variant.routeName, `時刻 · ${variant.label}`),
-    paragraph('正在整理表定班次…'),
-  )
+  renderDrawer({
+    mode: 'timetable',
+    header: [
+      drawerBack(`返回 ${variant.routeName}`, back),
+      heading(variant.routeName, `時刻 · ${variant.label}`),
+    ],
+    content: [paragraph('正在整理表定班次…')],
+  })
   setStatus(`${variant.routeName} · 正在讀取時刻`)
   setViewBack(back)
   try {
@@ -1470,11 +1515,14 @@ async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
   } catch (error) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error ? error.message : '目前無法取得時刻表'
-    renderDrawer('timetable',
-      drawerBack(`返回 ${variant.routeName}`, back),
-      heading(variant.routeName, message),
-      retryButton(() => void openRouteTimetable(variant, stopUid)),
-    )
+    renderDrawer({
+      mode: 'timetable',
+      header: [
+        drawerBack(`返回 ${variant.routeName}`, back),
+        heading(variant.routeName, message),
+      ],
+      content: [retryButton(() => void openRouteTimetable(variant, stopUid))],
+    })
     setStatus(message, true)
   }
 }
@@ -1496,7 +1544,14 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
   panel.className = 'timetable-panel'
   if (timetable.mode === 'none' || !timetable.services.length) {
     panel.appendChild(paragraph('這個方向目前沒有公開的表定班次資料。'))
-    renderDrawer('timetable',drawerBack(`返回 ${variant.routeName}`, back), heading(variant.routeName, `時刻 · ${variant.label}`), panel)
+    renderDrawer({
+      mode: 'timetable',
+      header: [
+        drawerBack(`返回 ${variant.routeName}`, back),
+        heading(variant.routeName, `時刻 · ${variant.label}`),
+      ],
+      content: [panel],
+    })
     setStatus(`${variant.routeName} · 無公開時刻資料`)
     setViewBack(back)
     return
@@ -1569,7 +1624,14 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
     renderService(initialService)
   }
   panel.appendChild(content)
-  renderDrawer('timetable',drawerBack(`返回 ${variant.routeName}`, back), heading(variant.routeName, `時刻 · ${variant.label}`), panel)
+  renderDrawer({
+    mode: 'timetable',
+    header: [
+      drawerBack(`返回 ${variant.routeName}`, back),
+      heading(variant.routeName, `時刻 · ${variant.label}`),
+    ],
+    content: [panel],
+  })
   const context = timetable.mode === 'stop'
     ? timetable.selectedStop?.stopName
     : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'
@@ -1744,13 +1806,16 @@ function drawVariant(variant: RouteMapVariant) {
   timetableSummary.className = 'route-service-summary pending'
   timetableSummary.textContent = '正在讀取時刻…'
   timetableSummary.disabled = true
-  renderDrawer('compact',
-    drawerBack(routeViewBack(backContext()).label, goBack),
-    heading(variant.routeName, variant.label),
-    // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
-    ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
-    timetableSummary,
-  )
+  renderDrawer({
+    mode: 'compact',
+    content: [
+      drawerBack(routeViewBack(backContext()).label, goBack),
+      heading(variant.routeName, variant.label),
+      // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
+      ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
+      timetableSummary,
+    ],
+  })
   if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
   const summaryRequest = ++timetableRequest
   void hydrateRouteTimetableSummary(variant, timetableSummary, summaryRequest)
@@ -2008,11 +2073,14 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
     skeleton.className = 'place-route-skeleton'
     loadingList.appendChild(skeleton)
   }
-  renderDrawer('map-list',
-    drawerBack('附近站牌', renderNearbyPlaces),
-    heading('附近站牌', '正在搜尋附近站牌'),
-    loadingList,
-  )
+  renderDrawer({
+    mode: 'map-list',
+    header: [
+      drawerBack('附近站牌', renderNearbyPlaces),
+      heading('附近站牌', '正在搜尋附近站牌'),
+    ],
+    content: [loadingList],
+  })
   setViewBack(renderRoutePicker)
   nearbyLayer.clearLayers()
   lastNearbyOrigin = [latitude, longitude]
@@ -2040,11 +2108,14 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '附近站牌讀取失敗'
     setStatus(message, true)
-    renderDrawer('map-list',
-      drawerBack('附近站牌', renderNearbyPlaces),
-      heading('附近站牌讀取失敗', message),
-      retryButton(() => void findNearbyPlaces(latitude, longitude, autoPreview)),
-    )
+    renderDrawer({
+      mode: 'map-list',
+      header: [
+        drawerBack('附近站牌', renderNearbyPlaces),
+        heading('附近站牌讀取失敗', message),
+      ],
+      content: [retryButton(() => void findNearbyPlaces(latitude, longitude, autoPreview))],
+    })
   }
 }
 
@@ -2080,12 +2151,15 @@ function renderNearbyPlaces() {
     list.appendChild(button)
   }
   const nearbyBack = hasTripResults() ? returnToTripResults : renderRoutePicker
-  renderDrawer('map-list',
-    drawerBack(hasTripResults() ? '返回行程候選' : '路線列表', nearbyBack),
-    heading('附近站牌', '點任一站牌，就會預覽所有經過路線。'),
-    drawerScrollRegion(list),
-    tripModeButton(),
-  )
+  renderDrawer({
+    mode: 'map-list',
+    header: [
+      drawerBack(hasTripResults() ? '返回行程候選' : '路線列表', nearbyBack),
+      heading('附近站牌', '點任一站牌，就會預覽所有經過路線。'),
+    ],
+    content: [list],
+    footer: [tripModeButton()],
+  })
   setStatus(lastNearbyPlaces.length ? `找到 ${lastNearbyPlaces.length} 個附近站牌` : '附近沒有站牌')
   const [latitude, longitude] = lastNearbyOrigin
   history.replaceState(null, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
@@ -2161,11 +2235,14 @@ async function loadDirectRoutes() {
     setStatus(error instanceof Error && error.message ? error.message : '直達路線查詢失敗', true)
     // 這時 tripStage 已回 idle(點地圖會變成逛附近站牌),不能把使用者
     // 留在「再點一下目的地」的殘局:給重試,退路則回到重新選目的地。
-    renderDrawer('compact',
-      drawerBack('重新選目的地', resumeDestinationSelection),
-      heading('查詢失敗了', `${from.name} → ${to.name} 暫時查不到，稍等一下再試。`),
-      retryButton(() => void loadDirectRoutes()),
-    )
+    renderDrawer({
+      mode: 'compact',
+      content: [
+        drawerBack('重新選目的地', resumeDestinationSelection),
+        heading('查詢失敗了', `${from.name} → ${to.name} 暫時查不到，稍等一下再試。`),
+        retryButton(() => void loadDirectRoutes()),
+      ],
+    })
     setViewBack(resumeDestinationSelection)
   }
 }
@@ -2282,13 +2359,16 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
   const back = drawerBack('重新選目的地', resumeDestinationSelection)
   const reset = tripModeButton()
   const matchedControls = tripMatchedControls()
-  renderDrawer('results',
-    back,
-    heading(`${selectedFrom.name} → ${selectedTo.name}`, directRoutes.length ? `${directRoutes.length} 個直達方向，淡色線為候選路線。` : '沒有直達路線'),
-    ...(matchedControls ? [matchedControls] : []),
-    drawerScrollRegion(list),
-    reset,
-  )
+  renderDrawer({
+    mode: 'results',
+    header: [
+      back,
+      heading(`${selectedFrom.name} → ${selectedTo.name}`, directRoutes.length ? `${directRoutes.length} 個直達方向，淡色線為候選路線。` : '沒有直達路線'),
+      ...(matchedControls ? [matchedControls] : []),
+    ],
+    content: [list],
+    footer: [reset],
+  })
   setStatus(directRoutes.length ? `找到 ${directRoutes.length} 個直達方向` : '沒有直達車')
   setViewBack(resumeDestinationSelection)
 }
@@ -2360,13 +2440,16 @@ function renderTransferPlans(plans: TransferPlan[]) {
     list.appendChild(card)
   })
   const matchedControls = tripMatchedControls()
-  renderDrawer('results',
-    drawerBack('重新選目的地', resumeDestinationSelection),
-    heading(`${selectedFrom.name} → ${selectedTo.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
-    ...(matchedControls ? [matchedControls] : []),
-    drawerScrollRegion(list),
-    tripModeButton(),
-  )
+  renderDrawer({
+    mode: 'results',
+    header: [
+      drawerBack('重新選目的地', resumeDestinationSelection),
+      heading(`${selectedFrom.name} → ${selectedTo.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
+      ...(matchedControls ? [matchedControls] : []),
+    ],
+    content: [list],
+    footer: [tripModeButton()],
+  })
   setStatus(plans.length ? `找到 ${plans.length} 個一次轉乘方案` : '沒有合理的一次轉乘方案')
   setViewBack(resumeDestinationSelection)
 }
@@ -2684,11 +2767,14 @@ async function showPlaceRoutes(place: NearbyPlace) {
     skeleton.className = 'place-route-skeleton'
     loadingList.appendChild(skeleton)
   }
-  renderDrawer('map-list',
-    drawerBack('附近站牌', renderNearbyPlaces),
-    heading(place.name, '正在取得路線與到站時間'),
-    loadingList,
-  )
+  renderDrawer({
+    mode: 'map-list',
+    header: [
+      drawerBack('附近站牌', renderNearbyPlaces),
+      heading(place.name, '正在取得路線與到站時間'),
+    ],
+    content: [loadingList],
+  })
   setViewBack(renderNearbyPlaces)
   setStatus(`正在讀取 ${place.name} 的路線…`)
   const { requestId, signal } = beginNavRequest()
@@ -2746,11 +2832,14 @@ async function showPlaceRoutes(place: NearbyPlace) {
       row.appendChild(directionFavoriteControl(place, route))
       list.appendChild(row)
     }
-    renderDrawer('map-list',
-      drawerBack('附近站牌', renderNearbyPlaces),
-      heading(place.name, `${place.distanceMeters > 0 ? `${Math.round(place.distanceMeters)} 公尺 · ` : ''}${data.routes.length} 個行車方向`),
-      drawerScrollRegion(list),
-    )
+    renderDrawer({
+      mode: 'map-list',
+      header: [
+        drawerBack('附近站牌', renderNearbyPlaces),
+        heading(place.name, `${place.distanceMeters > 0 ? `${Math.round(place.distanceMeters)} 公尺 · ` : ''}${data.routes.length} 個行車方向`),
+      ],
+      content: [list],
+    })
     await previewPlaceRoutes(sortedRoutes, place)
     if (!activeCity || isStaleNav(requestId)) return
     drawTripEndpoints()
@@ -2762,11 +2851,14 @@ async function showPlaceRoutes(place: NearbyPlace) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '站牌路線讀取失敗'
     setStatus(message, true)
-    renderDrawer('map-list',
-      drawerBack('附近站牌', renderNearbyPlaces),
-      heading(place.name, message),
-      retryButton(() => void showPlaceRoutes(place)),
-    )
+    renderDrawer({
+      mode: 'map-list',
+      header: [
+        drawerBack('附近站牌', renderNearbyPlaces),
+        heading(place.name, message),
+      ],
+      content: [retryButton(() => void showPlaceRoutes(place))],
+    })
   }
 }
 

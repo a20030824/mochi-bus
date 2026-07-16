@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 test('aligns the selected origin with destination search and keeps the compact icon', async ({ page }) => {
   await page.setViewportSize({ width: 420, height: 700 })

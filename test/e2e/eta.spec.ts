@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 const board = {
   version: 2,
@@ -44,16 +44,12 @@ test.describe('ETA page', () => {
   })
 
   test('homepage demo board does not persist demo data and has no page error', async ({ page }) => {
-    const pageErrors: string[] = []
-    page.on('pageerror', (error) => pageErrors.push(error.message))
-
     await page.goto('/')
     await expect(page.locator('#onboard')).toBeVisible()
     await expect(page.locator('#onboard-sign')).toBeVisible()
     await expect(page.locator('script[src="/assets/eta.js"]')).toHaveCount(1)
     await expect(page.locator('#eta-bootstrap')).toBeAttached()
     expect(await page.evaluate(() => localStorage.getItem('mochi.bus.boards.v2'))).toBe('[]')
-    expect(pageErrors).toEqual([])
   })
 
   test('homepage uses a stored board, updates its map link, and refreshes ETA', async ({ page }) => {

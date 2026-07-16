@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 import { calculateCameraPadding } from '../../src/domain/map/camera-padding'
 
 const variant = {
@@ -12,7 +12,7 @@ const variant = {
   ] },
 }
 
-type TimetableFixture = 'multiple' | 'single' | 'no-today'
+type TimetableFixture = 'multiple' | 'single' | 'no-today' | 'long'
 
 function timetable(stopUid = 'C1') {
   const stop = stopUid === 'C2'
@@ -51,6 +51,13 @@ function timetableFixture(stopUid: string, fixture: TimetableFixture) {
       { ...saturday, id: '0', label: '週日', days: [0], times: ['08:00', '20:00'], firstTime: '08:00', lastTime: '20:00' },
     ]
   }
+  if (fixture === 'long') {
+    const daily = data.timetable.services.find((service) => service.today)!
+    daily.times = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`)
+    daily.firstTime = daily.times[0]
+    daily.lastTime = daily.times.at(-1)!
+    data.timetable.services = [daily]
+  }
   return data
 }
 
@@ -80,6 +87,7 @@ test('opens a per-stop timetable without turning it into a wide table', async ({
 
   await expect(drawer.getByRole('heading', { name: '7211' })).toBeVisible()
   await expect(drawer).toHaveAttribute('data-mode', 'timetable')
+  await expect(drawer.locator(':scope > .drawer-scroll-shell > .drawer-scroll-region > .timetable-panel')).toHaveCount(1)
   await expect(drawer.locator('.drawer-heading p')).toContainText('時刻')
   const activeTab = drawer.locator('.timetable-tab[aria-selected="true"]')
   await expect(activeTab).toHaveText('每日')
@@ -146,6 +154,45 @@ test('selects the next service day without adding another row when today has no 
   await expect(drawer.locator('.timetable-overview span')).toHaveText('嘉義公園 · 今日無班次')
 })
 
+test('keeps the timetable header fixed and uses the shared fade lifecycle', async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 480 })
+  await mockRoute(page, 'long')
+  await page.goto(`/map?city=ChiayiCounty&route=7211&variant=${encodeURIComponent(variant.variantKey)}`)
+
+  const drawer = page.locator('#map-drawer')
+  await drawer.getByRole('button', { name: '查看時刻表' }).click()
+  await expect(drawer).toHaveAttribute('data-mode', 'timetable')
+  const shell = drawer.locator(':scope > .drawer-scroll-shell')
+  const region = shell.locator(':scope > .drawer-scroll-region')
+  const fade = shell.locator(':scope > .drawer-scroll-fade')
+  await expect(shell).toHaveCount(1)
+  await expect(region.locator(':scope > .timetable-panel')).toHaveCount(1)
+  await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
+  await expect.poll(() => region.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(true)
+  await expect.poll(() => fade.evaluate((element) => Number(getComputedStyle(element).opacity))).toBe(1)
+
+  const before = await drawer.evaluate((element) => ({
+    backTop: element.querySelector('.drawer-back')!.getBoundingClientRect().top,
+    headingTop: element.querySelector('.drawer-heading')!.getBoundingClientRect().top,
+    outerClientHeight: element.clientHeight,
+    outerScrollHeight: element.scrollHeight,
+  }))
+  await region.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  await expect.poll(() => region.evaluate((element) => element.scrollTop > 0)).toBe(true)
+  await expect.poll(() => region.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(false)
+  await expect.poll(() => fade.evaluate((element) => Number(getComputedStyle(element).opacity))).toBe(0)
+  const after = await drawer.evaluate((element) => ({
+    backTop: element.querySelector('.drawer-back')!.getBoundingClientRect().top,
+    headingTop: element.querySelector('.drawer-heading')!.getBoundingClientRect().top,
+  }))
+
+  expect(before.outerScrollHeight).toBeLessThanOrEqual(before.outerClientHeight + 1)
+  expect(Math.abs(after.backTop - before.backTop)).toBeLessThanOrEqual(1)
+  expect(Math.abs(after.headingTop - before.headingTop)).toBeLessThanOrEqual(1)
+})
+
 test('does not show a scrollbar when a short route detail drawer already fits', async ({ page }) => {
   await page.setViewportSize({ width: 636, height: 381 })
   await mockRoute(page)
@@ -153,7 +200,8 @@ test('does not show a scrollbar when a short route detail drawer already fits', 
 
   const drawer = page.locator('#map-drawer')
   await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')
-  await expect.poll(() => drawer.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(false)
+  await expect(drawer.locator(':scope > .drawer-scroll-shell')).toHaveCount(0)
+  await expect(drawer.locator('.drawer-scroll-fade')).toHaveCount(0)
   const geometry = await drawer.evaluate((element) => ({
     clientHeight: element.clientHeight,
     scrollHeight: element.scrollHeight,

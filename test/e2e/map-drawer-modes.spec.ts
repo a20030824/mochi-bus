@@ -1,8 +1,13 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 
 const city = { code: 'Tainan', name: '臺南', region: 'south', center: [22.99, 120.21] }
 const routeNames = ['0右', '0左', ...Array.from({ length: 179 }, (_, index) => String(index + 1))]
 // 直接重現回報中的兩種長列表：181 條路線與 29 個行車方向。
+const drawerViewports = [
+  { label: '390 × 844', width: 390, height: 844 },
+  { label: '420 × 480', width: 420, height: 480 },
+  { label: '636 × 381', width: 636, height: 381 },
+]
 
 function variant(routeName: string) {
   return {
@@ -75,14 +80,14 @@ test('keeps the city route catalogue below half the map with one internal scroll
   const drawer = page.locator('#map-drawer')
   await expect(drawer.getByRole('heading', { name: '臺南' })).toBeVisible()
   await expect(drawer).toHaveAttribute('data-mode', 'map-list')
-  const region = drawer.locator(':scope > .drawer-scroll-region')
+  const region = drawer.locator(':scope > .drawer-scroll-shell > .drawer-scroll-region')
   await expect(region).toHaveCount(1)
   await expect(drawer.getByRole('button', { name: '全部', exact: true })).toBeVisible()
   const controls = await drawer.evaluate((element) => {
     const searchRect = element.querySelector<HTMLElement>('.map-search')!.getBoundingClientRect()
     const categoriesRect = element.querySelector<HTMLElement>('.map-categories')!.getBoundingClientRect()
     const chipRect = element.querySelector<HTMLElement>('.map-chip')!.getBoundingClientRect()
-    const regionRect = element.querySelector<HTMLElement>(':scope > .drawer-scroll-region')!.getBoundingClientRect()
+    const regionRect = element.querySelector<HTMLElement>(':scope > .drawer-scroll-shell > .drawer-scroll-region')!.getBoundingClientRect()
     return {
       searchHeight: searchRect.height,
       categoriesHeight: categoriesRect.height,
@@ -129,7 +134,7 @@ test('keeps the city route catalogue below half the map with one internal scroll
   await expect(drawer.getByRole('heading', { name: '0右' })).toBeVisible()
   await drawer.locator(':scope > .drawer-back').click()
   await expect(drawer).toHaveAttribute('data-mode', 'map-list')
-  await expect(drawer.locator(':scope > .drawer-scroll-region')).toHaveJSProperty('scrollTop', 0)
+  await expect(drawer.locator(':scope > .drawer-scroll-shell > .drawer-scroll-region')).toHaveJSProperty('scrollTop', 0)
 })
 
 test('keeps a 29-direction stop list compact while its header remains visible', async ({ page }) => {
@@ -142,7 +147,7 @@ test('keeps a 29-direction stop list compact while its header remains visible', 
   await expect(drawer.locator('.drawer-heading p')).toContainText('29 個行車方向')
   await expect(drawer).toHaveAttribute('data-mode', 'map-list')
   await expect(drawer.locator('.place-route-row')).toHaveCount(29)
-  const region = drawer.locator(':scope > .drawer-scroll-region')
+  const region = drawer.locator(':scope > .drawer-scroll-shell > .drawer-scroll-region')
   await expect(region).toHaveCount(1)
   await expect.poll(() => region.evaluate((element) => element.scrollHeight > element.clientHeight + 4)).toBe(true)
 
@@ -162,4 +167,174 @@ test('keeps a 29-direction stop list compact while its header remains visible', 
   }))
   expect(Math.abs(after.backTop - before.backTop)).toBeLessThanOrEqual(1)
   expect(Math.abs(after.headingTop - before.headingTop)).toBeLessThanOrEqual(1)
+})
+
+for (const viewport of drawerViewports) {
+  test(`draws the scroll fade above list content and hides it at the bottom at ${viewport.label}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await mockMap(page)
+    await page.goto('/map?city=Tainan')
+
+    const drawer = page.locator('#map-drawer')
+    const shell = drawer.locator(':scope > .drawer-scroll-shell')
+    const region = shell.locator(':scope > .drawer-scroll-region')
+    const fade = shell.locator(':scope > .drawer-scroll-fade')
+    await expect(shell).toHaveCount(1)
+    await expect(region).toHaveCount(1)
+    await expect(fade).toHaveCount(1)
+    await expect.poll(() => region.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(true)
+    await expect.poll(() => fade.evaluate((element) => Number(getComputedStyle(element).opacity))).toBe(1)
+
+    const initial = await shell.evaluate((element) => {
+      const region = element.querySelector<HTMLElement>(':scope > .drawer-scroll-region')!
+      const fade = element.querySelector<HTMLElement>(':scope > .drawer-scroll-fade')!
+      const shellRect = element.getBoundingClientRect()
+      const regionRect = region.getBoundingClientRect()
+      const fadeRect = fade.getBoundingClientRect()
+      const fadeStyle = getComputedStyle(fade)
+      return {
+        shellPosition: getComputedStyle(element).position,
+        regionBoxShadow: getComputedStyle(region).boxShadow,
+        fadePosition: fadeStyle.position,
+        fadePointerEvents: fadeStyle.pointerEvents,
+        fadeZIndex: Number(fadeStyle.zIndex),
+        fadeOpacity: Number(fadeStyle.opacity),
+        fadeBackground: fadeStyle.backgroundImage,
+        fadeTop: fadeRect.top,
+        fadeBottom: fadeRect.bottom,
+        regionBottom: regionRect.bottom,
+        shellBottom: shellRect.bottom,
+      }
+    })
+    expect(initial.shellPosition).toBe('relative')
+    expect(initial.regionBoxShadow).toBe('none')
+    expect(initial.fadePosition).toBe('absolute')
+    expect(initial.fadePointerEvents).toBe('none')
+    expect(initial.fadeZIndex).toBeGreaterThan(0)
+    expect(initial.fadeOpacity).toBe(1)
+    expect(initial.fadeBackground).toContain('linear-gradient')
+    expect(initial.fadeTop).toBeLessThan(initial.regionBottom)
+    expect(Math.abs(initial.fadeBottom - initial.regionBottom)).toBeLessThanOrEqual(1)
+    expect(Math.abs(initial.fadeBottom - initial.shellBottom)).toBeLessThanOrEqual(1)
+
+    await region.evaluate((element) => {
+      element.scrollTop = (element.scrollHeight - element.clientHeight) / 2
+    })
+    await expect.poll(() => region.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(true)
+    await expect.poll(() => fade.evaluate((element) => Number(getComputedStyle(element).opacity))).toBe(1)
+
+    await region.evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+    })
+    await expect.poll(() => region.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(false)
+    await expect.poll(() => fade.evaluate((element) => Number(getComputedStyle(element).opacity))).toBe(0)
+  })
+}
+
+test('disconnects the previous drawer observers before rendering a new scroll region', async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = {
+      resizeCreated: 0,
+      resizeDisconnected: 0,
+      resizeActive: 0,
+      mutationCreated: 0,
+      mutationDisconnected: 0,
+      mutationActive: 0,
+    }
+    Object.defineProperty(window, '__drawerFadeObserverState', { value: state })
+
+    const NativeResizeObserver = window.ResizeObserver
+    window.ResizeObserver = class extends NativeResizeObserver {
+      private tracksDrawer = false
+
+      observe(target: Element, options?: ResizeObserverOptions): void {
+        if (!this.tracksDrawer && target instanceof HTMLElement && target.classList.contains('drawer-scroll-region')) {
+          this.tracksDrawer = true
+          state.resizeCreated += 1
+          state.resizeActive += 1
+        }
+        super.observe(target, options)
+      }
+
+      disconnect(): void {
+        if (this.tracksDrawer) {
+          this.tracksDrawer = false
+          state.resizeDisconnected += 1
+          state.resizeActive -= 1
+        }
+        super.disconnect()
+      }
+    }
+
+    const NativeMutationObserver = window.MutationObserver
+    window.MutationObserver = class extends NativeMutationObserver {
+      private tracksDrawer = false
+
+      observe(target: Node, options?: MutationObserverInit): void {
+        if (!this.tracksDrawer && target instanceof HTMLElement && target.classList.contains('drawer-scroll-region')) {
+          this.tracksDrawer = true
+          state.mutationCreated += 1
+          state.mutationActive += 1
+        }
+        super.observe(target, options)
+      }
+
+      disconnect(): void {
+        if (this.tracksDrawer) {
+          this.tracksDrawer = false
+          state.mutationDisconnected += 1
+          state.mutationActive -= 1
+        }
+        super.disconnect()
+      }
+    }
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockMap(page)
+  await page.goto('/map?city=Tainan')
+
+  const observerState = () => page.evaluate(() => (
+    window as typeof window & {
+      __drawerFadeObserverState: {
+        resizeCreated: number
+        resizeDisconnected: number
+        resizeActive: number
+        mutationCreated: number
+        mutationDisconnected: number
+        mutationActive: number
+      }
+    }
+  ).__drawerFadeObserverState)
+
+  await expect.poll(observerState).toMatchObject({
+    resizeCreated: 1,
+    resizeDisconnected: 0,
+    resizeActive: 1,
+    mutationCreated: 1,
+    mutationDisconnected: 0,
+    mutationActive: 1,
+  })
+
+  const drawer = page.locator('#map-drawer')
+  await drawer.getByRole('button', { name: '0右', exact: true }).click()
+  await expect(drawer).toHaveAttribute('data-mode', 'compact')
+  await expect.poll(observerState).toMatchObject({
+    resizeCreated: 1,
+    resizeDisconnected: 1,
+    resizeActive: 0,
+    mutationCreated: 1,
+    mutationDisconnected: 1,
+    mutationActive: 0,
+  })
+
+  await drawer.locator(':scope > .drawer-back').click()
+  await expect(drawer).toHaveAttribute('data-mode', 'map-list')
+  await expect.poll(observerState).toMatchObject({
+    resizeCreated: 2,
+    resizeDisconnected: 1,
+    resizeActive: 1,
+    mutationCreated: 2,
+    mutationDisconnected: 1,
+    mutationActive: 1,
+  })
 })

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 const city = {
   code: 'Taipei',
@@ -54,10 +54,8 @@ function routeVariant() {
 }
 
 test('map-picked trip stops show nearby candidates and can be reversed', async ({ page }) => {
-  const pageErrors: string[] = []
   let nearbyCalls = 0
   let directCalls = 0
-  page.on('pageerror', (error) => pageErrors.push(error.message))
 
   await page.route('**/api/v1/map/cities', async (route) => {
     await route.fulfill({ json: { cities: [city] } })
@@ -154,12 +152,9 @@ test('map-picked trip stops show nearby candidates and can be reversed', async (
   await page.getByRole('textbox', { name: '搜尋出發站牌' }).fill('明確站')
   await page.getByRole('button', { name: '明確站 站牌', exact: true }).click()
   await expect(page.getByRole('button', { name: '更換出發站牌：明確站', exact: true })).toHaveCount(1)
-
-  expect(pageErrors).toEqual([])
 })
 
 test('keeps A to B state atomic when either endpoint picks the opposite stop', async ({ page }) => {
-  const pageErrors: string[] = []
   let nearbyCalls = 0
   let directCalls = 0
   let transferCalls = 0
@@ -173,7 +168,6 @@ test('keeps A to B state atomic when either endpoint picks the opposite stop', a
     { placeId: 'Taipei:atomic-a', name: '原點 A（衝突候選）', latitude: 25.011, longitude: 121.021, distanceMeters: 22 },
     { placeId: 'Taipei:atomic-c', name: '目的地 C', latitude: 25.012, longitude: 121.022, distanceMeters: 32 },
   ]
-  page.on('pageerror', (error) => pageErrors.push(error.message))
 
   await page.route('**/api/v1/map/cities', async (route) => {
     await route.fulfill({ json: { cities: [city] } })
@@ -241,5 +235,4 @@ test('keeps A to B state atomic when either endpoint picks the opposite stop', a
   await page.locator('.trip-nearby-candidate').nth(2).click()
   await expect.poll(() => directCalls).toBe(4)
   await expect(page.getByRole('heading', { name: '出發 D → 目的地 C', exact: true })).toBeVisible()
-  expect(pageErrors).toEqual([])
 })

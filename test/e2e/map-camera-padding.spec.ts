@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 
 const city = {
   code: 'Taipei',
@@ -133,6 +133,9 @@ async function openDirectJourney(page: Page) {
   await search.fill('終點')
   await page.locator('.nearby-place-button').filter({ hasText: '終點' }).click()
   await expect(page.locator('.direct-route-card')).toHaveCount(1)
+  const drawer = page.locator('#map-drawer')
+  await expect(drawer).toHaveAttribute('data-mode', 'results')
+  await expect(drawer.locator(':scope > .drawer-scroll-shell > .drawer-scroll-region > .direct-route-list')).toHaveCount(1)
   await expect(page.locator('.leaflet-tooltip').filter({ hasText: /^(上車|下車)/ })).toHaveCount(2)
 }
 

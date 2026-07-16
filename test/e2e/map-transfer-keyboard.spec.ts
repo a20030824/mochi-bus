@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 const city = {
   code: 'Taipei',
@@ -57,10 +57,8 @@ function routeVariant(routeName: string, variantKey: string, offset: number) {
 }
 
 test('transfer cards isolate keyboard selection from inner route actions', async ({ page }) => {
-  const pageErrors: string[] = []
   const routeCalls: string[] = []
   let transferCalls = 0
-  page.on('pageerror', (error) => pageErrors.push(error.message))
 
   await page.route('**/api/v1/map/cities', async (route) => {
     await route.fulfill({ json: { cities: [city] } })
@@ -147,5 +145,4 @@ test('transfer cards isolate keyboard selection from inner route actions', async
   await page.getByRole('button', { name: /返回行程候選/ }).click()
   await expect.poll(() => routeCalls.length).toBe(15)
   await expect(page.locator('.transfer-plan').nth(0)).toHaveClass(/selected/)
-  expect(pageErrors).toEqual([])
 })

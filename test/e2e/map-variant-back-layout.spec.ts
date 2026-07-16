@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 function variant(index: number) {
   return {
@@ -55,6 +55,7 @@ test('keeps the multi-variant back action at the drawer left edge', async ({ pag
   await expect(drawer).toHaveAttribute('data-mode', 'map-list')
   await expect(drawer.getByRole('heading', { name: '15' })).toBeVisible()
   await expect(drawer.locator('.variant-button')).toHaveCount(4)
+  await expect(drawer.locator(':scope > .drawer-scroll-shell > .drawer-scroll-region > .variant-list')).toHaveCount(1)
 
   const back = drawer.getByRole('button', { name: '← 返回路線', exact: true })
   await expect(back).toBeVisible()
@@ -64,6 +65,7 @@ test('keeps the multi-variant back action at the drawer left edge', async ({ pag
     const backRect = backNode.getBoundingClientRect()
     return {
       leftGap: backRect.left - drawerRect.left,
+      paddingLeft: Number.parseFloat(getComputedStyle(element).paddingLeft),
       rightGap: drawerRect.right - backRect.right,
       widthRatio: backRect.width / drawerRect.width,
       alignSelf: getComputedStyle(backNode).alignSelf,
@@ -71,8 +73,7 @@ test('keeps the multi-variant back action at the drawer left edge', async ({ pag
     }
   })
 
-  expect(geometry.leftGap).toBeGreaterThanOrEqual(17)
-  expect(geometry.leftGap).toBeLessThanOrEqual(20)
+  expect(Math.abs(geometry.leftGap - geometry.paddingLeft)).toBeLessThanOrEqual(1)
   expect(geometry.rightGap).toBeGreaterThan(150)
   expect(geometry.widthRatio).toBeLessThan(.5)
   expect(geometry.alignSelf).toBe('flex-start')

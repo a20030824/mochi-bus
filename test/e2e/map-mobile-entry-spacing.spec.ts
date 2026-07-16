@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 
 const mobileViewports = [
   { label: '390 × 844', width: 390, height: 844 },
@@ -30,13 +30,14 @@ for (const viewport of mobileViewports) {
       const buttonRect = button.getBoundingClientRect()
       return {
         bottomGap: drawerRect.bottom - buttonRect.bottom,
+        paddingBottom: Number.parseFloat(getComputedStyle(element).paddingBottom),
         drawerBottom: drawerRect.bottom,
         viewportHeight: window.innerHeight,
         horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       }
     })
 
-    expect(geometry.bottomGap).toBeGreaterThanOrEqual(24)
+    expect(Math.abs(geometry.bottomGap - geometry.paddingBottom)).toBeLessThanOrEqual(1)
     expect(geometry.drawerBottom).toBeLessThanOrEqual(geometry.viewportHeight)
     expect(geometry.horizontalOverflow).toBe(false)
   })
@@ -61,7 +62,8 @@ test('does not show a scrollbar when a short region drawer already fits', async 
   await expect(drawer.getByRole('heading', { name: '東部' })).toBeVisible()
   await expect(drawer).toHaveAttribute('data-mode', 'compact')
 
-  await expect.poll(() => drawer.evaluate((element) => element.classList.contains('scrollable-below'))).toBe(false)
+  await expect(drawer.locator(':scope > .drawer-scroll-shell')).toHaveCount(0)
+  await expect(drawer.locator('.drawer-scroll-fade')).toHaveCount(0)
   const geometry = await drawer.evaluate((element) => ({
     clientHeight: element.clientHeight,
     scrollHeight: element.scrollHeight,
