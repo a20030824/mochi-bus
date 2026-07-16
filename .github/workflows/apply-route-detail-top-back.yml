@@ -1,0 +1,124 @@
+name: Apply route detail top back
+
+on:
+  push:
+    branches:
+      - agent/route-detail-top-back
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Move route back action to drawer header
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'web/map/main.ts',
+              '''  const change = document.createElement('button')
+            change.className = 'quiet-button'
+            const backContext = () => ({
+              returnToTrip: routeReturnsToTrip,
+              hasTripResults: hasTripResults(),
+              canReturnToVariantPicker,
+              hasStopBackAction: Boolean(routeBackAction),
+            })
+            change.textContent = routeViewBack(backContext()).label
+            // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
+            const goBack = () => backActionFor(routeViewBack(backContext()).target)()
+            change.addEventListener('click', goBack)
+            const timetableSummary = document.createElement('button')
+            timetableSummary.type = 'button'
+            timetableSummary.className = 'route-service-summary pending'
+            timetableSummary.textContent = '正在讀取時刻…'
+            timetableSummary.disabled = true
+            const actions = document.createElement('div')
+            actions.className = 'route-view-actions'
+            actions.replaceChildren(change)
+            drawer.replaceChildren(
+              heading(variant.routeName, variant.label),
+              // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
+              ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
+              timetableSummary,
+              actions,
+            )''',
+              '''  const backContext = () => ({
+              returnToTrip: routeReturnsToTrip,
+              hasTripResults: hasTripResults(),
+              canReturnToVariantPicker,
+              hasStopBackAction: Boolean(routeBackAction),
+            })
+            // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
+            const goBack = () => backActionFor(routeViewBack(backContext()).target)()
+            const timetableSummary = document.createElement('button')
+            timetableSummary.type = 'button'
+            timetableSummary.className = 'route-service-summary pending'
+            timetableSummary.textContent = '正在讀取時刻…'
+            timetableSummary.disabled = true
+            drawer.replaceChildren(
+              drawerBack(routeViewBack(backContext()).label, goBack),
+              heading(variant.routeName, variant.label),
+              // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
+              ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
+              timetableSummary,
+            )''',
+          )
+
+          replace_once(
+              'web/map/style.css',
+              '''.route-view-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+            .route-view-actions > :only-child { grid-column: 1 / -1; }
+            ''',
+              '',
+          )
+
+          replace_once(
+              'test/e2e/map-timetable.spec.ts',
+              '''  const drawer = page.locator('#map-drawer')
+            // 時刻摘要列本身就是時刻表入口:載入完成前是佔位、完成後才可點。
+            await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')''',
+              '''  const drawer = page.locator('#map-drawer')
+            // 路線 detail 跟其他抽屜次頁一致:退路在最上方，不再佔用底部整列。
+            await expect(drawer.locator(':scope > .drawer-back')).toHaveText('← 更換路線')
+            await expect(drawer.locator('.route-view-actions')).toHaveCount(0)
+            // 時刻摘要列本身就是時刻表入口:載入完成前是佔位、完成後才可點。
+            await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')''',
+          )
+
+          Path('.github/workflows/apply-route-detail-top-back.yml').unlink()
+          PY
+      - run: npm ci
+      - run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Test route detail and timetable UI
+        run: npx playwright test test/e2e/map-timetable.spec.ts --reporter=line
+      - name: Commit verified change
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(map): move route back action to header"
+          git push origin HEAD:agent/route-detail-top-back
