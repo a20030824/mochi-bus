@@ -27,85 +27,71 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
 
-          def replace_once(path: str, old: str, new: str) -> None:
-              file = Path(path)
-              text = file.read_text()
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'{path}: expected one match, found {count}')
-              file.write_text(text.replace(old, new, 1))
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
 
-          replace_once(
-              'web/map/main.ts',
-              '''  const change = document.createElement('button')
-            change.className = 'quiet-button'
-            const backContext = () => ({
-              returnToTrip: routeReturnsToTrip,
-              hasTripResults: hasTripResults(),
-              canReturnToVariantPicker,
-              hasStopBackAction: Boolean(routeBackAction),
-            })
-            change.textContent = routeViewBack(backContext()).label
-            // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
-            const goBack = () => backActionFor(routeViewBack(backContext()).target)()
-            change.addEventListener('click', goBack)
-            const timetableSummary = document.createElement('button')
-            timetableSummary.type = 'button'
-            timetableSummary.className = 'route-service-summary pending'
-            timetableSummary.textContent = '正在讀取時刻…'
-            timetableSummary.disabled = true
-            const actions = document.createElement('div')
-            actions.className = 'route-view-actions'
-            actions.replaceChildren(change)
-            drawer.replaceChildren(
-              heading(variant.routeName, variant.label),
-              // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
-              ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
-              timetableSummary,
-              actions,
-            )''',
-              '''  const backContext = () => ({
-              returnToTrip: routeReturnsToTrip,
-              hasTripResults: hasTripResults(),
-              canReturnToVariantPicker,
-              hasStopBackAction: Boolean(routeBackAction),
-            })
-            // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
-            const goBack = () => backActionFor(routeViewBack(backContext()).target)()
-            const timetableSummary = document.createElement('button')
-            timetableSummary.type = 'button'
-            timetableSummary.className = 'route-service-summary pending'
-            timetableSummary.textContent = '正在讀取時刻…'
-            timetableSummary.disabled = true
-            drawer.replaceChildren(
-              drawerBack(routeViewBack(backContext()).label, goBack),
-              heading(variant.routeName, variant.label),
-              // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
-              ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
-              timetableSummary,
-            )''',
-          )
-
-          replace_once(
-              'web/map/style.css',
-              '''.route-view-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-            .route-view-actions > :only-child { grid-column: 1 / -1; }
-            ''',
+          main_path = Path('web/map/main.ts')
+          main = main_path.read_text()
+          main = replace_once(
+              main,
+              "  const change = document.createElement('button')\n  change.className = 'quiet-button'\n",
               '',
+              'remove bottom button creation',
           )
+          main = replace_once(
+              main,
+              "  change.textContent = routeViewBack(backContext()).label\n",
+              '',
+              'remove bottom button label',
+          )
+          main = replace_once(
+              main,
+              "  change.addEventListener('click', goBack)\n",
+              '',
+              'remove bottom button listener',
+          )
+          main = replace_once(
+              main,
+              "  const actions = document.createElement('div')\n  actions.className = 'route-view-actions'\n  actions.replaceChildren(change)\n",
+              '',
+              'remove bottom action row',
+          )
+          main = replace_once(
+              main,
+              "  drawer.replaceChildren(\n    heading(variant.routeName, variant.label),",
+              "  drawer.replaceChildren(\n    drawerBack(routeViewBack(backContext()).label, goBack),\n    heading(variant.routeName, variant.label),",
+              'insert top back row',
+          )
+          main = replace_once(
+              main,
+              "    timetableSummary,\n    actions,\n  )",
+              "    timetableSummary,\n  )",
+              'remove bottom action row from drawer',
+          )
+          main_path.write_text(main)
 
-          replace_once(
-              'test/e2e/map-timetable.spec.ts',
-              '''  const drawer = page.locator('#map-drawer')
-            // 時刻摘要列本身就是時刻表入口:載入完成前是佔位、完成後才可點。
-            await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')''',
-              '''  const drawer = page.locator('#map-drawer')
-            // 路線 detail 跟其他抽屜次頁一致:退路在最上方，不再佔用底部整列。
-            await expect(drawer.locator(':scope > .drawer-back')).toHaveText('← 更換路線')
-            await expect(drawer.locator('.route-view-actions')).toHaveCount(0)
-            // 時刻摘要列本身就是時刻表入口:載入完成前是佔位、完成後才可點。
-            await expect(drawer.locator('.route-service-summary')).toContainText('首班 06:00 · 末班 22:00')''',
+          style_path = Path('web/map/style.css')
+          style = style_path.read_text()
+          style = replace_once(
+              style,
+              ".route-view-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }\n.route-view-actions > :only-child { grid-column: 1 / -1; }\n",
+              '',
+              'remove unused route action styles',
           )
+          style_path.write_text(style)
+
+          test_path = Path('test/e2e/map-timetable.spec.ts')
+          test = test_path.read_text()
+          test = replace_once(
+              test,
+              "  const drawer = page.locator('#map-drawer')\n",
+              "  const drawer = page.locator('#map-drawer')\n  // 路線 detail 跟其他抽屜次頁一致:退路在最上方，不再佔用底部整列。\n  await expect(drawer.locator(':scope > .drawer-back')).toHaveText('← 更換路線')\n  await expect(drawer.locator('.route-view-actions')).toHaveCount(0)\n",
+              'add route detail back regression',
+          )
+          test_path.write_text(test)
 
           Path('.github/workflows/apply-route-detail-top-back.yml').unlink()
           PY
