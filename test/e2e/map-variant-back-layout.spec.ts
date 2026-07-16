@@ -56,7 +56,7 @@ test('keeps the multi-variant back action at the drawer left edge', async ({ pag
   await expect(drawer.getByRole('heading', { name: '15' })).toBeVisible()
   await expect(drawer.locator('.variant-button')).toHaveCount(4)
 
-  const back = drawer.getByRole('button', { name: '返回路線', exact: true })
+  const back = drawer.getByRole('button', { name: '← 返回路線', exact: true })
   await expect(back).toBeVisible()
   const geometry = await drawer.evaluate((element) => {
     const drawerRect = element.getBoundingClientRect()
