@@ -31,6 +31,7 @@ import { splitRouteDisplayName } from '../lib/route-display'
 import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import { createMapFeatureDiscovery, type MapFeature } from './feature-discovery'
+import { bindTextTooltip, setTextTooltip } from './leaflet-tooltip'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
 
@@ -418,8 +419,8 @@ function transferLegColors(first: string, second: string): [string, string] {
 }
 
 // 觸控裝置沒有 hover,tooltip 會在點按瞬間彈出並蓋住點擊目標,直接不綁。
-function bindHoverTooltip<T extends L.Layer>(layer: T, content: string | HTMLElement, options?: L.TooltipOptions): T {
-  if (hoverCapable) layer.bindTooltip(content, options)
+function bindHoverTooltip<T extends L.Layer>(layer: T, content: string, options?: L.TooltipOptions): T {
+  if (hoverCapable) bindTextTooltip(layer, content, options)
   return layer
 }
 
@@ -1352,10 +1353,10 @@ function unifiedStopMarker(
 
 function drawTripEndpoints() {
   if (fromCoordinate) {
-    unifiedStopMarker(fromCoordinate, true, '#b85f49').bindTooltip('出發位置', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
+    bindTextTooltip(unifiedStopMarker(fromCoordinate, true, '#b85f49'), '出發位置', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
   }
   if (toCoordinate) {
-    unifiedStopMarker(toCoordinate, true, '#4f685b').bindTooltip('目的地', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
+    bindTextTooltip(unifiedStopMarker(toCoordinate, true, '#4f685b'), '目的地', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
   }
 }
 
@@ -1975,9 +1976,7 @@ function startVehicleRefresh(variant: RouteMapVariant) {
             iconAnchor: [13, 16],
           }),
         })
-        const tooltip = document.createElement('span')
-        tooltip.textContent = `${vehicle.plate ?? '公車'}${vehicle.speed === null ? '' : ` · ${Math.round(vehicle.speed)} km/h`}`
-        bindHoverTooltip(marker, tooltip).addTo(vehicleLayer)
+        bindHoverTooltip(marker, `${vehicle.plate ?? '公車'}${vehicle.speed === null ? '' : ` · ${Math.round(vehicle.speed)} km/h`}`).addTo(vehicleLayer)
       })
     } catch {
       // 車輛定位是輔助資訊，失敗時保留主路線而不打斷操作。
@@ -2116,10 +2115,10 @@ function updateNetworkHover(latlng: L.LatLng) {
   map.getContainer().style.cursor = 'pointer'
   if (pick.kind === 'place') {
     setNetworkHighlight(-1)
-    networkHoverTooltip.setContent(pick.place.name).setLatLng([pick.place.latitude, pick.place.longitude])
+    setTextTooltip(networkHoverTooltip, pick.place.name).setLatLng([pick.place.latitude, pick.place.longitude])
   } else {
     setNetworkHighlight(pick.routeIndex)
-    networkHoverTooltip.setContent(`${pick.route.routeName} · ${pick.route.label}`).setLatLng(latlng)
+    setTextTooltip(networkHoverTooltip, `${pick.route.routeName} · ${pick.route.label}`).setLatLng(latlng)
   }
   if (!map.hasLayer(networkHoverTooltip)) networkHoverTooltip.openOn(map)
 }
@@ -2809,9 +2808,11 @@ function addJourneyLegPreview(
     ;[[board, labels[0]], [alight, labels[1]]].forEach(([stop, label]) => {
       const feature = stop as typeof board
       const [longitude, latitude] = feature.geometry.coordinates
-      unifiedStopMarker([latitude, longitude], true, color)
-        .bindTooltip(`${label} · ${feature.properties.stopName}`, { permanent: true, direction: 'top' })
-        .addTo(previewLayer)
+      bindTextTooltip(
+        unifiedStopMarker([latitude, longitude], true, color),
+        `${label} · ${feature.properties.stopName}`,
+        { permanent: true, direction: 'top' },
+      ).addTo(previewLayer)
     })
   }
   return { fullLine, segmentLine, focusBounds, hasSegment: Boolean(segmentLine) }
