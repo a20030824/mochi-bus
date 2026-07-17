@@ -55,6 +55,7 @@ jobs:
           test/e2e/map-mobile-entry-spacing.spec.ts
           test/e2e/map-timetable.spec.ts
           test/e2e/map-variant-back-layout.spec.ts
+          test/e2e/security-csp.spec.ts
           --reporter=line,html
       - name: Upload Playwright diagnostics
         if: always()

@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import bus from './routes/bus'
 import map from './routes/map'
-import { httpsRedirectTarget, securityHeaders } from './security'
+import { cspViolationSummaries, httpsRedirectTarget, securityHeaders } from './security'
 import { apiRateLimit } from './rate-limit'
 
 type Env = { Bindings: CloudflareBindings }
@@ -10,7 +11,7 @@ const app = new Hono<Env>()
 app.use('*', async (c, next) => {
   const requestUrl = new URL(c.req.url)
   const redirectTarget = httpsRedirectTarget(requestUrl.toString())
-  const headers = securityHeaders(requestUrl.protocol === 'https:')
+  const headers = securityHeaders(requestUrl.protocol === 'https:', requestUrl.origin)
 
   for (const [name, value] of Object.entries(headers)) c.header(name, value)
   if (redirectTarget) return c.redirect(redirectTarget, 308)
@@ -24,6 +25,17 @@ app.use('*', async (c, next) => {
 })
 
 app.use('/api/*', apiRateLimit())
+
+app.post('/api/v1/csp-report', bodyLimit({
+  maxSize: 16 * 1024,
+  onError: (c) => c.body(null, 413, { 'Cache-Control': 'no-store' }),
+}), async (c) => {
+  const payload = await c.req.json<unknown>().catch(() => undefined)
+  for (const report of cspViolationSummaries(payload)) {
+    console.warn(JSON.stringify({ message: 'csp_violation', ...report }))
+  }
+  return c.body(null, 204, { 'Cache-Control': 'no-store' })
+})
 
 app.route('/', map)
 app.route('/', bus)

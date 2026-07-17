@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import app from './index'
-import { httpsRedirectTarget, securityHeaders } from './security'
+import { cspViolationSummaries, httpsRedirectTarget, securityHeaders } from './security'
 
 describe('HTTPS enforcement', () => {
   it('redirects public HTTP URLs to the equivalent HTTPS URL', () => {
@@ -42,10 +42,58 @@ describe('security headers', () => {
     expect(response.headers.get('strict-transport-security')).not.toContain('preload')
     expect(response.headers.get('content-security-policy'))
       .toBe("base-uri 'self'; frame-ancestors 'none'; object-src 'none'")
+    expect(response.headers.get('content-security-policy-report-only'))
+      .toContain("default-src 'self'; base-uri 'self'; connect-src 'self' https://tdx.transportdata.tw")
+    expect(response.headers.get('content-security-policy-report-only'))
+      .toContain('report-uri /api/v1/csp-report; report-to csp')
+    expect(response.headers.get('reporting-endpoints'))
+      .toBe('csp="https://bus.moc96336.com/api/v1/csp-report"')
     expect(response.headers.get('permissions-policy'))
       .toBe('camera=(), geolocation=(self), microphone=(), payment=(), usb=()')
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
     expect(response.headers.get('x-frame-options')).toBe('DENY')
+  })
+
+  it('reduces CSP reports to bounded fields without retaining paths, queries, or samples', () => {
+    const summaries = cspViolationSummaries({
+      'csp-report': {
+        'effective-directive': 'connect-src',
+        'blocked-uri': 'https://unexpected.example/private?secret=client-secret',
+        'source-file': 'https://bus.moc96336.com/assets/map.js?Authorization=Bearer-token',
+        'script-sample': 'Client Secret should never reach logs',
+        disposition: 'report',
+        'status-code': 200,
+      },
+    })
+
+    expect(summaries).toEqual([{
+      directive: 'connect-src',
+      blocked: 'https://unexpected.example',
+      source: 'https://bus.moc96336.com',
+      disposition: 'report',
+      statusCode: 200,
+    }])
+    expect(JSON.stringify(summaries)).not.toMatch(/client-secret|Authorization|Bearer-token|script-sample/)
+  })
+
+  it('accepts bounded CSP reports without echoing their body', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const response = await app.request('https://bus.moc96336.com/api/v1/csp-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/csp-report' },
+      body: JSON.stringify({ 'csp-report': { 'effective-directive': 'img-src', 'blocked-uri': 'data' } }),
+    })
+
+    expect(response.status).toBe(204)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.text()).toBe('')
+    expect(warn).toHaveBeenCalledWith(JSON.stringify({
+      message: 'csp_violation',
+      directive: 'img-src',
+      blocked: 'data',
+      source: 'unknown',
+    }))
+    warn.mockRestore()
   })
 
   it('preserves a stricter route-specific referrer policy', async () => {

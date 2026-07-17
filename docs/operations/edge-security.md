@@ -8,7 +8,7 @@ Last verified: 2026-07-10 (Asia/Taipei)
 | --- | --- | --- |
 | SSL/TLS → Edge Certificates → Always Use HTTPS | On | Verified |
 | SSL/TLS → Edge Certificates → Minimum TLS Version | TLS 1.2 | Verified |
-| HSTS | Staged in Worker response first | Stage 2 rollout prepared: target `max-age=86400` |
+| HSTS | Staged in Worker response first | Stage 2 verified: `max-age=86400` |
 
 The Worker also returns a 308 redirect for non-local HTTP requests. This is defense in depth if the zone setting is accidentally disabled; Cloudflare's edge redirect remains the primary control.
 
@@ -47,6 +47,20 @@ HSTS is cached by browsers and is not instantly reversible. Increase it only aft
 Do not add `includeSubDomains` until every subdomain has been inventoried and verified over HTTPS. Do not request browser preload until that audit is complete and the long-lived policy has been stable.
 
 To advance a stage, update `HSTS_MAX_AGE_SECONDS` in `src/security.ts`, run the full project check, deploy, and repeat the live header and TLS checks above.
+
+## CSP rollout
+
+The anti-framing baseline remains enforced while the complete resource policy is introduced through `Content-Security-Policy-Report-Only`. The first observation policy intentionally permits the site's current inline script and style usage; it still restricts connections, images, frames, workers, manifests, forms, media, fonts, and objects to the documented sources.
+
+Violation reports are accepted at `/api/v1/csp-report` with the standard API rate limit and a 16 KiB body cap. Logs retain only validated directive names, URL origins, disposition, and status. They never retain complete URLs, query strings, request bodies, authorization values, or script samples.
+
+Promotion sequence:
+
+1. Observe the resource allowlist in production and investigate every unexpected origin.
+2. Add nonces or externalize the remaining inline bootstrap/style blocks; remove `javascript:` navigation.
+3. Remove `'unsafe-inline'` from the report-only `script-src`, then from the style policy where Leaflet permits.
+4. Keep the Playwright CSP resource test green and observe a clean production window.
+5. Promote the tested policy to `Content-Security-Policy`; retain report-only only for the next stricter candidate.
 
 ## Stage 2 rollout
 

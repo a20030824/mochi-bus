@@ -52,6 +52,19 @@ describe('journey ETA request protection', () => {
   })
 })
 
+describe('CSP report protection', () => {
+  it('rejects oversized browser reports before parsing or logging them', async () => {
+    const response = await app.request(`${baseUrl}/api/v1/csp-report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/csp-report' },
+      body: JSON.stringify({ padding: 'x'.repeat(17_000) }),
+    })
+
+    expect(response.status).toBe(413)
+    expect(await response.text()).toBe('')
+  })
+})
+
 describe('GET and credential boundaries', () => {
   it('rejects invalid coordinates and radius values before D1 access', async () => {
     const latitude = await app.request(`${baseUrl}/api/v1/map/nearby?city=Taipei&lat=91&lon=121.5`)
