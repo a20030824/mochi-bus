@@ -83,9 +83,11 @@ describe('SEO metadata', () => {
   it('fades marquee text at fixed sign edges without masking the sign surface', () => {
     const html = renderETAPage({ query, useLocalBoard: true, requestUrl })
 
-    expect(html).toContain('.onboard-sign::before{content:""')
-    expect(html).toContain('transparent 32px')
-    expect(html).not.toContain('mask-image')
+    expect(html).toContain('class="onboard-sign-text"')
+    expect(html).toContain('.onboard-sign-text{position:relative;z-index:1;overflow:hidden;-webkit-mask-image:linear-gradient')
+    expect(html).toContain('#000 32px')
+    expect(html).not.toMatch(/\.onboard-sign\{[^}]*mask-image/)
+    expect(html).not.toContain('.onboard-sign::before')
   })
 
   it('does not noindex the shareable ETA and map pages', () => {

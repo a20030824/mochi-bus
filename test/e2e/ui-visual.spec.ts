@@ -6,12 +6,21 @@ test('softens marquee text at the fixed sign edges', async ({ page }) => {
 
   const sign = page.locator('#onboard-sign')
   await expect(sign).toBeVisible()
-  const edgeOverlay = await sign.evaluate((element) => {
-    const style = getComputedStyle(element, '::before')
-    return { backgroundImage: style.backgroundImage, pointerEvents: style.pointerEvents }
+  const layers = await sign.evaluate((element) => {
+    const signStyle = getComputedStyle(element)
+    const textStyle = getComputedStyle(element.querySelector('.onboard-sign-text')!)
+    const textureStyle = getComputedStyle(element, '::after')
+    return {
+      signBackground: signStyle.backgroundColor,
+      signMask: signStyle.maskImage,
+      textMask: textStyle.maskImage,
+      textureBackground: textureStyle.backgroundImage,
+    }
   })
-  expect(edgeOverlay.backgroundImage).toContain('32px')
-  expect(edgeOverlay.pointerEvents).toBe('none')
+  expect(layers.signBackground).toBe('rgb(33, 30, 25)')
+  expect(layers.signMask).toBe('none')
+  expect(layers.textMask).toContain('32px')
+  expect(layers.textureBackground).toContain('repeating-linear-gradient')
   await expect(sign).toHaveScreenshot('home-marquee.png', {
     animations: 'disabled',
     caret: 'hide',
