@@ -7,7 +7,6 @@ import { getTripSelectionConflict, type TripSelectionKind } from '../../src/doma
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
-import { calculateCameraPadding, cameraPanOffset, type CameraRect } from '../../src/domain/map/camera-padding'
 import {
   describeTransferEstimate,
   estimateTransfer,
@@ -29,6 +28,7 @@ import {
   type EtaSource,
 } from '../lib/eta-presentation'
 import { splitRouteDisplayName } from '../lib/route-display'
+import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
@@ -215,14 +215,26 @@ const regions: Array<{
   code: RegionCode
   name: string
   center: [number, number]
-  zoom: number
+  maxZoom: number
 }> = [
-  { code: 'north', name: '北部', center: [24.98, 121.25], zoom: 8 },
-  { code: 'central', name: '中部', center: [23.95, 120.62], zoom: 8 },
-  { code: 'south', name: '南部', center: [22.95, 120.35], zoom: 8 },
-  { code: 'east', name: '東部', center: [23.65, 121.35], zoom: 8 },
-  { code: 'islands', name: '離島', center: [24.1, 119.25], zoom: 7 },
+  { code: 'north', name: '北部', center: [24.98, 121.25], maxZoom: 8 },
+  { code: 'central', name: '中部', center: [23.95, 120.62], maxZoom: 8 },
+  { code: 'south', name: '南部', center: [22.95, 120.35], maxZoom: 8 },
+  { code: 'east', name: '東部', center: [23.65, 121.35], maxZoom: 8 },
+  { code: 'islands', name: '離島', center: [24.1, 119.25], maxZoom: 7 },
 ]
+
+const TAIWAN_OVERVIEW_BOUNDS: L.LatLngBoundsExpression = [
+  [21.75, 119.85],
+  [25.45, 122.05],
+]
+const desktopMapLayout = window.matchMedia('(min-width: 641px)')
+
+function overviewMaxZoom(baseZoom: number): number {
+  // 桌機抽屜在側邊，不會吃掉地圖高度；四分之三級能善用多出的工作區，
+  // 手機底部抽屜仍維持原本的地理尺度。
+  return baseZoom + (desktopMapLayout.matches ? .75 : 0)
+}
 
 const mapNode = requiredElement('map')
 const drawer = requiredElement('map-drawer')
@@ -262,7 +274,10 @@ const map = L.map(mapNode, {
   zoomControl: false,
   minZoom: 6,
   maxZoom: 19,
-}).setView([23.75, 120.9], 7)
+  zoomSnap: .25,
+  zoomDelta: .5,
+}).setView([23.75, 120.9], overviewMaxZoom(7))
+const camera = createMapCameraController(map, mapNode, drawer)
 
 map.createPane('routePreviewPane').style.zIndex = '420'
 // 預覽小站點獨立一層:同 pane 內只看插入順序,多條建議路線輪流蓋掉
@@ -455,7 +470,7 @@ async function initialise() {
           const latitude = Number(latitudeParam)
           const longitude = Number(longitudeParam)
           if (latitudeParam !== null && longitudeParam !== null && Number.isFinite(latitude) && Number.isFinite(longitude)) {
-            map.setView([latitude, longitude], 15)
+            camera.focusPoint([latitude, longitude], 15)
             await findNearbyPlaces(latitude, longitude)
           }
         }
@@ -497,7 +512,7 @@ map.on('click', (event) => {
   }
   if (map.getZoom() >= 14) void findNearbyPlaces(event.latlng.lat, event.latlng.lng, true)
   else {
-    map.flyTo(event.latlng, 14)
+    camera.focusPoint(event.latlng, 14, { animate: true })
     setStatus('放大後再選站牌，避免誤選太遠的位置')
   }
 })
@@ -522,7 +537,6 @@ function showTaiwan() {
   lastDirectRoutes = []
   lastTransferPlans = []
   selectedDirectIndex = 0
-  map.setView([23.75, 120.9], 7)
   setStatus('選一個區域，看看公車如何穿過城市。')
   renderRegionMarkers()
   renderDrawer({
@@ -536,6 +550,7 @@ function showTaiwan() {
       locateCityButton(),
     ],
   })
+  camera.focusBounds(TAIWAN_OVERVIEW_BOUNDS, { maxZoom: () => overviewMaxZoom(7.5) })
   history.replaceState(null, '', '/map')
   setDocumentTitle()
   setViewBack(undefined)
@@ -671,7 +686,7 @@ async function chooseCity(city: MapCity) {
     mode: 'compact',
     content: [drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…')],
   })
-  setDrawerAwareView(city.center, 11)
+  camera.focusPoint(city.center, 11)
   setViewBack(() => showRegion(city.region))
 
   try {
@@ -683,7 +698,7 @@ async function chooseCity(city: MapCity) {
     routesCityCode = city.code
     category = '全部'
     renderRoutePicker()
-    setDrawerAwareView(city.center, 11)
+    camera.focusPoint(city.center, 11)
   } catch {
     if (isStaleNav(requestId)) return
     setStatus('目前無法載入這個縣市的路線。', true)
@@ -695,7 +710,7 @@ async function chooseCity(city: MapCity) {
         retryButton(() => void chooseCity(city)),
       ],
     })
-    setDrawerAwareView(city.center, 11)
+    camera.focusPoint(city.center, 11)
   }
 }
 
@@ -751,7 +766,7 @@ function renderRoutePicker() {
   const back = drawerBack('返回縣市', () => showRegion(activeCity!.region))
   const title = heading(activeCity.name, `${routes.length} 條路線，不用設定起終點，直接看一條公車。`)
   const search = document.createElement('input')
-  search.className = 'map-search'
+  search.className = 'map-search map-route-search'
   search.placeholder = '路線或站牌名稱'
   search.setAttribute('aria-label', '篩選路線，或搜尋站牌名稱')
   const categories = document.createElement('div')
@@ -1140,7 +1155,7 @@ function placeSearchBox(
 
 // 搜尋選中的站牌直接開站牌路線視圖(跟 deep link 進站牌同一條路)。
 function openSearchedPlace(place: SearchPlace) {
-  map.setView([place.latitude, place.longitude], 16)
+  camera.focusPoint([place.latitude, place.longitude], 16)
   const nearbyPlace: NearbyPlace = { ...place, distanceMeters: 0 }
   lastNearbyOrigin = [place.latitude, place.longitude]
   lastNearbyPlaces = [nearbyPlace]
@@ -1205,6 +1220,7 @@ function captureTripResultsCamera() {
 
 function restoreTripResultsCamera(): boolean {
   if (!activeCity || !tripResultsCamera || tripResultsCameraCity !== activeCity.code || !hasTripResults()) return false
+  camera.clear()
   restoreMapCamera(map, tripResultsCamera)
   return true
 }
@@ -1443,7 +1459,7 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
     ],
     content: [list],
   })
-  if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
+  if (bounds.isValid()) camera.focusBounds(bounds)
   clearStatus()
   setViewBack(variantBack)
 }
@@ -1571,7 +1587,7 @@ function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 
   const feature = variant.stops.features.find((candidate) => candidate.properties.stopUid === stop.stopUid)
   if (!feature) return
   const [longitude, latitude] = feature.geometry.coordinates
-  setDrawerAwareView([latitude, longitude], 15)
+  camera.focusPoint([latitude, longitude], 15)
   const marker = unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(selectionLayer)
   marker.getElement()?.classList.add('timetable-stop-focus')
   marker.getElement()?.setAttribute('data-stop-uid', stop.stopUid)
@@ -1855,7 +1871,7 @@ function drawVariant(variant: RouteMapVariant) {
       timetableSummary,
     ],
   })
-  if (bounds.isValid()) map.fitBounds(bounds, { ...drawerAwareCameraPadding(), animate: false })
+  if (bounds.isValid()) camera.focusBounds(bounds)
   const summaryRequest = ++timetableRequest
   void hydrateRouteTimetableSummary(variant, timetableSummary, summaryRequest)
   setViewBack(goBack)
@@ -2597,10 +2613,7 @@ async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: Journe
   })
   if (fromCoordinate) bounds.extend(fromCoordinate)
   if (toCoordinate) bounds.extend(toCoordinate)
-  if (fitCamera && bounds.isValid()) map.fitBounds(bounds, {
-    ...drawerAwareCameraPadding(),
-    maxZoom: 16,
-  })
+  if (fitCamera && bounds.isValid()) camera.focusBounds(bounds, { maxZoom: 16 })
   return true
 }
 
@@ -2643,10 +2656,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: J
   if (focusBounds) bounds.extend(focusBounds)
   if (selectedFrom) bounds.extend([selectedFrom.latitude, selectedFrom.longitude])
   if (selectedTo) bounds.extend([selectedTo.latitude, selectedTo.longitude])
-  if (fitCamera && bounds.isValid()) map.fitBounds(bounds, {
-    ...drawerAwareCameraPadding(),
-    maxZoom: 16,
-  })
+  if (fitCamera && bounds.isValid()) camera.focusBounds(bounds, { maxZoom: 16 })
   return true
 }
 
@@ -2772,7 +2782,7 @@ async function openPlaceById(placeId: string) {
   const response = await fetch(`/api/v1/map/place/${encodeURIComponent(placeId)}?city=${encodeURIComponent(activeCity.code)}`)
   const data = await response.json() as { place?: NearbyPlace; error?: string }
   if (!response.ok || !data.place) throw new Error(data.error || '找不到這個站牌')
-  map.setView([data.place.latitude, data.place.longitude], 16)
+  camera.focusPoint([data.place.latitude, data.place.longitude], 16)
   lastNearbyOrigin = [data.place.latitude, data.place.longitude]
   lastNearbyPlaces = [data.place]
   interactionMode = 'nearby'
@@ -2925,7 +2935,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
     await previewPlaceRoutes(sortedRoutes, place)
     if (!activeCity || isStaleNav(requestId)) return
     drawTripEndpoints()
-    map.panTo([place.latitude, place.longitude])
+    camera.focusPoint([place.latitude, place.longitude], map.getZoom())
     history.replaceState(null, '', `/map?city=${activeCity.code}&place=${encodeURIComponent(place.placeId)}`)
     setDocumentTitle(`${place.name} 到站時間`)
     clearStatus()
@@ -3034,33 +3044,14 @@ function setDocumentTitle(prefix?: string) {
   document.title = prefix ? `${prefix}｜Mochi Bus` : '公車地圖｜Mochi Bus'
 }
 
-function drawerAwareCameraPadding() {
-  return calculateCameraPadding(readCameraRect(mapNode), readCameraRect(drawer))
-}
-
-function setDrawerAwareView(center: L.LatLngExpression, zoom: number) {
-  map.setView(center, zoom, { animate: false })
-  const offset = cameraPanOffset(drawerAwareCameraPadding())
-  if (offset[0] || offset[1]) map.panBy(offset, { animate: false })
-}
-
 function fitRegionCities(region: (typeof regions)[number], regionCities: MapCity[]) {
   const bounds = L.latLngBounds([])
   regionCities.forEach((city) => bounds.extend(city.center))
   if (!bounds.isValid()) {
-    setDrawerAwareView(region.center, region.zoom)
+    camera.focusPoint(region.center, overviewMaxZoom(region.maxZoom))
     return
   }
-  map.fitBounds(bounds, {
-    ...drawerAwareCameraPadding(),
-    maxZoom: region.zoom,
-    animate: false,
-  })
-}
-
-function readCameraRect(element: HTMLElement): CameraRect {
-  const { left, top, right, bottom, width, height } = element.getBoundingClientRect()
-  return { left, top, right, bottom, width, height }
+  camera.focusBounds(bounds, { maxZoom: () => overviewMaxZoom(region.maxZoom) })
 }
 
 function requiredElement<T extends HTMLElement = HTMLElement>(id: string): T {

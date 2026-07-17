@@ -196,6 +196,7 @@ button { cursor: pointer; }
   display: grid;
   flex: 1 1 auto;
   gap: 8px;
+  align-content: start;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -272,6 +273,7 @@ button { cursor: pointer; }
   color: var(--ink);
 }
 .map-search:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgba(79, 104, 91, .14); }
+.map-route-search { margin-top: 4px; }
 .trip-mode-button {
   position: absolute;
   top: 16px;
@@ -330,6 +332,7 @@ button { cursor: pointer; }
 .nearby-list, .place-route-list, .direct-route-list { display: grid; gap: 0; }
 .nearby-list, .place-search-results { border-block: 1px solid var(--line-faint); }
 .place-search-results { display: grid; gap: 0; }
+.place-search-results:empty { display: none; }
 .place-search-results:not(:empty) { margin-bottom: 10px; }
 .place-search .map-search { margin-bottom: 10px; }
 .nearby-place-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
@@ -645,12 +648,20 @@ button { cursor: pointer; }
 }
 
 @media (max-width: 640px) {
+  :root {
+    /* 可捲動抽屜共用穩定的半屏工作區，載入資料或換模式時不再忽高忽低。 */
+    --map-drawer-expanded-height: min(
+      50dvh,
+      34rem,
+      calc(100dvh - var(--map-mobile-top-clearance) - var(--map-drawer-mobile-bottom))
+    );
+  }
   .map-drawer {
     right: 10px;
     bottom: var(--map-drawer-mobile-bottom);
     width: calc(100% - 20px);
     max-height: min(
-      68dvh,
+      50dvh,
       calc(100dvh - var(--map-mobile-top-clearance) - var(--map-drawer-mobile-bottom))
     );
     border-radius: var(--radius-drawer);
@@ -661,26 +672,8 @@ button { cursor: pointer; }
   .selection-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .map-route-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .leaflet-control-zoom { display: none; }
-  .map-drawer[data-mode="map-list"] {
-    max-height: min(
-      48dvh,
-      520px,
-      calc(100dvh - var(--map-mobile-top-clearance) - var(--map-drawer-mobile-bottom))
-    );
-  }
-  .map-drawer[data-mode="results"] {
-    max-height: min(
-      58dvh,
-      620px,
-      calc(100dvh - var(--map-mobile-top-clearance) - var(--map-drawer-mobile-bottom))
-    );
-  }
-  .map-drawer[data-mode="timetable"] {
-    max-height: min(
-      72dvh,
-      720px,
-      calc(100dvh - var(--map-mobile-top-clearance) - var(--map-drawer-mobile-bottom))
-    );
+  .map-drawer[data-scrollable="true"] {
+    max-height: var(--map-drawer-expanded-height);
   }
   .timetable-hour-row { grid-template-columns: 36px minmax(0, 1fr); }
 }
@@ -713,11 +706,6 @@ button { cursor: pointer; }
   .network-toggle {
     top: max(19px, calc(env(safe-area-inset-top) + 1px));
     left: calc(50% - 20px);
-  }
-  .map-drawer[data-mode="map-list"],
-  .map-drawer[data-mode="results"],
-  .map-drawer[data-mode="timetable"] {
-    max-height: calc(100dvh - var(--map-mobile-top-clearance) - var(--map-drawer-mobile-bottom));
   }
 }
 
