@@ -3,11 +3,11 @@
 快照發布使用 immutable version keys；唯一會改變線上讀取版本的是 D1 `dataset_versions.active_version`。發布工具必須依序完成以下狀態，任何較早階段失敗都不可切換 pointer。
 
 1. Generate：從 TDX 產生 D1 rows、shape、schedule、place bundle 與 network。
-2. Local validate：檢查非空、數量暴跌、座標、shape、唯一性與所有引用。
+2. Local validate：檢查非空、數量暴跌、座標、shape、每個 pattern 至少兩站、序號唯一，以及 D1／place bundle／network 的完整交叉引用；另將班表覆蓋率與 network bytes／座標數和前版比較。
 3. Stage：上傳 versioned R2 objects，將新版本 rows 寫入 D1，但仍不可供線上讀取。
-4. Remote validate：核對 D1 counts／懸空引用，並讀回 R2 manifest。
+4. Remote validate：核對 D1 counts／懸空引用／短 pattern，讀回 R2 manifest，並下載 network、shape、schedule、place 四類關鍵物件的代表樣本核對 bytes 與 SHA-256。
 5. Activate：用獨立 D1 statement 原子更新 `active_version`。
-6. Verify：以 cache-busted 公開 routes API 確認 `snapshotVersion` 與非空 routes。
+6. Verify：以 cache-busted 公開 API 確認 route catalogue 的版本與精確數量、指定 route variant 至少兩站、place bundle 含該 variant，以及 network 串流宣告相同 active version。
 7. Finalize：寫入 state metadata，保留 active 與 previous，最後才清理更舊版本。
 
 若公開 smoke 失敗，工具會立即把 pointer 恢復為 previous version；失敗的新版本 artifacts 暫時保留供調查，下次成功發布會清理。
@@ -54,6 +54,8 @@ curl.exe -sS "https://bus.moc96336.com/api/v1/map/routes?city=Chiayi&snapshot=ma
 ```
 
 公開回應必須是 `source: "snapshot"`、`snapshotVersion` 等於 D1 active version，且 `routes` 非空。Production smoke 通過前，不得刪除 previous rows 或 objects。
+
+Manifest/state schema v2 會記錄 `counts` 與 `quality`（班表覆蓋、bundle route 數、network bytes／座標數）；任一有前版基準的核心數值下跌超過 40% 就停止在 local validation。Snapshot format 7 會讓每個城市在下一次排程分片各重建一次，確保新版 gate 實際跑過；仍維持每日 D1 寫入分片，不一次重匯全部城市。
 
 ## 8m geometry rollback（2026-07-13）
 

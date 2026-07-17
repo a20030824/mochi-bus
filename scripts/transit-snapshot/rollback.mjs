@@ -58,6 +58,7 @@ await putJson(stateKey, {
   previousVersion: currentVersion,
   contentHash: targetManifest?.contentHash ?? null,
   counts: targetManifest?.counts ?? counts,
+  quality: targetManifest?.quality ?? null,
   manifestKey: manifestExists ? `snapshots/${targetVersion}/cities/${city}/manifest.json` : null,
   publishedAt: new Date().toISOString(),
   rollback: { from: currentVersion, at: new Date().toISOString() },

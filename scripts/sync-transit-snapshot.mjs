@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { validateSnapshot } from './transit-snapshot/validate.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
+import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
 
 const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
@@ -407,11 +408,18 @@ const artifactTasks = [
 ]
 const manifestKey = `snapshots/${version}/cities/${CITY}/manifest.json`
 const manifestFile = join(outputRoot, 'manifest.json')
-const manifest = await createArtifactManifest(artifactTasks, validation.counts)
+const manifest = await createArtifactManifest(artifactTasks, validation.counts, validation.quality)
 await writeFile(manifestFile, JSON.stringify(manifest))
 artifactTasks.push({ key: manifestKey, file: manifestFile, contentType: 'application/json' })
 
 const previousVersion = existingRows.active[0]?.active_version ?? null
+const smokePattern = patterns[0]
+const smokeTarget = {
+  counts: validation.counts,
+  routeName: routeByUid.get(smokePattern.routeUid).name,
+  patternId: smokePattern.id,
+  placeId: patternStops.find((item) => item.patternId === smokePattern.id).placeId,
+}
 const importedAt = new Date().toISOString()
 const activationFile = join(outputRoot, 'activate.sql')
 await writeFile(activationFile,
@@ -449,9 +457,9 @@ await publishWithRollback({
     await putObjects(artifactTasks)
     for (const file of sqlFiles) await runD1(file)
   },
-  validate: () => validateRemoteSnapshot(version, validation.counts, manifestKey),
+  validate: () => validateRemoteSnapshot(version, validation.counts, validation.quality, manifestKey, manifest),
   activate: () => runD1(activationFile),
-  smoke: () => smokePublishedSnapshot(version),
+  smoke: () => smokePublishedSnapshot(version, smokeTarget),
   rollback: async (targetVersion) => {
     const rollbackFile = join(outputRoot, 'rollback.sql')
     await writeFile(rollbackFile,
@@ -462,12 +470,13 @@ await publishWithRollback({
   cleanup: async () => {
     if (r2) {
       await s3Request('PUT', stateKey, JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         contentHash,
         version,
         previousVersion,
         manifestKey,
         counts: validation.counts,
+        quality: validation.quality,
         generatedAt: importedAt,
         publishedAt: new Date().toISOString(),
         source: 'TDX',
@@ -606,14 +615,15 @@ function hashContent(payloads) {
   // 4:place bundle 的班表比對加入「借同方向其他支線」的 fallback。
   // 5:normalizeName 加「臺→台、車站→站、去結尾站」,placeId 全部重算。
   // 6:network.json 內建 schemaVersion/city(API 改原樣串流)+ shape 簡化瘦身。
-  const SNAPSHOT_FORMAT = 6
+  // 7:manifest/state 加入品質指標，所有城市重跑新版 gate 後才可沿用 unchanged 快取。
+  const SNAPSHOT_FORMAT = 7
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])
   const stable = JSON.stringify(payloads, (key, value) => volatileKeys.has(key) ? undefined : value)
   return createHash('sha256').update(`format:${SNAPSHOT_FORMAT}\n`).update(stable).digest('hex')
 }
-async function createArtifactManifest(tasks, counts) {
+async function createArtifactManifest(tasks, counts, quality) {
   const artifacts = []
   for (const task of tasks) {
     const body = await readFile(task.file)
@@ -625,13 +635,13 @@ async function createArtifactManifest(tasks, counts) {
     })
   }
   return {
-    schemaVersion: 1, city: CITY, version, contentHash,
+    schemaVersion: 2, city: CITY, version, contentHash,
     generatedAt: new Date().toISOString(), source: 'TDX',
     workflowRun: process.env.GITHUB_RUN_ID ?? null,
-    counts, artifacts,
+    counts, quality, artifacts,
   }
 }
-async function validateRemoteSnapshot(targetVersion, expectedCounts, manifestKey) {
+async function validateRemoteSnapshot(targetVersion, expectedCounts, expectedQuality, manifestKey, expectedManifest) {
   const result = queryRemoteD1([
     `SELECT COUNT(*) AS count FROM routes WHERE version=${sqlValue(targetVersion)} AND city_code=${sqlValue(CITY)}`,
     `SELECT COUNT(*) AS count FROM patterns WHERE version=${sqlValue(targetVersion)} AND city_code=${sqlValue(CITY)}`,
@@ -642,6 +652,12 @@ async function validateRemoteSnapshot(targetVersion, expectedCounts, manifestKey
       (SELECT COUNT(*) FROM patterns p LEFT JOIN routes r ON r.version=p.version AND r.route_uid=p.route_uid WHERE p.version=${sqlValue(targetVersion)} AND r.route_uid IS NULL)
       + (SELECT COUNT(*) FROM stops s LEFT JOIN stop_places sp ON sp.version=s.version AND sp.place_id=s.place_id WHERE s.version=${sqlValue(targetVersion)} AND sp.place_id IS NULL)
       + (SELECT COUNT(*) FROM pattern_stops ps LEFT JOIN patterns p ON p.version=ps.version AND p.pattern_id=ps.pattern_id LEFT JOIN stops s ON s.version=ps.version AND s.stop_uid=ps.stop_uid LEFT JOIN stop_places sp ON sp.version=ps.version AND sp.place_id=ps.place_id WHERE ps.version=${sqlValue(targetVersion)} AND (p.pattern_id IS NULL OR s.stop_uid IS NULL OR sp.place_id IS NULL)) AS count`,
+    `SELECT COUNT(*) AS count FROM (
+      SELECT p.pattern_id FROM patterns p
+      LEFT JOIN pattern_stops ps ON ps.version=p.version AND ps.pattern_id=p.pattern_id
+      WHERE p.version=${sqlValue(targetVersion)} AND p.city_code=${sqlValue(CITY)}
+      GROUP BY p.pattern_id HAVING COUNT(ps.stop_uid) < 2
+    )`,
   ].join(';'))
   const actual = {
     routes: Number(result[0]?.results?.[0]?.count),
@@ -657,27 +673,52 @@ async function validateRemoteSnapshot(targetVersion, expectedCounts, manifestKey
   }
   const dangling = Number(result[5]?.results?.[0]?.count)
   if (dangling !== 0) throw new Error(`Remote D1 contains ${dangling} dangling snapshot references`)
+  const shortPatterns = Number(result[6]?.results?.[0]?.count)
+  if (shortPatterns !== 0) throw new Error(`Remote D1 contains ${shortPatterns} patterns with fewer than two stops`)
   if (r2) {
     const remoteManifest = await s3GetJson(manifestKey)
-    if (remoteManifest?.version !== targetVersion || remoteManifest?.contentHash !== contentHash) {
+    if (remoteManifest?.schemaVersion !== 2
+      || remoteManifest?.version !== targetVersion
+      || remoteManifest?.contentHash !== contentHash
+      || !sameMetrics(remoteManifest.counts, expectedCounts)
+      || !sameMetrics(remoteManifest.quality, expectedQuality)
+      || !sameArtifactManifest(remoteManifest.artifacts, expectedManifest.artifacts)) {
       throw new Error('Remote R2 manifest does not match the staged snapshot')
     }
+    await verifyCriticalR2Artifacts(remoteManifest.artifacts, targetVersion)
   }
-  console.log(JSON.stringify({ city: CITY, version: targetVersion, phase: 'remote-validation', counts: actual }))
+  console.log(JSON.stringify({ city: CITY, version: targetVersion, phase: 'remote-validation', counts: actual, quality: expectedQuality }))
 }
-async function smokePublishedSnapshot(targetVersion) {
+async function smokePublishedSnapshot(targetVersion, target) {
   const baseUrl = process.env.SNAPSHOT_SMOKE_BASE_URL ?? 'https://bus.moc96336.com'
-  const url = `${baseUrl}/api/v1/map/routes?city=${encodeURIComponent(CITY)}&snapshot=${encodeURIComponent(targetVersion)}`
+  const cacheBust = `snapshot=${encodeURIComponent(targetVersion)}`
   let lastError
   for (let attempt = 1; attempt <= 12; attempt += 1) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(10_000), cache: 'no-store' })
-      const body = await response.json()
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      if (body.source !== 'snapshot' || body.snapshotVersion !== targetVersion || !Array.isArray(body.routes) || body.routes.length === 0) {
-        throw new Error(`unexpected active snapshot ${body.snapshotVersion ?? 'missing'}`)
+      const routes = await fetchPublicJson(`${baseUrl}/api/v1/map/routes?city=${encodeURIComponent(CITY)}&${cacheBust}`)
+      if (routes.source !== 'snapshot' || routes.snapshotVersion !== targetVersion
+        || !Array.isArray(routes.routes) || routes.routes.length !== target.counts.routes) {
+        throw new Error(`unexpected route catalogue for active snapshot ${routes.snapshotVersion ?? 'missing'}`)
       }
-      console.log(JSON.stringify({ city: CITY, version: targetVersion, phase: 'public-smoke', routes: body.routes.length }))
+
+      const route = await fetchPublicJson(`${baseUrl}/api/v1/map/route?city=${encodeURIComponent(CITY)}&route=${encodeURIComponent(target.routeName)}&${cacheBust}`)
+      const variant = Array.isArray(route.variants)
+        ? route.variants.find((item) => item.variantKey === target.patternId)
+        : undefined
+      if (route.source !== 'snapshot' || !variant || variant.stops?.features?.length < 2) {
+        throw new Error(`public route detail is missing pattern ${target.patternId}`)
+      }
+
+      const place = await fetchPublicJson(`${baseUrl}/api/v1/map/place/${encodeURIComponent(target.placeId)}/routes?city=${encodeURIComponent(CITY)}&${cacheBust}`)
+      if (!Array.isArray(place.routes) || !place.routes.some((item) => item.variantKey === target.patternId)) {
+        throw new Error(`public place bundle is missing pattern ${target.patternId}`)
+      }
+
+      await assertPublicNetworkVersion(`${baseUrl}/api/v1/map/network?city=${encodeURIComponent(CITY)}&${cacheBust}`, targetVersion)
+      console.log(JSON.stringify({
+        city: CITY, version: targetVersion, phase: 'public-smoke',
+        routes: routes.routes.length, patternId: target.patternId, placeId: target.placeId,
+      }))
       return
     } catch (error) {
       lastError = error
@@ -685,6 +726,51 @@ async function smokePublishedSnapshot(targetVersion) {
     }
   }
   throw new Error(`Public snapshot smoke failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+}
+
+async function fetchPublicJson(url) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000), cache: 'no-store' })
+  if (!response.ok) {
+    await response.arrayBuffer()
+    throw new Error(`HTTP ${response.status} for ${new URL(url).pathname}`)
+  }
+  return await response.json()
+}
+
+async function assertPublicNetworkVersion(url, targetVersion) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000), cache: 'no-store' })
+  if (!response.ok || !response.body) {
+    await response.arrayBuffer()
+    throw new Error(`HTTP ${response.status} for public network`)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let prefix = ''
+  try {
+    while (prefix.length < 65_536) {
+      const { done, value } = await reader.read()
+      if (done) break
+      prefix += decoder.decode(value, { stream: true })
+      if (prefix.includes(`"version":${JSON.stringify(targetVersion)}`)) return
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+  throw new Error(`public network does not expose active version ${targetVersion}`)
+}
+
+async function verifyCriticalR2Artifacts(artifacts, targetVersion) {
+  const prefix = `snapshots/${targetVersion}/cities/${CITY}/`
+  await mapParallel(criticalArtifacts(artifacts, prefix), 4, verifyR2Artifact)
+}
+
+async function verifyR2Artifact(artifact) {
+  const response = await r2.client.fetch(objectUrl(artifact.key))
+  if (!response.ok) {
+    await response.arrayBuffer()
+    throw new Error(`R2 GET ${artifact.key} failed (${response.status})`)
+  }
+  assertArtifactIntegrity(artifact, await response.arrayBuffer())
 }
 async function s3GetJson(key) {
   const response = await r2.client.fetch(objectUrl(key))
