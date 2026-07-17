@@ -5,7 +5,6 @@ import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segme
 import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
-import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '../../src/domain/map/network-pick'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
 import {
   describeTransferEstimate,
@@ -21,7 +20,6 @@ import {
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
-import { tdxHeaders } from '../tdx/client'
 import {
   formatJourneyWait,
   splitEtaLabel,
@@ -31,85 +29,25 @@ import { splitRouteDisplayName } from '../lib/route-display'
 import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import { createMapFeatureDiscovery, type MapFeature } from './feature-discovery'
-import { bindTextTooltip, setTextTooltip } from './leaflet-tooltip'
+import { createCityNetworkController } from './city-network-controller'
+import { bindTextTooltip } from './leaflet-tooltip'
+import {
+  mapApi,
+  type DirectRoute,
+  type MapCity,
+  type NearbyPlace,
+  type PlaceRoute,
+  type RegionCode,
+  type RouteItem,
+  type RouteMapVariant,
+  type RouteTimetable,
+  type SearchPlace,
+  type TimetableStop,
+  type TransferPlan,
+} from './map-api-client'
+import { createTimetablePanel, renderTimetableSummary, timetableSummaryText } from './timetable-view'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
-
-type MapCity = {
-  code: string
-  name: string
-  region: RegionCode
-  center: [number, number]
-  labelOffset?: [number, number]
-}
-
-type RouteItem = {
-  routeName: string
-  category: string
-}
-
-type RouteMapVariant = {
-  variantKey: string
-  routeName: string
-  routeUid: string
-  subRouteUid?: string
-  direction: 0 | 1 | 2
-  label: string
-  subRouteName: string
-  shape: GeoJSON.Feature<GeoJSON.LineString>
-  stops: GeoJSON.FeatureCollection<GeoJSON.Point, {
-    stopUid: string
-    stopName: string
-    sequence: number
-  }>
-  updatedAt: string | null
-}
-
-
-type TimetableStop = {
-  stopUid: string
-  stopName: string
-  sequence: number
-  hasTimes: boolean
-}
-
-type TimetablePeriod = {
-  startTime: string
-  endTime: string
-  minHeadwayMinutes: number
-  maxHeadwayMinutes: number
-}
-
-type TimetableService = {
-  id: string
-  label: string
-  days: number[]
-  today: boolean
-  times: string[]
-  periods: TimetablePeriod[]
-  firstTime: string | null
-  lastTime: string | null
-}
-
-type RouteTimetable = {
-  mode: 'stop' | 'departure' | 'frequency' | 'none'
-  selectedStop: Omit<TimetableStop, 'hasTimes'> | null
-  departureStop: Omit<TimetableStop, 'hasTimes'> | null
-  stops: TimetableStop[]
-  timedStopCount: number
-  services: TimetableService[]
-}
-
-type RouteTimetableResponse = {
-  schemaVersion: number
-  city: string
-  routeName: string
-  variantKey: string
-  routeUid: string
-  direction: 0 | 1 | 2
-  source: 'snapshot' | 'tdx'
-  timetable: RouteTimetable
-}
 
 type JourneyLegPreviewOptions = {
   selected?: boolean
@@ -127,91 +65,10 @@ type PendingTripSelection = {
   selected: NearbyPlace
 }
 
-type NearbyPlace = {
-  placeId: string
-  name: string
-  latitude: number
-  longitude: number
-  distanceMeters: number
-}
-
-type SearchPlace = Omit<NearbyPlace, 'distanceMeters'>
-
-type PlaceRoute = {
-  routeUid: string
-  routeName: string
-  variantKey: string
-  direction: 0 | 1 | 2
-  label: string
-  subRouteUid?: string
-  subRouteName: string
-  stopUid: string
-  stopName: string
-  stopSequence: number
-  estimateSeconds: number | null
-  etaLabel: string
-  stopStatus: number
-  source?: 'realtime' | 'stale-realtime' | 'schedule' | 'none'
-}
-
-type DirectRoute = PlaceRoute & {
-  boardSequence: number
-  alightSequence: number
-  stopCount: number
-  etaMinutes?: number | null
-  etaSource?: EtaSource
-}
-
-type TransferLeg = {
-  routeName: string
-  variantKey: string
-  label: string
-  boardSequence: number
-  alightSequence: number
-  stopCount: number
-}
-
-type TransferPlan = {
-  transferPlaceId: string
-  secondTransferPlaceId?: string
-  transferName: string
-  transferWalkMeters?: number
-  totalStops: number
-  first: TransferLeg
-  second: TransferLeg
-  firstEtaMinutes?: number | null
-  secondEtaMinutes?: number | null
-  firstEtaSource?: EtaSource
-  secondEtaSource?: EtaSource
-  transferEstimate?: TransferEstimate
-}
-
 type JourneyEtaValue = {
   minutes: number | null
   source: EtaSource
 }
-
-type CityNetwork = {
-  version: string
-  routes: Array<{
-    routeName: string
-    variantKey: string
-    label: string
-    shape: GeoJSON.Feature<GeoJSON.LineString>
-  }>
-  places: Array<Omit<NearbyPlace, 'distanceMeters'>>
-}
-
-type VehiclePosition = {
-  plate: string | null
-  latitude: number
-  longitude: number
-  speed: number | null
-  azimuth: number | null
-  gpsTime: string | null
-}
-
-type RegionCode = 'north' | 'central' | 'south' | 'east' | 'islands'
 
 const regions: Array<{
   code: RegionCode
@@ -355,18 +212,30 @@ let routeBackAction: (() => void) | undefined
 // 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
 let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
 let variantPickerUsed = false
-let networkVisible = false
-let networkCache: { city: string; data: CityNetwork; index: NetworkIndex } | undefined
-let networkStopMarkers: L.CircleMarker[] = []
-let networkHoverLine: LeafletGeoJSON | undefined
-let networkHoverRouteIndex = -1
-let networkHoverFrame: number | undefined
-let networkHoverLatLng: L.LatLng | undefined
 let vehicleRefreshTimer: number | undefined
 
 const routePalette = ['#b85f49', '#4f685b', '#8a674f', '#b08a47', '#765b78', '#6f7561']
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 const TRIP_NEARBY_FAR_DISTANCE_METERS = 250
+
+const cityNetwork = createCityNetworkController({
+  map,
+  layer: networkLayer,
+  renderer: networkRenderer,
+  button: networkButton,
+  hoverCapable,
+  routeColor,
+  beginRequest: beginNavRequest,
+  isStaleRequest: isStaleNav,
+  loadNetwork: mapApi.network,
+  setStatus,
+  onActivate: () => {
+    stopVehicleRefresh()
+    routeLayer.clearLayers()
+    previewLayer.clearLayers()
+    nearbyLayer.clearLayers()
+  },
+})
 
 function browserStorage(): Storage | undefined {
   try {
@@ -481,9 +350,7 @@ void initialise()
 
 async function initialise() {
   try {
-    const response = await fetch('/api/v1/map/cities')
-    const data = await response.json() as { cities: MapCity[] }
-    cities = data.cities
+    cities = await mapApi.cities()
     const params = new URLSearchParams(location.search)
     const cityCode = params.get('city') || getActiveCity()
     const routeName = params.get('route')
@@ -520,7 +387,7 @@ async function initialise() {
 
 networkButton.addEventListener('click', () => {
   markMapFeatureUsed(networkButton, 'network')
-  void toggleCityNetwork()
+  if (activeCity) void cityNetwork.toggle(activeCity)
 })
 // 品牌鍵 = 回到全台總覽(留在地圖內);右上「首頁」才是離開地圖的出口。
 document.getElementById('map-brand')?.addEventListener('click', (event) => {
@@ -533,7 +400,7 @@ map.on('click', (event) => {
   if (!activeCity) return
   // 全路網圖層是 non-interactive,點線/點站點都會落到這裡:先問網格索引。
   // 觸控沒有游標精準度,容差比照舊 canvas tolerance 放大。
-  const pick = pickNetworkAt(event.latlng, hoverCapable ? 8 : 14, hoverCapable ? 10 : 16)
+  const pick = cityNetwork.pickAt(event.latlng, hoverCapable ? 8 : 14, hoverCapable ? 10 : 16)
   if (tripStage !== 'idle') {
     // 規劃選點中,點到小站點就吸附站點座標;點到線只是瞄準地圖,照點的位置處理
     if (pick?.kind === 'place') void selectTripCoordinate(pick.place.latitude, pick.place.longitude)
@@ -562,7 +429,7 @@ function showTaiwan() {
   clearTripResultsCamera()
   activeCity = undefined
   networkButton.hidden = true
-  setNetworkVisible(false)
+  cityNetwork.hide()
   routeLayer.clearLayers()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
@@ -608,11 +475,8 @@ async function jumpToNearestCity(button: HTMLButtonElement) {
   button.disabled = true
   button.textContent = '正在判斷你的位置…'
   try {
-    const response = await fetch('/api/v1/map/locate', { cache: 'no-store' })
-    const data = await response.json() as { latitude?: number; longitude?: number; error?: string }
-    if (!response.ok || typeof data.latitude !== 'number' || typeof data.longitude !== 'number' || !cities.length) {
-      throw new Error(data.error || '這次判斷不出位置，直接手動選吧')
-    }
+    const data = await mapApi.locate()
+    if (!cities.length) throw new Error('這次判斷不出位置，直接手動選吧')
     const origin: [number, number] = [data.latitude, data.longitude]
     const nearest = cities.reduce((best, city) =>
       coarseKilometers(city.center, origin) < coarseKilometers(best.center, origin) ? city : best)
@@ -663,7 +527,7 @@ function showRegion(regionCode: RegionCode) {
   clearPendingTripSelections()
   clearTripResultsCamera()
   networkButton.hidden = true
-  setNetworkVisible(false)
+  cityNetwork.hide()
   const region = regions.find((candidate) => candidate.code === regionCode)!
   routeLayer.clearLayers()
   selectionLayer.clearLayers()
@@ -705,7 +569,7 @@ async function chooseCity(city: MapCity) {
   setActiveCity(city.code)
   const { requestId, signal } = beginNavRequest()
   networkButton.hidden = false
-  setNetworkVisible(false)
+  cityNetwork.hide()
   selectionLayer.clearLayers()
   routeLayer.clearLayers()
   nearbyLayer.clearLayers()
@@ -728,11 +592,9 @@ async function chooseCity(city: MapCity) {
   setViewBack(() => showRegion(city.region))
 
   try {
-    const response = await tdxFetch(`/api/v1/map/routes?city=${encodeURIComponent(city.code)}`, { signal })
-    const data = await response.json() as { routes?: RouteItem[]; error?: string }
-    if (!response.ok || !data.routes) throw new Error(data.error)
+    const loadedRoutes = await mapApi.routes(city.code, signal)
     if (isStaleNav(requestId)) return
-    routes = data.routes
+    routes = loadedRoutes
     routesCityCode = city.code
     category = '全部'
     renderRoutePicker()
@@ -777,10 +639,7 @@ function renderRoutePicker() {
     const cityCode = activeCity.code
     void (async () => {
       try {
-        const response = await tdxFetch(`/api/v1/map/routes?city=${encodeURIComponent(cityCode)}`)
-        const data = await response.json() as { routes?: RouteItem[]; error?: string }
-        if (!response.ok || !data.routes) throw new Error(data.error)
-        routes = data.routes
+        routes = await mapApi.routes(cityCode)
         routesCityCode = cityCode
         category = '全部'
         // 載回來時使用者可能已經離開選單(開了路線、換了城市),別把畫面搶回來
@@ -886,23 +745,10 @@ function renderRoutePicker() {
   setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
 }
 
-// 會落到 TDX 即時查詢的端點(到站、車輛、行程 ETA、路線的 TDX fallback)
-// 帶上使用者自備的憑證;純快照端點(D1/R2)用一般 fetch 就好。
-async function tdxFetch(url: string, init?: RequestInit): Promise<Response> {
-  return fetch(url, {
-    ...init,
-    headers: { ...(init?.headers as Record<string, string> | undefined), ...await tdxHeaders() },
-  })
-}
-
 async function searchPlaces(query: string, signal?: AbortSignal): Promise<SearchPlace[]> {
   if (!activeCity) return []
-  const params = new URLSearchParams({ city: activeCity.code, q: query })
   try {
-    const response = await fetch(`/api/v1/map/search?${params}`, { signal })
-    if (!response.ok) return []
-    const data = await response.json() as { places?: SearchPlace[] }
-    return data.places ?? []
+    return await mapApi.search(activeCity.code, query, signal)
   } catch {
     return []
   }
@@ -1120,7 +966,7 @@ async function applyTripSelection(
     interactionMode = 'trip-results'
     lastDirectRoutes = []
     lastTransferPlans = []
-    setNetworkVisible(false)
+    cityNetwork.hide()
     nearbyLayer.clearLayers()
     drawTripEndpoints()
     await loadDirectRoutes()
@@ -1378,7 +1224,7 @@ async function loadRoute(
   backAction?: () => void,
 ) {
   if (!activeCity) return
-  setNetworkVisible(false)
+  cityNetwork.hide()
   routeReturnsToTrip = returnToTrip
   activeRouteColor = color
   routeBackAction = backAction
@@ -1398,20 +1244,17 @@ async function loadRoute(
   })
   setViewBack(loadingBack)
   try {
-    const params = new URLSearchParams({ city: activeCity.code, route: routeName })
-    const response = await tdxFetch(`/api/v1/map/route?${params}`, { signal })
-    const data = await response.json() as { variants?: RouteMapVariant[]; error?: string }
-    if (!response.ok || !data.variants?.length) throw new Error(data.error)
+    const variants = await mapApi.routeVariants(activeCity.code, routeName, signal)
     if (isStaleNav(requestId)) return
-    const preferred = data.variants.find((variant) => variant.variantKey === preferredVariant)
-    lastVariantChoices = { routeName, variants: data.variants }
-    variantPickerUsed = !preferred && data.variants.length > 1
+    const preferred = variants.find((variant) => variant.variantKey === preferredVariant)
+    lastVariantChoices = { routeName, variants }
+    variantPickerUsed = !preferred && variants.length > 1
     if (preferred) {
       drawVariant(preferred)
-    } else if (data.variants.length === 1) {
-      drawVariant(data.variants[0])
+    } else if (variants.length === 1) {
+      drawVariant(variants[0])
     } else {
-      renderVariantPicker(routeName, data.variants)
+      renderVariantPicker(routeName, variants)
     }
   } catch (error) {
     if (isStaleNav(requestId)) return
@@ -1506,49 +1349,6 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
 }
 
 
-function timetableUrl(variant: RouteMapVariant, stopUid?: string): string {
-  const params = new URLSearchParams({
-    city: activeCity!.code,
-    route: variant.routeName,
-    routeUid: variant.routeUid,
-    variant: variant.variantKey,
-    direction: String(variant.direction),
-  })
-  if (variant.subRouteUid) params.set('subRouteUid', variant.subRouteUid)
-  if (stopUid) params.set('stopUid', stopUid)
-  return `/api/v1/map/timetable?${params}`
-}
-
-async function fetchRouteTimetable(variant: RouteMapVariant, stopUid?: string, signal?: AbortSignal): Promise<RouteTimetableResponse> {
-  const response = await tdxFetch(timetableUrl(variant, stopUid), { signal })
-  const data = await response.json() as RouteTimetableResponse & { error?: string }
-  if (!response.ok) throw new Error(data.error ?? '目前無法取得時刻表')
-  return data
-}
-
-function currentTimetableService(timetable: RouteTimetable): TimetableService | undefined {
-  return timetable.services.find((service) => service.today) ?? timetable.services[0]
-}
-
-function timetableSummaryText(timetable: RouteTimetable): string | null {
-  const service = currentTimetableService(timetable)
-  if (!service?.firstTime || !service.lastTime) return null
-  const nextServicePrefix = !service.today && service.days.length ? `下一服務日 ${service.label} · ` : ''
-  if (timetable.mode === 'frequency') {
-    const headways = service.periods.flatMap((period) => [period.minHeadwayMinutes, period.maxHeadwayMinutes])
-    const minimum = headways.length ? Math.min(...headways) : null
-    const maximum = headways.length ? Math.max(...headways) : null
-    const headway = minimum !== null && maximum !== null
-      ? minimum === maximum ? `${minimum} 分一班` : `${minimum}–${maximum} 分一班`
-      : ''
-    return `${nextServicePrefix}營運 ${service.firstTime}–${service.lastTime}${headway ? ` · ${headway}` : ''}`
-  }
-  const prefix = timetable.mode === 'departure'
-    ? `${timetable.departureStop?.stopName ?? '起點'}發車`
-    : timetable.selectedStop?.stopName ?? ''
-  return `${nextServicePrefix}${prefix}${prefix ? ' · ' : ''}首班 ${service.firstTime} · 末班 ${service.lastTime}`
-}
-
 // 摘要列從一開始就佔位(pending),資料到了原地變成可點的時刻表入口;
 // 版面高度不變,就不需要第二次 fitBounds,畫面也不會跳。
 async function hydrateRouteTimetableSummary(
@@ -1556,8 +1356,9 @@ async function hydrateRouteTimetableSummary(
   summary: HTMLButtonElement,
   requestId: number,
 ) {
+  if (!activeCity) return
   try {
-    const data = await fetchRouteTimetable(variant)
+    const data = await mapApi.timetable(activeCity.code, variant)
     if (requestId !== timetableRequest || !drawer.contains(summary)) return
     if (data.timetable.mode === 'none' || !data.timetable.services.length) {
       summary.remove()
@@ -1574,22 +1375,8 @@ async function hydrateRouteTimetableSummary(
   }
 }
 
-function renderTimetableSummary(summary: HTMLButtonElement, text: string) {
-  const parts = text.split(/(\d{2}:\d{2}(?:–\d{2}:\d{2})?|\d+(?:–\d+)?(?=\s*分))/g)
-  const copy = document.createElement('span')
-  parts.filter(Boolean).forEach((part) => {
-    if (!/^\d/.test(part)) {
-      copy.appendChild(document.createTextNode(part))
-      return
-    }
-    const number = document.createElement('strong')
-    number.textContent = part
-    copy.appendChild(number)
-  })
-  summary.replaceChildren(copy)
-}
-
 async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
+  if (!activeCity) return
   stopVehicleRefresh()
   const back = () => drawVariant(variant)
   const { requestId, signal } = beginNavRequest()
@@ -1605,7 +1392,7 @@ async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
   setStatus(`${variant.routeName} · 正在讀取時刻`)
   setViewBack(back)
   try {
-    const data = await fetchRouteTimetable(variant, stopUid, signal)
+    const data = await mapApi.timetable(activeCity.code, variant, stopUid, signal)
     if (isStaleNav(requestId)) return
     renderRouteTimetable(variant, data.timetable)
   } catch (error) {
@@ -1636,9 +1423,9 @@ function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 
 
 function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {
   const back = () => drawVariant(variant)
-  const panel = document.createElement('div')
-  panel.className = 'timetable-panel'
   if (timetable.mode === 'none' || !timetable.services.length) {
+    const panel = document.createElement('div')
+    panel.className = 'timetable-panel'
     panel.appendChild(paragraph('這個方向目前沒有公開的表定班次資料。'))
     renderDrawer({
       mode: 'timetable',
@@ -1653,73 +1440,7 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
     return
   }
 
-  const timedStops = timetable.stops.filter((stop) => stop.hasTimes)
-  if (timetable.mode === 'stop' && timedStops.length > 1) {
-    const field = document.createElement('label')
-    field.className = 'timetable-stop-field'
-    const label = document.createElement('span')
-    label.textContent = '站牌'
-    const select = document.createElement('select')
-    select.setAttribute('aria-label', '站牌')
-    timedStops.forEach((stop) => {
-      const option = document.createElement('option')
-      option.value = stop.stopUid
-      option.textContent = `${stop.sequence}. ${stop.stopName}`
-      option.selected = stop.stopUid === timetable.selectedStop?.stopUid
-      select.appendChild(option)
-    })
-    select.addEventListener('change', () => void openRouteTimetable(variant, select.value))
-    field.replaceChildren(label, select)
-    panel.appendChild(field)
-  }
-
-  const content = document.createElement('div')
-  content.className = 'timetable-content'
-  const hasMultipleServices = timetable.services.length > 1
-  const hasTodayService = timetable.services.some((service) => service.today)
-  const hasKnownServiceDays = timetable.services.some((service) => service.days.length)
-  const renderService = (service: TimetableService, activeButton?: HTMLButtonElement) => {
-    if (activeButton) {
-      activeButton.parentElement?.querySelectorAll<HTMLButtonElement>('button').forEach((candidate) => {
-        const active = candidate === activeButton
-        candidate.classList.toggle('active', active)
-        candidate.setAttribute('aria-selected', String(active))
-        candidate.tabIndex = active ? 0 : -1
-      })
-    }
-    content.replaceChildren(timetableServiceContent(timetable, service, {
-      showServiceLabel: !hasMultipleServices,
-      noteNoTodayService: !hasTodayService && hasKnownServiceDays,
-    }))
-  }
-  const initialService = currentTimetableService(timetable)
-  if (hasMultipleServices) {
-    const tabs = document.createElement('div')
-    tabs.className = 'timetable-tabs'
-    tabs.setAttribute('role', 'tablist')
-    tabs.setAttribute('aria-label', '服務日期')
-    const serviceButtons = new Map<string, HTMLButtonElement>()
-    timetable.services.forEach((service) => {
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'timetable-tab'
-      button.setAttribute('role', 'tab')
-      button.setAttribute('aria-selected', 'false')
-      button.tabIndex = -1
-      button.textContent = service.label
-      button.setAttribute('aria-label', service.label)
-      button.title = service.label
-      button.addEventListener('click', () => renderService(service, button))
-      tabs.appendChild(button)
-      serviceButtons.set(service.id, button)
-    })
-    panel.appendChild(tabs)
-    const initialButton = initialService ? serviceButtons.get(initialService.id) : undefined
-    if (initialService && initialButton) renderService(initialService, initialButton)
-  } else if (initialService) {
-    renderService(initialService)
-  }
-  panel.appendChild(content)
+  const panel = createTimetablePanel(timetable, (stopUid) => void openRouteTimetable(variant, stopUid))
   renderDrawer({
     mode: 'timetable',
     header: [
@@ -1728,9 +1449,6 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
     ],
     content: [panel],
   })
-  const context = timetable.mode === 'stop'
-    ? timetable.selectedStop?.stopName
-    : timetable.mode === 'departure' ? `${timetable.departureStop?.stopName ?? '起點'}發車` : '班距'
   if (timetable.mode === 'stop' && timetable.selectedStop) {
     queueMicrotask(() => focusTimetableStop(variant, timetable.selectedStop!))
   } else {
@@ -1740,117 +1458,6 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
   setViewBack(back)
 }
 
-
-type TimetableServiceContentOptions = {
-  showServiceLabel: boolean
-  noteNoTodayService: boolean
-}
-
-function timetableServiceContent(
-  timetable: RouteTimetable,
-  service: TimetableService,
-  options: TimetableServiceContentOptions,
-): HTMLElement {
-  const fragment = document.createElement('div')
-  const overview = document.createElement('div')
-  overview.className = 'timetable-overview'
-  const context = document.createElement('span')
-  const baseContext = timetable.mode === 'stop'
-    ? timetable.selectedStop?.stopName ?? '所選站牌'
-    : timetable.mode === 'departure'
-      ? `${timetable.departureStop?.stopName ?? '起點'}發車`
-      : '班距'
-  const contextParts = [baseContext]
-  if (options.showServiceLabel) contextParts.push(service.label)
-  if (options.noteNoTodayService) contextParts.push('今日無班次')
-  context.textContent = contextParts.join(' · ')
-  const range = document.createElement('strong')
-  range.textContent = service.firstTime && service.lastTime
-    ? `${service.firstTime}–${service.lastTime}`
-    : '班次資料'
-  overview.replaceChildren(context, range)
-  fragment.appendChild(overview)
-
-  if (service.times.length) fragment.appendChild(timetableHourList(service))
-  if (service.periods.length) {
-    const periods = document.createElement('div')
-    periods.className = 'timetable-period-list'
-    service.periods.forEach((period) => {
-      const row = document.createElement('div')
-      row.className = 'timetable-period'
-      const hours = document.createElement('strong')
-      hours.textContent = `${period.startTime}–${period.endTime}`
-      const headway = document.createElement('span')
-      headway.textContent = period.minHeadwayMinutes === period.maxHeadwayMinutes
-        ? `${period.minHeadwayMinutes} 分一班`
-        : `${period.minHeadwayMinutes}–${period.maxHeadwayMinutes} 分一班`
-      row.replaceChildren(hours, headway)
-      periods.appendChild(row)
-    })
-    fragment.appendChild(periods)
-  }
-
-  const note = document.createElement('p')
-  note.className = 'timetable-note'
-  note.textContent = timetable.mode === 'stop'
-    ? '表定到站時間，實際仍可能受路況影響。'
-    : timetable.mode === 'departure'
-      ? '目前只提供起點發車時間，沿途到站時間會受路況影響。'
-      : '此路線以班距提供服務，實際發車仍可能調整。'
-  fragment.appendChild(note)
-  return fragment
-}
-
-function timetableHourList(service: TimetableService): HTMLElement {
-  const list = document.createElement('div')
-  list.className = 'timetable-hour-list'
-  const grouped = new Map<string, string[]>()
-  service.times.forEach((time) => {
-    const [hour, minute] = time.split(':')
-    const minutes = grouped.get(hour) ?? []
-    minutes.push(minute)
-    grouped.set(hour, minutes)
-  })
-  const nowMinutes = taipeiClockMinutes()
-  const next = service.today ? service.times.find((time) => timetableMinutes(time) >= nowMinutes) : undefined
-  grouped.forEach((minutes, hour) => {
-    const row = document.createElement('div')
-    row.className = 'timetable-hour-row'
-    const hourNode = document.createElement('strong')
-    hourNode.textContent = hour
-    const minuteList = document.createElement('div')
-    minutes.forEach((minute) => {
-      const value = `${hour}:${minute}`
-      const chip = document.createElement('span')
-      chip.className = 'timetable-minute'
-      chip.textContent = minute
-      chip.setAttribute('aria-label', value)
-      if (value === next) {
-        chip.classList.add('next')
-        chip.title = '下一班'
-      }
-      minuteList.appendChild(chip)
-    })
-    row.replaceChildren(hourNode, minuteList)
-    list.appendChild(row)
-  })
-  return list
-}
-
-function timetableMinutes(value: string): number {
-  const [hour, minute] = value.split(':').map(Number)
-  return hour * 60 + minute
-}
-
-
-function taipeiClockMinutes(): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date())
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0)
-  const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
-  return hour * 60 + minute
-}
 
 function drawVariant(variant: RouteMapVariant) {
   interactionMode = 'route'
@@ -1937,8 +1544,7 @@ function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
 function updateStopMarkerSize() {
   const style = stopStyleForZoom(map.getZoom())
   stopMarkers.forEach((marker) => marker.setStyle(style))
-  const radius = map.getZoom() >= 15 ? 4 : map.getZoom() >= 12 ? 2.5 : 1.4
-  networkStopMarkers.forEach((marker) => marker.setRadius(radius))
+  cityNetwork.resizeStopMarkers()
   // 預覽小點由 previewLayer.clearLayers() 收掉,這裡順手把已離場的踢出集合。
   const previewStyle = previewDotStyleForZoom(map.getZoom())
   previewStopDots.forEach((dot) => {
@@ -1954,18 +1560,10 @@ function startVehicleRefresh(variant: RouteMapVariant) {
   stopVehicleRefresh()
   const refresh = async () => {
     if (!activeCity || interactionMode !== 'route') return
-    const params = new URLSearchParams({
-      city: activeCity.code,
-      route: variant.routeName,
-      routeUid: variant.routeUid,
-      direction: String(variant.direction),
-    })
     try {
-      const response = await tdxFetch(`/api/v1/map/vehicles?${params}`, { cache: 'no-store' })
-      const data = await response.json() as { vehicles?: VehiclePosition[] }
-      if (!response.ok || !data.vehicles) return
+      const vehicles = await mapApi.vehicles(activeCity.code, variant)
       vehicleLayer.clearLayers()
-      data.vehicles.forEach((vehicle) => {
+      vehicles.forEach((vehicle) => {
         const azimuth = Number.isFinite(vehicle.azimuth) ? vehicle.azimuth as number : 0
         const marker = L.marker([vehicle.latitude, vehicle.longitude], {
           pane: 'vehiclePane',
@@ -1992,165 +1590,10 @@ function stopVehicleRefresh() {
   vehicleLayer.clearLayers()
 }
 
-async function toggleCityNetwork() {
-  if (!activeCity) return
-  if (networkVisible) {
-    setNetworkVisible(false)
-    return
-  }
-  const { requestId, signal } = beginNavRequest()
-  setStatus('正在展開整個城市路網…')
-  try {
-    if (!networkCache || networkCache.city !== activeCity.code) {
-      const response = await fetch(`/api/v1/map/network?city=${encodeURIComponent(activeCity.code)}`, { signal })
-      const data = await response.json() as CityNetwork & { error?: string }
-      if (!response.ok) throw new Error(data.error)
-      // 圖層全部 non-interactive,hover/click 的命中由網格索引回答;跟資料一起快取
-      const index = buildNetworkIndex(
-        data.routes.map((route) => route.shape.geometry.coordinates as LonLat[]),
-        data.places.map((place) => [place.longitude, place.latitude] as LonLat),
-      )
-      networkCache = { city: activeCity.code, data, index }
-    }
-    if (isStaleNav(requestId)) return
-    drawCityNetwork(networkCache.data)
-    setStatus(`全路網 · ${networkCache.data.routes.length} 個方向 · ${networkCache.data.places.length} 個站點`)
-  } catch (error) {
-    if (isStaleNav(requestId)) return
-    setStatus(error instanceof Error && error.message ? error.message : '全路網讀取失敗', true)
-  }
-}
-
-function drawCityNetwork(network: CityNetwork) {
-  stopVehicleRefresh()
-  routeLayer.clearLayers()
-  previewLayer.clearLayers()
-  nearbyLayer.clearLayers()
-  networkLayer.clearLayers()
-  clearNetworkHover()
-  networkStopMarkers = []
-  // 淡線是刻意的:全路網數百條線只當背景,站點與 hover 強調才是主角。
-  // 整層 non-interactive:canvas 對互動 path 每次 mousemove 都要逐條 hit-test,
-  // 桌機 hover 會卡死;hover/click 改由地圖層級事件 + 網格索引接手。
-  const networkLineStyle = { weight: 2.6, opacity: .34, lineCap: 'round' as const, lineJoin: 'round' as const }
-  network.routes.forEach((route) => {
-    L.geoJSON(route.shape, {
-      // renderer/interactive 屬於 PathOptions,經 style 併入 layer options,在加入地圖前生效。
-      style: { renderer: networkRenderer, color: routeColor(route.routeName), interactive: false, ...networkLineStyle },
-    }).addTo(networkLayer)
-  })
-  const radius = map.getZoom() >= 15 ? 4 : map.getZoom() >= 12 ? 2.5 : 1.4
-  network.places.forEach((place) => {
-    const marker = L.circleMarker([place.latitude, place.longitude], {
-      renderer: networkRenderer, interactive: false, radius, weight: 1, color: '#fffaf0', fillColor: '#4f685b', fillOpacity: .72,
-    }).addTo(networkLayer)
-    networkStopMarkers.push(marker)
-  })
-  networkVisible = true
-  networkButton.classList.add('active')
-  networkButton.setAttribute('aria-pressed', 'true')
-}
-
-function setNetworkVisible(visible: boolean) {
-  if (visible) return
-  clearNetworkHover()
-  networkLayer.clearLayers()
-  networkStopMarkers = []
-  networkVisible = false
-  networkButton.classList.remove('active')
-  networkButton.setAttribute('aria-pressed', 'false')
-}
-
-// 把游標下的位置丟給網格索引,容差以像素給、在這裡換算成緯度度數;
-// 回傳直接解好參照的路線/站點,呼叫端不用碰索引細節。
-type ResolvedNetworkPick =
-  | { kind: 'place'; place: CityNetwork['places'][number] }
-  | { kind: 'route'; route: CityNetwork['routes'][number]; routeIndex: number }
-
-function pickNetworkAt(latlng: L.LatLng, routePixels: number, placePixels: number): ResolvedNetworkPick | undefined {
-  if (!networkVisible || !networkCache) return undefined
-  const pick = pickNetwork(
-    networkCache.index,
-    [latlng.lng, latlng.lat],
-    pixelsToLatDegrees(routePixels),
-    pixelsToLatDegrees(placePixels),
-  )
-  if (!pick) return undefined
-  if (pick.kind === 'place') return { kind: 'place', place: networkCache.data.places[pick.placeIndex] }
-  return { kind: 'route', route: networkCache.data.routes[pick.routeIndex], routeIndex: pick.routeIndex }
-}
-
-// 用地圖自己的投影換算「n 像素在目前 zoom 是幾度緯度」,不用自己背公式。
-function pixelsToLatDegrees(pixels: number): number {
-  const size = map.getSize()
-  const center = map.containerPointToLatLng([size.x / 2, size.y / 2])
-  const shifted = map.containerPointToLatLng([size.x / 2, size.y / 2 - pixels])
-  return Math.abs(shifted.lat - center.lat)
-}
-
-// 全路網共用一顆 tooltip、一條高亮線:數千個圖形各綁 tooltip/事件的成本
-// 才是桌機卡頓的來源。高亮線畫在 networkHoverPane(自己的 SVG renderer),
-// 重繪它不會連帶重畫整張全路網 canvas。
-const networkHoverTooltip = L.tooltip({ direction: 'top', offset: [0, -10] })
-
-map.on('mousemove', (event) => {
-  if (!hoverCapable || !networkVisible) return
-  networkHoverLatLng = event.latlng
-  if (networkHoverFrame !== undefined) return
-  networkHoverFrame = requestAnimationFrame(() => {
-    networkHoverFrame = undefined
-    if (networkHoverLatLng) updateNetworkHover(networkHoverLatLng)
-  })
-})
-// 拖曳/縮放中游標下的東西一直在變,乾脆收掉;滑出地圖容器也是。
-map.on('movestart', clearNetworkHover)
-map.on('mouseout', clearNetworkHover)
-
-function updateNetworkHover(latlng: L.LatLng) {
-  const pick = pickNetworkAt(latlng, 6, 9)
-  if (!pick) {
-    clearNetworkHover()
-    return
-  }
-  map.getContainer().style.cursor = 'pointer'
-  if (pick.kind === 'place') {
-    setNetworkHighlight(-1)
-    setTextTooltip(networkHoverTooltip, pick.place.name).setLatLng([pick.place.latitude, pick.place.longitude])
-  } else {
-    setNetworkHighlight(pick.routeIndex)
-    setTextTooltip(networkHoverTooltip, `${pick.route.routeName} · ${pick.route.label}`).setLatLng(latlng)
-  }
-  if (!map.hasLayer(networkHoverTooltip)) networkHoverTooltip.openOn(map)
-}
-
-function setNetworkHighlight(routeIndex: number) {
-  if (routeIndex === networkHoverRouteIndex) return
-  networkHoverLine?.remove()
-  networkHoverLine = undefined
-  networkHoverRouteIndex = routeIndex
-  if (routeIndex < 0 || !networkCache) return
-  const route = networkCache.data.routes[routeIndex]
-  networkHoverLine = L.geoJSON(route.shape, {
-    pane: 'networkHoverPane',
-    style: {
-      color: routeColor(route.routeName), weight: 5, opacity: .75,
-      lineCap: 'round', lineJoin: 'round', interactive: false,
-    },
-  }).addTo(map)
-}
-
-function clearNetworkHover() {
-  setNetworkHighlight(-1)
-  // 排隊中的 rAF 醒來會看到 undefined,不會把剛清掉的 hover 又補回來
-  networkHoverLatLng = undefined
-  if (map.hasLayer(networkHoverTooltip)) map.closeTooltip(networkHoverTooltip)
-  map.getContainer().style.cursor = ''
-}
-
 async function findNearbyPlaces(latitude: number, longitude: number, autoPreview = false) {
   if (!activeCity) return
   stopVehicleRefresh()
-  setNetworkVisible(false)
+  cityNetwork.hide()
   // 只有「選點進行中」需要中止規劃;已有行程結果就保留,
   // 點站牌不再把整趟規劃清掉,附近站牌視圖會給「返回行程候選」的退路。
   if (interactionMode === 'trip') clearTripState()
@@ -2185,17 +1628,9 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
   const { requestId, signal } = beginNavRequest()
 
   try {
-    const params = new URLSearchParams({
-      city: city.code,
-      lat: String(latitude),
-      lon: String(longitude),
-      radius: String(radius),
-    })
-    const response = await fetch(`/api/v1/map/nearby?${params}`, { signal })
-    const data = await response.json() as { places?: NearbyPlace[]; error?: string }
-    if (!response.ok || !data.places) throw new Error(data.error)
+    const places = await mapApi.nearby(city.code, latitude, longitude, radius, signal)
     if (isStaleNav(requestId)) return
-    lastNearbyPlaces = data.places.slice(0, 12)
+    lastNearbyPlaces = places.slice(0, 12)
     renderNearbyPlaces()
     if (autoPreview && lastNearbyPlaces[0]) await showPlaceRoutes(lastNearbyPlaces[0])
   } catch (error) {
@@ -2276,14 +1711,12 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
   tripSelecting = true
   clearPendingTripSelection(kind)
   const radius = map.getZoom() >= 15 ? 300 : 500
-  const params = new URLSearchParams({ city: activeCity.code, lat: String(latitude), lon: String(longitude), radius: String(radius) })
   setStatus('正在尋找附近站牌…')
   try {
-    const response = await fetch(`/api/v1/map/nearby?${params}`)
-    const data = await response.json() as { places?: NearbyPlace[]; error?: string }
-    const candidates = data.places?.slice(0, TRIP_NEARBY_CANDIDATE_LIMIT) ?? []
+    const places = await mapApi.nearby(activeCity.code, latitude, longitude, radius)
+    const candidates = places.slice(0, TRIP_NEARBY_CANDIDATE_LIMIT)
     const nearest = candidates[0]
-    if (!response.ok || !nearest) throw new Error(data.error ?? '這附近沒有站牌')
+    if (!nearest) throw new Error('這附近沒有站牌')
     setPendingTripSelection({ kind, coordinate: [latitude, longitude], candidates, selected: nearest })
     await applyTripSelection(kind, nearest, [latitude, longitude])
   } catch (error) {
@@ -2301,13 +1734,10 @@ async function loadDirectRoutes() {
   const { requestId, signal } = beginNavRequest()
   setStatus(`正在找 ${from.name} → ${to.name} 的直達車…`)
   try {
-    const params = new URLSearchParams({ city: activeCity.code, from: from.placeId, to: to.placeId })
-    const response = await fetch(`/api/v1/map/direct?${params}`, { signal })
-    const data = await response.json() as { routes?: DirectRoute[]; error?: string }
-    if (!response.ok || !data.routes) throw new Error(data.error)
+    const directRoutes = await mapApi.direct(activeCity.code, from.placeId, to.placeId, signal)
     if (isStaleNav(requestId)) return
-    if (data.routes.length) {
-      const rankedRoutes = await rankDirectRoutesByEta(data.routes)
+    if (directRoutes.length) {
+      const rankedRoutes = await rankDirectRoutesByEta(directRoutes)
       if (isStaleNav(requestId)) return
       lastDirectRoutes = rankedRoutes
       lastTransferPlans = []
@@ -2317,13 +1747,11 @@ async function loadDirectRoutes() {
       return
     }
     setStatus('沒有直達車，正在找一次轉乘…')
-    const transferResponse = await fetch(`/api/v1/map/transfer?${params}`, { signal })
-    const transferData = await transferResponse.json() as { plans?: TransferPlan[]; error?: string }
-    if (!transferResponse.ok || !transferData.plans) throw new Error(transferData.error)
+    const transferPlans = await mapApi.transfer(activeCity.code, from.placeId, to.placeId, signal)
     if (isStaleNav(requestId)) return
     lastDirectRoutes = []
     selectedDirectIndex = 0
-    const rankedPlans = await rankTransferPlansByEta(transferData.plans)
+    const rankedPlans = await rankTransferPlansByEta(transferPlans)
     if (isStaleNav(requestId)) return
     lastTransferPlans = rankedPlans
     selectedTransferIndex = 0
@@ -2349,16 +1777,8 @@ async function loadDirectRoutes() {
 async function fetchJourneyEta(legs: Array<{ key: string; patternId: string; sequence: number }>) {
   if (!activeCity || !legs.length) return new Map<string, JourneyEtaValue>()
   try {
-    const response = await tdxFetch('/api/v1/map/journey-eta', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ city: activeCity.code, legs }),
-    })
-    if (!response.ok) return new Map<string, JourneyEtaValue>()
-    const data = await response.json() as {
-      estimates?: Array<{ key: string; minutes: number | null; source?: EtaSource }>
-    }
-    return new Map((data.estimates ?? []).map((estimate) => [
+    const estimates = await mapApi.journeyEta(activeCity.code, legs)
+    return new Map(estimates.map((estimate) => [
       estimate.key,
       { minutes: estimate.minutes, source: estimate.source ?? 'none' },
     ]))
@@ -2626,11 +2046,7 @@ async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: Journe
     { ...plan.second, color: previewLegColors[1] },
   ]
   const previews = await Promise.all(legs.map(async (leg) => {
-    const params = new URLSearchParams({ city: activeCity!.code, route: leg.routeName })
-    const response = await tdxFetch(`/api/v1/map/route?${params}`)
-    if (!response.ok) return null
-    const data = await response.json() as { variants?: RouteMapVariant[] }
-    const variant = data.variants?.find((item) => item.variantKey === leg.variantKey)
+    const variant = await mapApi.routeVariant(activeCity!.code, leg.routeName, leg.variantKey)
     return variant ? { variant, color: leg.color, leg } : null
   }))
   if (requestId !== previewRequest) return false
@@ -2663,11 +2079,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: J
   const requestId = ++previewRequest
   previewLayer.clearLayers()
   const previews = await Promise.all(selectDirectPreviewEntries(directRoutes, selectedIndex).map(async ({ route, index }) => {
-    const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
-    const response = await tdxFetch(`/api/v1/map/route?${params}`)
-    if (!response.ok) return null
-    const data = await response.json() as { variants?: RouteMapVariant[] }
-    const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
+    const variant = await mapApi.routeVariant(activeCity!.code, route.routeName, route.variantKey)
     return variant ? { variant, color: routeColor(route.routeName), route, index } : null
   }))
   if (requestId !== previewRequest) return false
@@ -2704,11 +2116,7 @@ async function previewPlaceRoutes(placeRoutes: PlaceRoute[], place: NearbyPlace)
   const requestId = ++previewRequest
   previewLayer.clearLayers()
   const previews = await Promise.all(placeRoutes.slice(0, 8).map(async (route) => {
-    const params = new URLSearchParams({ city: activeCity!.code, route: route.routeName })
-    const response = await tdxFetch(`/api/v1/map/route?${params}`)
-    if (!response.ok) return null
-    const data = await response.json() as { variants?: RouteMapVariant[] }
-    const variant = data.variants?.find((item) => item.variantKey === route.variantKey)
+    const variant = await mapApi.routeVariant(activeCity!.code, route.routeName, route.variantKey)
     return variant ? { variant, color: routeColor(route.routeName) } : null
   }))
   if (requestId !== previewRequest) return
@@ -2820,14 +2228,12 @@ function addJourneyLegPreview(
 
 async function openPlaceById(placeId: string) {
   if (!activeCity) return
-  const response = await fetch(`/api/v1/map/place/${encodeURIComponent(placeId)}?city=${encodeURIComponent(activeCity.code)}`)
-  const data = await response.json() as { place?: NearbyPlace; error?: string }
-  if (!response.ok || !data.place) throw new Error(data.error || '找不到這個站牌')
-  camera.focusPoint([data.place.latitude, data.place.longitude], 16)
-  lastNearbyOrigin = [data.place.latitude, data.place.longitude]
-  lastNearbyPlaces = [data.place]
+  const place = await mapApi.place(activeCity.code, placeId)
+  camera.focusPoint([place.latitude, place.longitude], 16)
+  lastNearbyOrigin = [place.latitude, place.longitude]
+  lastNearbyPlaces = [place]
   interactionMode = 'nearby'
-  await showPlaceRoutes(data.place)
+  await showPlaceRoutes(place)
 }
 
 function placeRouteRank(route: PlaceRoute, frequency: Map<string, number>): number {
@@ -2904,16 +2310,14 @@ async function showPlaceRoutes(place: NearbyPlace) {
   setStatus(`正在讀取 ${place.name} 的路線…`)
   const { requestId, signal } = beginNavRequest()
   try {
-    const response = await tdxFetch(`/api/v1/map/place/${encodeURIComponent(place.placeId)}/arrivals?city=${encodeURIComponent(activeCity.code)}`, { signal })
-    const data = await response.json() as { routes?: PlaceRoute[]; error?: string }
-    if (!response.ok || !data.routes) throw new Error(data.error)
+    const placeRoutes = await mapApi.placeRoutes(activeCity.code, place.placeId, signal)
     if (placeRequest !== previewRequest || isStaleNav(requestId)) return
     const frequency = new Map<string, number>()
     readBoards().flatMap((board) => board.buses).forEach((bus) => {
       const routeUid = typeof bus.routeUid === 'string' ? bus.routeUid : ''
       if (routeUid) frequency.set(routeUid, (frequency.get(routeUid) ?? 0) + 1)
     })
-    const sortedRoutes = [...data.routes].sort((a, b) =>
+    const sortedRoutes = [...placeRoutes].sort((a, b) =>
       placeRouteRank(a, frequency) - placeRouteRank(b, frequency)
       || a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }),
     )
@@ -2969,7 +2373,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
       mode: 'map-list',
       header: [
         drawerBack('附近站牌', renderNearbyPlaces),
-        heading(place.name, `${place.distanceMeters > 0 ? `${Math.round(place.distanceMeters)} 公尺 · ` : ''}${data.routes.length} 個行車方向`),
+        heading(place.name, `${place.distanceMeters > 0 ? `${Math.round(place.distanceMeters)} 公尺 · ` : ''}${placeRoutes.length} 個行車方向`),
       ],
       content: [list],
     })
