@@ -128,7 +128,6 @@ function makeRow(bus: FavoriteBus, data?: EtaData, failed = false): HTMLAnchorEl
   link.href = routeLink(bus)
   const routeCopy = document.createElement('span')
   routeCopy.className = 'bus-route-copy'
-  routeCopy.style.cssText = 'display:grid;min-width:0;gap:3px'
   const route = document.createElement('strong')
   route.className = 'bus-name'
   route.textContent = bus.routeName
@@ -136,8 +135,7 @@ function makeRow(bus: FavoriteBus, data?: EtaData, failed = false): HTMLAnchorEl
   direction.className = 'bus-direction'
   direction.textContent = bus.directionLabel || ''
   direction.hidden = !bus.directionLabel
-  direction.style.cssText = 'overflow:hidden;color:#777066;font-size:13px;font-weight:700;text-overflow:ellipsis;white-space:nowrap'
-  routeCopy.replaceChildren(route, direction)
+  routeCopy.replaceChildren(route)
   const eta = document.createElement('span')
   eta.className = 'bus-eta'
   eta.textContent = failed ? '暫無資料' : data?.label || '更新中'
@@ -147,7 +145,7 @@ function makeRow(bus: FavoriteBus, data?: EtaData, failed = false): HTMLAnchorEl
     freshness.style.cssText = 'margin-left:7px;color:#777066;font-size:11px;font-weight:750;letter-spacing:0'
     eta.appendChild(freshness)
   }
-  link.replaceChildren(routeCopy, eta)
+  link.replaceChildren(routeCopy, eta, direction)
   return link
 }
 

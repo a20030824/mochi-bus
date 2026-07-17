@@ -210,6 +210,9 @@ const credentialStyles = `.credential-field{display:grid;gap:6px}.credential-fie
 const designRefinementStyles = `
 .onboard-sign-text{position:relative;z-index:1;overflow:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 32px,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(90deg,transparent,#000 32px,#000 calc(100% - 32px),transparent)}
 .onboard-sign::after{z-index:2}
+.bus-row{column-gap:18px;row-gap:3px}
+.bus-route-copy{min-width:0}
+.bus-direction{grid-column:1/-1;overflow:hidden;color:#777066;font-size:13px;font-weight:700;text-overflow:ellipsis;white-space:nowrap}
 .advanced-panel>summary,.glossary summary{color:#777066}
 .eta-footer-actions{display:flex;align-items:center;gap:8px}
 .footer-action{padding:10px 14px;border:1px solid #d8d0c2;border-radius:999px;color:inherit;font-weight:750;text-decoration:none}
@@ -228,6 +231,7 @@ const designRefinementStyles = `
   .eta-footer-actions>*{flex:1;text-align:center}
 }
 @media(prefers-color-scheme:dark){
+  .bus-direction{color:#aaa197}
   .advanced-panel>summary,.glossary summary{color:#aaa197}
   .footer-action{border-color:#4d473e}
   .about-panel{border-color:#4d473e}

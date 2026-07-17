@@ -71,6 +71,39 @@ test.describe('ETA page', () => {
     await expect.poll(async () => page.evaluate(async () => Boolean(await navigator.serviceWorker.getRegistration()))).toBe(true)
   })
 
+  test('lets a direction label use the full row below route and ETA', async ({ page }) => {
+    const directionLabel = '嘉義大學校區內 → 二二八國家紀念公園'
+    const boardWithDirection = {
+      ...board,
+      placeId: undefined,
+      buses: [{ ...board.buses[0], routeName: '中山幹線(綠線)', directionLabel }],
+    }
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await page.addInitScript((storedBoard) => {
+      localStorage.setItem('mochi.bus.boards.v2', JSON.stringify([storedBoard]))
+      localStorage.setItem('mochi.bus.activeBoard.v2', storedBoard.id)
+    }, boardWithDirection)
+
+    await page.goto('/')
+
+    const row = page.locator('.bus-row')
+    const direction = row.locator(':scope > .bus-direction')
+    await expect(direction).toHaveText(directionLabel)
+    await expect(row.locator('.bus-route-copy .bus-direction')).toHaveCount(0)
+    const layout = await direction.evaluate((element) => ({
+      gridColumn: getComputedStyle(element).gridColumn,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }))
+    expect(layout.gridColumn).toBe('1 / -1')
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth)
+    await expect(row).toHaveScreenshot('eta-direction-row.png', {
+      animations: 'disabled',
+      caret: 'hide',
+    })
+  })
+
   test('shared /bus page is not overridden by local boards', async ({ page }) => {
     await page.addInitScript((storedBoard) => {
       localStorage.setItem('mochi.bus.boards.v2', JSON.stringify([storedBoard]))
