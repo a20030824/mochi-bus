@@ -132,7 +132,8 @@ export function toggleFavoriteDirection(city: string, place: FavoritePlace, bus:
 }
 
 // 使用者自備的 TDX 憑證(setup 頁的進階設定)。預設只存 sessionStorage；
-// 使用者明確勾選後才寫 localStorage。兩者都只在查詢時送到 Worker，不進伺服器儲存或 log。
+// 使用者明確勾選後才寫 localStorage。Client Secret 只在瀏覽器與 TDX token endpoint
+// 之間傳送；查詢時 Worker 只接收短效 access token，兩者都不由 Worker 保存或寫入 log。
 export type TdxAuth = { clientId: string; clientSecret: string }
 export type TdxAuthPersistence = 'session' | 'device'
 export type TdxAuthState = { auth: TdxAuth | null; persistence: TdxAuthPersistence | null }
