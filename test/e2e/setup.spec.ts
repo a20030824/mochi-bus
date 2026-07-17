@@ -1,4 +1,49 @@
-import { expect, test } from './fixtures'
+import { expect, test, type Page } from './fixtures'
+
+async function mockSetupApi(page: Page, stopRoutesDelayMs = 0) {
+  await page.route('**/api/v1/routes?*', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      routes: [{
+        routeName: '307',
+        category: '數字',
+        routeUid: 'NWT307',
+        departure: '板橋',
+        destination: '撫遠街',
+      }],
+    }),
+  }))
+  await page.route('**/api/v1/stops?*', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      groups: [{
+        label: '往板橋',
+        subRouteName: '307',
+        routeUid: 'NWT307',
+        subRouteUid: 'NWT307-0',
+        direction: 0,
+        stops: [{ stopUid: 'NWT1', stopName: '捷運景安站', sequence: 1 }],
+      }],
+    }),
+  }))
+  await page.route('**/api/v1/stop-routes?*', async (route) => {
+    if (stopRoutesDelayMs) await new Promise((resolve) => setTimeout(resolve, stopRoutesDelayMs))
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        buses: [{
+          city: 'NewTaipei',
+          routeName: '918',
+          routeUid: 'NWT918',
+          stopName: '捷運景安站',
+          stopUid: 'NWT1',
+          direction: 0,
+          label: '5 分',
+        }],
+      }),
+    })
+  })
+}
 
 test.describe('/setup page', () => {
   test('renders saved boards as one divided list and keeps the active state separate from actions', async ({ page }) => {
@@ -42,6 +87,7 @@ test.describe('/setup page', () => {
   })
 
   test('golden path: pick a route, pick a stop, see suggestions', async ({ page }) => {
+    await mockSetupApi(page)
     await page.goto('/setup')
     await expect(page.locator('#board-list')).toBeVisible()
 
@@ -62,10 +108,7 @@ test.describe('/setup page', () => {
   // fetch 回來後會用「沒有更新」的舊檢查通過,卻讀到已經被清空的
   // selectedRoute,炸出 TypeError。見 web/setup/main.ts 的 hidePicker/backToRoutes。
   test('closing the picker mid-flight does not throw when the delayed fetch resolves', async ({ page }) => {
-    await page.route('**/api/v1/stop-routes*', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      await route.continue()
-    })
+    await mockSetupApi(page, 1500)
 
     await page.goto('/setup')
     await page.click('#add-board-button')
