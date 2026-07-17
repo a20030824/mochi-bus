@@ -51,9 +51,12 @@ jobs:
           test/e2e/map-camera-padding.spec.ts
           test/e2e/map-camera.spec.ts
           test/e2e/map-chrome-layout.spec.ts
+          test/e2e/map-direct.spec.ts
           test/e2e/map-drawer-modes.spec.ts
           test/e2e/map-mobile-entry-spacing.spec.ts
           test/e2e/map-timetable.spec.ts
+          test/e2e/map-trip-selection-layout.spec.ts
+          test/e2e/map-trip-stop-matching.spec.ts
           test/e2e/map-variant-back-layout.spec.ts
           test/e2e/security-csp.spec.ts
           --reporter=line,html

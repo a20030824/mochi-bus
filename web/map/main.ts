@@ -46,6 +46,13 @@ import {
   type TransferPlan,
 } from './map-api-client'
 import { createTimetablePanel, renderTimetableSummary, timetableSummaryText } from './timetable-view'
+import {
+  createPlaceSearchBox,
+  createPlaceSearchResultButton,
+  createReselectTripEndpointButton,
+  createTripCandidateList,
+  createTripEndpointSummary,
+} from './trip-selection-view'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
 
@@ -216,7 +223,6 @@ let vehicleRefreshTimer: number | undefined
 
 const routePalette = ['#b85f49', '#4f685b', '#8a674f', '#b08a47', '#765b78', '#6f7561']
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
-const TRIP_NEARBY_FAR_DISTANCE_METERS = 250
 
 const cityNetwork = createCityNetworkController({
   map,
@@ -724,7 +730,7 @@ function renderRoutePicker() {
         const places = await searchPlaces(query, drawerSession.signal)
         if (drawerSession.signal.aborted) return
         if (search.value.trim() !== query) return
-        stopResults.replaceChildren(...places.slice(0, 6).map((place) => searchResultButton(place, openSearchedPlace)))
+        stopResults.replaceChildren(...places.slice(0, 6).map((place) => createPlaceSearchResultButton(place, openSearchedPlace)))
       })()
     }, 300)
   }
@@ -746,19 +752,6 @@ async function searchPlaces(query: string, signal?: AbortSignal): Promise<Search
   } catch {
     return []
   }
-}
-
-function searchResultButton(place: SearchPlace, onPick: (place: SearchPlace) => void): HTMLButtonElement {
-  const button = document.createElement('button')
-  button.className = 'nearby-place-button'
-  const name = document.createElement('strong')
-  name.textContent = place.name
-  const kind = document.createElement('span')
-  kind.textContent = '站牌'
-  button.appendChild(name)
-  button.appendChild(kind)
-  button.addEventListener('click', () => onPick(place))
-  return button
 }
 
 function pendingTripSelection(kind: TripSelectionKind): PendingTripSelection | undefined {
@@ -784,73 +777,27 @@ function tripSelectionConflict(kind: TripSelectionKind, candidate: NearbyPlace):
   return getTripSelectionConflict(kind, candidate, selectedFrom, selectedTo)
 }
 
-function formatTripDistance(distanceMeters: number): string {
-  return `${Math.round(distanceMeters)} m`
-}
-
-function tripDistanceWarning(distanceMeters: number): HTMLSpanElement | undefined {
-  if (distanceMeters <= TRIP_NEARBY_FAR_DISTANCE_METERS) return undefined
-  const warning = document.createElement('span')
-  warning.className = 'trip-distance-warning'
-  warning.textContent = '距離較遠'
-  return warning
-}
-
 function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
   const selected = kind === 'from' ? selectedFrom : selectedTo
   if (!selected) return
   const pending = pendingTripSelection(kind)
-  const label = kind === 'from' ? '出發' : '目的地'
-  const summary = document.createElement('button')
-  summary.type = 'button'
-  summary.className = `trip-matched-summary trip-endpoint-${kind}`
-  summary.dataset.kind = kind
-  summary.setAttribute('aria-label', `更換${label}站牌：${selected.name}`)
-  const labelNode = document.createElement('span')
-  labelNode.className = 'trip-endpoint-label'
-  labelNode.textContent = label
-  const action = document.createElement('span')
-  action.className = 'trip-endpoint-action'
-  action.textContent = '›'
-  action.setAttribute('aria-hidden', 'true')
-  const name = document.createElement('strong')
-  name.className = 'trip-endpoint-name'
-  name.textContent = selected.name
-  summary.appendChild(labelNode)
-  summary.appendChild(action)
-  summary.appendChild(name)
-  if (pending) {
-    const distance = document.createElement('span')
-    distance.className = 'trip-endpoint-distance'
-    distance.textContent = formatTripDistance(pending.selected.distanceMeters)
-    if (pending.selected.distanceMeters > TRIP_NEARBY_FAR_DISTANCE_METERS) {
-      distance.classList.add('far')
-      distance.title = '距離較遠'
-    }
-    summary.appendChild(distance)
-  }
-  summary.addEventListener('click', () => {
-    if (pendingTripSelection(kind)) {
-      renderPendingTripCandidates(kind)
-      return
-    }
-    resumeTripEndpointSelection(kind)
+  return createTripEndpointSummary({
+    kind,
+    selected,
+    matchedDistanceMeters: pending?.selected.distanceMeters,
+    onActivate: () => {
+      if (pendingTripSelection(kind)) {
+        renderPendingTripCandidates(kind)
+        return
+      }
+      resumeTripEndpointSelection(kind)
+    },
   })
-  return summary
 }
 
 function resumeTripEndpointSelection(kind: TripSelectionKind) {
   if (kind === 'from') resumeOriginSelection()
   else resumeDestinationSelection()
-}
-
-function reselectTripEndpointButton(kind: TripSelectionKind): HTMLButtonElement {
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'quiet-button trip-endpoint-reselect'
-  button.textContent = kind === 'from' ? '重新選出發位置' : '重新選目的地位置'
-  button.addEventListener('click', () => resumeTripEndpointSelection(kind))
-  return button
 }
 
 function tripMatchedControls(compact = false): HTMLElement | undefined {
@@ -871,25 +818,10 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
     renderTripSelectionStep(kind)
     return
   }
-  const list = document.createElement('div')
-  list.className = 'trip-nearby-candidate-list'
-  pending.candidates.forEach((candidate) => {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'trip-nearby-candidate'
-    const selected = candidate.placeId === pending.selected.placeId
-    button.classList.toggle('selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-    const name = document.createElement('strong')
-    name.textContent = candidate.name
-    const distance = document.createElement('span')
-    distance.textContent = formatTripDistance(candidate.distanceMeters)
-    button.appendChild(name)
-    button.appendChild(distance)
-    const warning = tripDistanceWarning(candidate.distanceMeters)
-    if (warning) button.appendChild(warning)
-    button.addEventListener('click', () => void selectTripCandidate(kind, candidate))
-    list.appendChild(button)
+  const list = createTripCandidateList({
+    candidates: pending.candidates,
+    selectedPlaceId: pending.selected.placeId,
+    onSelect: (candidate) => void selectTripCandidate(kind, candidate),
   })
   const backAction = hasTripResults() ? returnToTripResults : () => renderTripSelectionStep(kind)
   renderDrawer({
@@ -902,7 +834,7 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
       ),
     ],
     content: [list],
-    footer: [reselectTripEndpointButton(kind)],
+    footer: [createReselectTripEndpointButton(kind, () => resumeTripEndpointSelection(kind))],
   })
   setStatus(`${kind === 'from' ? '出發' : '目的地'} · ${pending.candidates.length} 個附近站牌`)
   setViewBack(backAction)
@@ -921,7 +853,11 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   const description = nextKind === 'from'
     ? '點地圖或搜尋站牌。'
     : `已選擇「${selectedFrom?.name ?? ''}」，再點目的地或搜尋站牌。`
-  const searchBox = placeSearchBox(searchLabel, (place) => void selectTripPlace(nextKind, place))
+  const searchBox = createPlaceSearchBox({
+    placeholder: searchLabel,
+    search: searchPlaces,
+    onPick: (place) => void selectTripPlace(nextKind, place),
+  })
   const drawerSession = renderDrawer({
     mode: 'compact',
     content: [
@@ -980,57 +916,6 @@ async function selectTripPlace(kind: TripSelectionKind, place: SearchPlace) {
   clearPendingTripSelection(kind)
   const candidate: NearbyPlace = { ...place, distanceMeters: 0 }
   await applyTripSelection(kind, candidate, [place.latitude, place.longitude])
-}
-
-// 站牌名稱搜尋框:輸入 2 個字以上就打 /api/v1/map/search,
-// 讓不熟地圖的人(或外地人)不用在地圖上大海撈針。
-function placeSearchBox(
-  placeholder: string,
-  onPick: (place: SearchPlace) => void,
-): { element: HTMLElement; dispose: () => void } {
-  const wrap = document.createElement('div')
-  wrap.className = 'place-search'
-  const input = document.createElement('input')
-  input.className = 'map-search'
-  input.placeholder = placeholder
-  input.setAttribute('aria-label', placeholder)
-  const results = document.createElement('div')
-  results.className = 'place-search-results'
-  let timer: number | undefined
-  let searchController: AbortController | undefined
-  input.addEventListener('input', () => {
-    window.clearTimeout(timer)
-    searchController?.abort()
-    const query = input.value.trim()
-    if (query.length < 2) {
-      results.replaceChildren()
-      return
-    }
-    timer = window.setTimeout(() => {
-      const controller = new AbortController()
-      searchController = controller
-      void (async () => {
-        const places = await searchPlaces(query, controller.signal)
-        if (controller.signal.aborted) return
-        // 回來時使用者可能又改了字,只渲染還是最新查詢的結果
-        if (input.value.trim() !== query) return
-        if (!places.length) {
-          results.replaceChildren(paragraph('找不到這個站牌，換個關鍵字試試。'))
-          return
-        }
-        results.replaceChildren(...places.slice(0, 6).map((place) => searchResultButton(place, onPick)))
-      })()
-    }, 300)
-  })
-  wrap.appendChild(input)
-  wrap.appendChild(results)
-  return {
-    element: wrap,
-    dispose: () => {
-      window.clearTimeout(timer)
-      searchController?.abort()
-    },
-  }
 }
 
 // 搜尋選中的站牌直接開站牌路線視圖(跟 deep link 進站牌同一條路)。
