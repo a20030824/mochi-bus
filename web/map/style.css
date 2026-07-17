@@ -117,13 +117,15 @@ button { cursor: pointer; }
   height: 40px;
   padding: 0;
   overflow: hidden;
+  border-radius: 50%;
   white-space: nowrap;
-  transition: width .18s ease, padding .18s ease, gap .18s ease;
+  transition: width .18s ease, padding .18s ease, gap .18s ease, border-radius .18s ease;
 }
 .map-feature-button.feature-unseen {
   width: var(--feature-expanded-width, 84px);
   padding: 0 12px;
   gap: 6px;
+  border-radius: var(--radius-control);
 }
 .map-feature-icon { flex: none; line-height: 1; }
 .map-feature-label {
@@ -144,7 +146,6 @@ button { cursor: pointer; }
   left: 18px;
   z-index: 890;
   border: 1px solid var(--green);
-  border-radius: 50%;
   background: var(--green);
   box-shadow: var(--shadow-marker);
   color: var(--paper-strong);
@@ -308,7 +309,6 @@ button { cursor: pointer; }
   z-index: 2;
   margin: 0;
   border: 1px solid var(--green);
-  border-radius: 50%;
   background: var(--green);
   color: var(--paper-strong);
   font-size: 20px;

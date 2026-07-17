@@ -17,12 +17,15 @@ test('keeps feature labels open until each feature is actually used', async ({ p
   const network = page.getByRole('button', { name: '切換全路網與全部站點' })
   const trip = page.getByRole('button', { name: '路線規劃：選擇出發位置與目的地' })
   await expect(network).toHaveClass(/feature-unseen/)
+  await expect(network).toHaveCSS('border-radius', '4px')
   await expect(network.locator('.map-feature-label')).toBeVisible()
   await expect(trip).toHaveClass(/feature-unseen/)
+  await expect(trip).toHaveCSS('border-radius', '4px')
   await expect(trip.locator('.map-feature-label')).toBeVisible()
 
   await network.click()
   await expect(network).not.toHaveClass(/feature-unseen/)
+  await expect(network).toHaveCSS('border-radius', '50%')
   await expect(network.locator('.map-feature-label')).toBeHidden()
   await expect(trip).toHaveClass(/feature-unseen/)
 
@@ -34,6 +37,7 @@ test('keeps feature labels open until each feature is actually used', async ({ p
   await expect(page.locator('#map-status')).toHaveClass(/dismissed/)
   await page.getByRole('button', { name: '取消路線規劃' }).click()
   await expect(trip).not.toHaveClass(/feature-unseen/)
+  await expect(trip).toHaveCSS('border-radius', '50%')
   await expect(trip.locator('.map-feature-label')).toBeHidden()
 
   await page.reload()
