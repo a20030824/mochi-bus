@@ -53,6 +53,48 @@ const arrivals = [
   },
 ] as const
 
+const tripPlaces = {
+  from: { placeId: 'FROM', name: '彰化銀行(嘉義)', latitude: 23.479, longitude: 120.449, distanceMeters: 139 },
+  to: { placeId: 'TO', name: '南田市場', latitude: 23.472, longitude: 120.458, distanceMeters: 223 },
+}
+
+const transferPlan = {
+  transferPlaceId: 'TRANSFER',
+  transferName: '大業國中',
+  transferWalkMeters: 0,
+  totalStops: 8,
+  first: { routeName: '7301', variantKey: '7301:0', label: '大雅站 → 大埔鄉公所', boardSequence: 1, alightSequence: 4, stopCount: 4 },
+  second: { routeName: '7318', variantKey: '7318:0', label: '大業國中 → 南田市場', boardSequence: 1, alightSequence: 4, stopCount: 4 },
+}
+
+function tripRouteVariant(routeName: string) {
+  return {
+    variantKey: `${routeName}:0`,
+    routeName,
+    routeUid: `${routeName}-uid`,
+    direction: 0,
+    label: `${routeName} 測試方向`,
+    subRouteName: routeName,
+    shape: {
+      type: 'Feature' as const,
+      properties: { routeUid: `${routeName}-uid`, direction: 0 },
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: [[120.449, 23.479], [120.453, 23.475], [120.458, 23.472]],
+      },
+    },
+    stops: {
+      type: 'FeatureCollection' as const,
+      features: [
+        { type: 'Feature' as const, properties: { stopUid: `${routeName}-1`, stopName: '起點', sequence: 1 }, geometry: { type: 'Point' as const, coordinates: [120.449, 23.479] } },
+        { type: 'Feature' as const, properties: { stopUid: `${routeName}-2`, stopName: '大業國中', sequence: 2 }, geometry: { type: 'Point' as const, coordinates: [120.453, 23.475] } },
+        { type: 'Feature' as const, properties: { stopUid: `${routeName}-3`, stopName: '終點', sequence: 3 }, geometry: { type: 'Point' as const, coordinates: [120.458, 23.472] } },
+      ],
+    },
+    updatedAt: null,
+  }
+}
+
 async function mockMap(page: Page) {
   await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
   await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [city] } }))
@@ -77,6 +119,31 @@ async function mockMap(page: Page) {
   await page.route(/\/api\/v1\/map\/route(?:\?|$)/, (route) => route.fulfill({
     json: { variants: [] },
   }))
+}
+
+async function mockTripResults(page: Page) {
+  let nearbyCall = 0
+  await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [city] } }))
+  await page.route(/\/api\/v1\/map\/routes(?:\?|$)/, (route) => route.fulfill({
+    json: { routes: [{ routeName: '7301', category: '公路客運' }] },
+  }))
+  await page.route('**/api/v1/map/nearby*', (route) => {
+    const place = nearbyCall++ === 0 ? tripPlaces.from : tripPlaces.to
+    return route.fulfill({ json: { places: [place] } })
+  })
+  await page.route('**/api/v1/map/direct*', (route) => route.fulfill({ json: { routes: [] } }))
+  await page.route('**/api/v1/map/transfer*', (route) => route.fulfill({ json: { plans: [transferPlan] } }))
+  await page.route('**/api/v1/map/journey-eta', (route) => route.fulfill({
+    json: { estimates: [
+      { key: 'transfer:0:first', minutes: 5 },
+      { key: 'transfer:0:second', minutes: 12 },
+    ] },
+  }))
+  await page.route(/\/api\/v1\/map\/route(?:\?|$)/, (route) => {
+    const routeName = new URL(route.request().url()).searchParams.get('route') ?? '7301'
+    return route.fulfill({ json: { variants: [tripRouteVariant(routeName)] } })
+  })
 }
 
 test('keeps the route catalogue visual hierarchy', async ({ page }) => {
@@ -106,14 +173,41 @@ test('keeps ETA numbers dominant without hiding freshness', async ({ page }) => 
   })
 })
 
-test('keeps the setup empty state focused on its primary action', async ({ page }) => {
+test('keeps trip endpoints compact above transfer results', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/setup')
+  await mockTripResults(page)
+  await page.goto('/map?city=Tainan')
 
-  const panel = page.locator('.setup-page .panel')
-  await expect(panel.getByRole('heading', { name: '常用站牌' })).toBeVisible()
-  await expect(panel.getByRole('button', { name: '新增常用站牌' })).toBeVisible()
-  await expect(panel).toHaveScreenshot('setup-empty-state.png', {
+  await page.getByRole('button', { name: /路線規劃/ }).click()
+  const map = page.locator('#map')
+  await map.click({ position: { x: 150, y: 250 } })
+  await map.click({ position: { x: 250, y: 330 } })
+
+  const drawer = page.locator('#map-drawer')
+  const tripHeading = drawer.getByRole('heading', { name: '彰化銀行(嘉義) → 南田市場' })
+  await expect(tripHeading).toBeVisible()
+  await expect(drawer.locator('.transfer-plan')).toHaveCount(1)
+  const geometry = await drawer.evaluate((element) => {
+    const heading = element.querySelector<HTMLElement>('.drawer-heading h1')!
+    const controls = element.querySelector<HTMLElement>('.trip-matched-controls.compact')!
+    const summaries = Array.from(controls.querySelectorAll<HTMLElement>('.trip-matched-summary'))
+    const controlsRect = controls.getBoundingClientRect()
+    const summaryRects = summaries.map((summary) => summary.getBoundingClientRect())
+    return {
+      controlsHeight: controlsRect.height,
+      headingHeight: heading.getBoundingClientRect().height,
+      summaryHeights: summaryRects.map((rect) => rect.height),
+      topDifference: Math.abs(summaryRects[0].top - summaryRects[1].top),
+      hasHorizontalOverflow: controls.scrollWidth > controls.clientWidth,
+    }
+  })
+  expect(geometry.controlsHeight).toBeGreaterThanOrEqual(48)
+  expect(geometry.controlsHeight).toBeLessThanOrEqual(64)
+  expect(geometry.headingHeight).toBeLessThanOrEqual(30)
+  expect(geometry.summaryHeights.every((height) => height >= 48)).toBe(true)
+  expect(geometry.topDifference).toBeLessThanOrEqual(1)
+  expect(geometry.hasHorizontalOverflow).toBe(false)
+  await expect(drawer).toHaveScreenshot('map-trip-results.png', {
     animations: 'disabled',
     caret: 'hide',
   })

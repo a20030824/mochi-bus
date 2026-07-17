@@ -30,6 +30,7 @@ import {
 import { splitRouteDisplayName } from '../lib/route-display'
 import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
+import { createMapFeatureDiscovery, type MapFeature } from './feature-discovery'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
 
@@ -241,12 +242,13 @@ const drawer = requiredElement('map-drawer')
 const drawerRenderer = createDrawerRenderer(drawer)
 const renderDrawer = (view: DrawerView) => drawerRenderer.render(view)
 const statusNode = requiredElement('map-status')
+const mapFeatureDiscovery = createMapFeatureDiscovery(browserStorage())
 const networkButton = document.createElement('button')
-networkButton.className = 'network-toggle'
+networkButton.className = 'network-toggle map-feature-button'
 networkButton.type = 'button'
-networkButton.textContent = '▦'
 networkButton.title = '顯示全路網與全部站點'
 networkButton.setAttribute('aria-label', '切換全路網與全部站點')
+decorateMapFeatureButton(networkButton, 'network', '▦', '路網')
 networkButton.hidden = true
 document.getElementById('map-app')?.appendChild(networkButton)
 
@@ -364,6 +366,38 @@ let vehicleRefreshTimer: number | undefined
 const routePalette = ['#b85f49', '#4f685b', '#8a674f', '#b08a47', '#765b78', '#6f7561']
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 const TRIP_NEARBY_FAR_DISTANCE_METERS = 250
+
+function browserStorage(): Storage | undefined {
+  try {
+    return window.localStorage
+  } catch {
+    return undefined
+  }
+}
+
+function decorateMapFeatureButton(
+  button: HTMLButtonElement,
+  feature: MapFeature,
+  icon: string,
+  label: string,
+): void {
+  const iconNode = document.createElement('span')
+  iconNode.className = 'map-feature-icon'
+  iconNode.textContent = icon
+  iconNode.setAttribute('aria-hidden', 'true')
+  const labelNode = document.createElement('span')
+  labelNode.className = 'map-feature-label'
+  labelNode.textContent = label
+  labelNode.setAttribute('aria-hidden', 'true')
+  button.replaceChildren(iconNode, labelNode)
+  button.classList.toggle('feature-unseen', !mapFeatureDiscovery.hasUsed(feature))
+}
+
+function markMapFeatureUsed(button: HTMLButtonElement, feature: MapFeature): void {
+  if (mapFeatureDiscovery.hasUsed(feature)) return
+  mapFeatureDiscovery.markUsed(feature)
+  button.classList.remove('feature-unseen')
+}
 
 // 依路線名稱 hash 配色:同一條路線在清單、預覽、路線頁永遠同色,
 // 使用者才能建立「路線=顏色」的連結;依清單位置配色會讓顏色隨排序漂移。
@@ -483,7 +517,10 @@ async function initialise() {
   }
 }
 
-networkButton.addEventListener('click', () => void toggleCityNetwork())
+networkButton.addEventListener('click', () => {
+  markMapFeatureUsed(networkButton, 'network')
+  void toggleCityNetwork()
+})
 // 品牌鍵 = 回到全台總覽(留在地圖內);右上「首頁」才是離開地圖的出口。
 document.getElementById('map-brand')?.addEventListener('click', (event) => {
   event.preventDefault()
@@ -546,7 +583,7 @@ function showTaiwan() {
       buttonGrid(regions.map((region) => ({
         label: region.name,
         onClick: () => showRegion(region.code),
-      }))),
+      })), 'map-fallback-grid'),
       locateCityButton(),
     ],
   })
@@ -652,7 +689,7 @@ function showRegion(regionCode: RegionCode) {
       buttonGrid(regionCities.map((city) => ({
         label: city.name,
         onClick: () => void chooseCity(city),
-      }))),
+      })), 'map-fallback-grid'),
     ],
   })
   fitRegionCities(region, regionCities)
@@ -925,7 +962,8 @@ function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
   const label = kind === 'from' ? '出發' : '目的地'
   const summary = document.createElement('button')
   summary.type = 'button'
-  summary.className = 'trip-matched-summary'
+  summary.className = `trip-matched-summary trip-endpoint-${kind}`
+  summary.dataset.kind = kind
   summary.setAttribute('aria-label', `更換${label}站牌：${selected.name}`)
   const labelNode = document.createElement('span')
   labelNode.className = 'trip-endpoint-label'
@@ -974,12 +1012,13 @@ function reselectTripEndpointButton(kind: TripSelectionKind): HTMLButtonElement 
   return button
 }
 
-function tripMatchedControls(): HTMLElement | undefined {
+function tripMatchedControls(compact = false): HTMLElement | undefined {
   const from = tripMatchedSummary('from')
   const to = tripMatchedSummary('to')
   if (!from && !to) return
   const controls = document.createElement('div')
   controls.className = 'trip-matched-controls'
+  controls.classList.toggle('compact', compact)
   if (from) controls.appendChild(from)
   if (to) controls.appendChild(to)
   return controls
@@ -1052,7 +1091,7 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
     ],
   })
   drawerSession.onDispose(searchBox.dispose)
-  setStatus(nextKind === 'from' ? '路線規劃 · 請點出發位置' : `出發：${selectedFrom?.name ?? ''} · 請點目的地`)
+  clearStatus()
   setViewBack(cancelTripMode)
 }
 
@@ -1165,11 +1204,12 @@ function openSearchedPlace(place: SearchPlace) {
 
 function tripModeButton(): HTMLButtonElement {
   const button = document.createElement('button')
-  button.className = 'trip-mode-button'
-  button.textContent = '↗'
+  button.className = 'trip-mode-button map-feature-button'
   button.title = '路線規劃'
   button.setAttribute('aria-label', '路線規劃：選擇出發位置與目的地')
+  decorateMapFeatureButton(button, 'trip', '↗', '規劃')
   button.addEventListener('click', () => {
+    markMapFeatureUsed(button, 'trip')
     clearTripResultsCamera()
     clearPendingTripSelections()
     selectedFrom = undefined
@@ -2430,7 +2470,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
   })
   const back = drawerBack('重新選目的地', resumeDestinationSelection)
   const reset = tripModeButton()
-  const matchedControls = tripMatchedControls()
+  const matchedControls = tripMatchedControls(true)
   renderDrawer({
     mode: 'results',
     header: [
@@ -2528,7 +2568,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     })
     list.appendChild(card)
   })
-  const matchedControls = tripMatchedControls()
+  const matchedControls = tripMatchedControls(true)
   renderDrawer({
     mode: 'results',
     header: [
@@ -3013,9 +3053,10 @@ function retryButton(onClick: () => void): HTMLButtonElement {
   return button
 }
 
-function buttonGrid(items: Array<{ label: string; onClick: () => void }>): HTMLElement {
+function buttonGrid(items: Array<{ label: string; onClick: () => void }>, className?: string): HTMLElement {
   const grid = document.createElement('div')
   grid.className = 'selection-grid'
+  if (className) grid.classList.add(className)
   for (const item of items) {
     const button = document.createElement('button')
     button.textContent = item.label
