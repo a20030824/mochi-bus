@@ -1,6 +1,46 @@
 import { expect, test } from './fixtures'
 
 test.describe('/setup page', () => {
+  test('renders saved boards as one divided list and keeps the active state separate from actions', async ({ page }) => {
+    const boards = [
+      {
+        version: 2,
+        id: 'active-board',
+        title: '捷運景安站',
+        city: 'NewTaipei',
+        buses: [{ city: 'NewTaipei', routeName: '307', routeUid: 'NWT307', patternId: 'NWT307-0', stopName: '捷運景安站', stopUid: 'NWT1', direction: 0 }],
+        createdAt: '2026-07-17T00:00:00.000Z',
+        updatedAt: '2026-07-17T00:00:00.000Z',
+      },
+      {
+        version: 2,
+        id: 'second-board',
+        title: '秀朗橋北',
+        city: 'NewTaipei',
+        buses: [{ city: 'NewTaipei', routeName: '918', routeUid: 'NWT918', patternId: 'NWT918-0', stopName: '秀朗橋北', stopUid: 'NWT2', direction: 0 }],
+        createdAt: '2026-07-17T00:00:00.000Z',
+        updatedAt: '2026-07-17T00:00:00.000Z',
+      },
+    ]
+    await page.addInitScript((savedBoards) => {
+      localStorage.setItem('mochi.bus.boards.v2', JSON.stringify(savedBoards))
+      localStorage.setItem('mochi.bus.activeBoard.v2', savedBoards[0].id)
+    }, boards)
+
+    await page.goto('/setup')
+
+    const rows = page.locator('.board-list > .board-item')
+    await expect(rows).toHaveCount(2)
+    await expect(rows.nth(0).locator('.board-status')).toHaveText('封面')
+    await expect(rows.nth(0).getByRole('button', { name: '顯示在封面' })).toHaveCount(0)
+    await expect(rows.nth(1).getByRole('button', { name: '顯示在封面' })).toBeVisible()
+    await expect(rows.nth(0)).toHaveCSS('border-radius', '0px')
+
+    await rows.nth(1).getByRole('button', { name: '顯示在封面' }).click()
+    await expect(page.locator('.board-item[data-active="true"]')).toContainText('秀朗橋北')
+    await expect(page.locator('.board-status')).toHaveCount(1)
+  })
+
   test('golden path: pick a route, pick a stop, see suggestions', async ({ page }) => {
     await page.goto('/setup')
     await expect(page.locator('#board-list')).toBeVisible()

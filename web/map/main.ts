@@ -24,7 +24,7 @@ import {
   formatJourneyWait,
   splitEtaLabel,
   type EtaSource,
-} from '../lib/eta-presentation'
+} from '../../src/domain/eta-presentation'
 import { splitRouteDisplayName } from '../lib/route-display'
 import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
@@ -687,7 +687,9 @@ function renderRoutePicker() {
     categories.replaceChildren(...names.map((name) => {
       const button = document.createElement('button')
       button.className = `map-chip${category === name ? ' active' : ''}`
-      button.textContent = name === '幸福／社區' ? '幸福・社區' : name
+      const label = name === '幸福／社區' ? '幸福・社區' : name
+      button.textContent = name === '全部' ? `${label} ${routes.length}` : label
+      button.setAttribute('aria-pressed', String(category === name))
       button.addEventListener('click', () => {
         category = name
         listRegion.scrollTop = 0

@@ -1,9 +1,17 @@
 export type EtaSource = 'realtime' | 'stale-realtime' | 'schedule' | 'none'
 
+export type EtaTone = 'default' | 'estimated' | 'urgent'
+
 export type EtaLabelParts = {
   prefix: string
   value: string
   suffix: string
+}
+
+export type EtaPresentation = EtaLabelParts & {
+  tone: EtaTone
+  stale: boolean
+  numeric: boolean
 }
 
 const RELATIVE_ETA_PATTERN = /^(約\s*)?(\d+(?:[–-]\d+)?)(\s*分(?:後發車|一班)?)$/
@@ -40,6 +48,30 @@ export function splitEtaLabel(label: string): EtaLabelParts {
     }
   }
   return { prefix: '', value: trimmed, suffix: '' }
+}
+
+export function etaPresentation(
+  label: string,
+  options: {
+    source?: EtaSource
+    estimateSeconds?: number | null
+    stale?: boolean
+  } = {},
+): EtaPresentation {
+  const source = options.source ?? 'none'
+  const stale = options.stale === true || source === 'stale-realtime'
+  const urgent = (source === 'realtime' || source === 'stale-realtime')
+    && typeof options.estimateSeconds === 'number'
+    && Number.isFinite(options.estimateSeconds)
+    && options.estimateSeconds >= 0
+    && options.estimateSeconds <= 180
+  const parts = splitEtaLabel(label)
+  return {
+    ...parts,
+    tone: source === 'schedule' ? 'estimated' : urgent ? 'urgent' : 'default',
+    stale,
+    numeric: /\d/.test(parts.value),
+  }
 }
 
 export function formatJourneyWait(

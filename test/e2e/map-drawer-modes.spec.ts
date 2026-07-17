@@ -82,7 +82,7 @@ test('keeps the city route catalogue below half the map with one internal scroll
   await expect(drawer).toHaveAttribute('data-mode', 'map-list')
   const region = drawer.locator(':scope > .drawer-scroll-shell > .drawer-scroll-region')
   await expect(region).toHaveCount(1)
-  await expect(drawer.getByRole('button', { name: '全部', exact: true })).toBeVisible()
+  await expect(drawer.getByRole('button', { name: /^全部 \d+$/ })).toBeVisible()
   const controls = await drawer.evaluate((element) => {
     const searchRect = element.querySelector<HTMLElement>('.map-search')!.getBoundingClientRect()
     const categoriesRect = element.querySelector<HTMLElement>('.map-categories')!.getBoundingClientRect()

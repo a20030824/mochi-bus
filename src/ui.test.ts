@@ -78,7 +78,7 @@ describe('SEO metadata', () => {
   it('keeps informational disclosures neutral instead of styling them as primary actions', () => {
     const html = renderSetupPage([['Taipei', '臺北']], requestUrl)
 
-    expect(html).toContain('.advanced-panel>summary,.glossary summary{color:#777066}')
+    expect(html).toContain('.advanced-panel>summary,.glossary summary{color:var(--text-muted)}')
   })
 
   it('fades marquee text at fixed sign edges without masking the sign surface', () => {
@@ -185,7 +185,8 @@ describe('ETA bootstrap', () => {
       requestUrl,
     })
 
-    expect(html).toContain('class="bus-eta">約 2 分</span>')
+    expect(html).toContain('class="bus-eta urgent"')
+    expect(html).toContain('<span class="eta-prefix">約</span><span class="eta-value">2</span><span class="eta-suffix">分</span>')
     expect(html).toContain('id="notice"></p>')
     expect(html).toContain('id="updated">資料 07:00:00</span>')
   })

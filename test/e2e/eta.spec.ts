@@ -71,6 +71,37 @@ test.describe('ETA page', () => {
     await expect.poll(async () => page.evaluate(async () => Boolean(await navigator.serviceWorker.getRegistration()))).toBe(true)
   })
 
+  test('keeps rows keyed while ETA value, trust tone, and freshness update', async ({ page }) => {
+    const boardWithoutPlace = { ...board, placeId: undefined }
+    let requestCount = 0
+    await page.addInitScript((storedBoard) => {
+      localStorage.setItem('mochi.bus.boards.v2', JSON.stringify([storedBoard]))
+      localStorage.setItem('mochi.bus.activeBoard.v2', storedBoard.id)
+    }, boardWithoutPlace)
+    await page.route('**/api/v1/eta*', async (route) => {
+      requestCount += 1
+      const response = requestCount === 1
+        ? { ...eta('7322', 720), label: '約 12 分', source: 'schedule' }
+        : { ...eta('7322', 180), label: '3 分', stale: true }
+      await route.fulfill({ json: response })
+    })
+
+    await page.goto('/')
+    const row = page.locator('.bus-row')
+    const activeEtaCopy = row.locator('.eta-copy:not(.eta-copy-exit)')
+    await expect(activeEtaCopy.locator('.eta-value')).toHaveText('12')
+    await expect(activeEtaCopy.locator('.eta-prefix')).toHaveText('約')
+    await expect(activeEtaCopy.locator('.eta-suffix')).toHaveText('分')
+    await expect(row.locator('.bus-eta')).toHaveClass(/estimated/)
+    await row.evaluate((element) => { element.setAttribute('data-preserved-row', 'true') })
+
+    await page.getByRole('button', { name: '重新整理' }).click()
+    await expect(activeEtaCopy.locator('.eta-value')).toHaveText('3')
+    await expect(row.locator('.bus-eta')).toHaveClass(/urgent/)
+    await expect(row.locator('.eta-freshness')).toHaveText('稍早')
+    await expect(row).toHaveAttribute('data-preserved-row', 'true')
+  })
+
   test('lets a direction label use the full row below route and ETA', async ({ page }) => {
     const directionLabel = '嘉義大學校區內 → 二二八國家紀念公園'
     const boardWithDirection = {
@@ -90,6 +121,8 @@ test.describe('ETA page', () => {
     const row = page.locator('.bus-row')
     const direction = row.locator(':scope > .bus-direction')
     await expect(direction).toHaveText(directionLabel)
+    await expect(row.locator('.eta-copy:not(.eta-copy-exit) .eta-value')).toHaveText('1')
+    await expect(row.locator('.eta-copy-exit')).toHaveCount(0)
     await expect(row.locator('.bus-route-copy .bus-direction')).toHaveCount(0)
     const layout = await direction.evaluate((element) => ({
       gridColumn: getComputedStyle(element).gridColumn,

@@ -103,21 +103,34 @@ function renderBoards() {
   value.forEach((board, index) => {
     const card = document.createElement('article')
     card.className = 'board-item'
+    card.dataset.active = String(board.id === active)
     const copy = document.createElement('div')
+    copy.className = 'board-copy'
+    const titleLine = document.createElement('div')
+    titleLine.className = 'board-title-line'
     const title = document.createElement('strong')
-    title.textContent = board.title + (board.id === active ? ' · 封面' : '')
+    title.textContent = board.title
+    titleLine.appendChild(title)
+    if (board.id === active) {
+      const status = document.createElement('span')
+      status.className = 'board-status'
+      status.textContent = '封面'
+      titleLine.appendChild(status)
+    }
     const detail = document.createElement('span')
     const ambiguous = board.buses.some((bus) => bus.identityStatus === 'legacy-ambiguous')
     detail.textContent = board.buses.map((bus) => bus.routeName).join('、') + (ambiguous ? ' · 需重新選擇路線' : '')
-    copy.replaceChildren(title, detail)
+    copy.replaceChildren(titleLine, detail)
     const actions = document.createElement('div')
     actions.className = 'item-actions'
-    const show = document.createElement('button')
-    show.textContent = '顯示在封面'
-    show.disabled = board.id === active
-    show.onclick = () => {
-      setActiveBoard(board.id)
-      renderBoards()
+    if (board.id !== active) {
+      const show = document.createElement('button')
+      show.textContent = '顯示在封面'
+      show.onclick = () => {
+        setActiveBoard(board.id)
+        renderBoards()
+      }
+      actions.appendChild(show)
     }
     const remove = document.createElement('button')
     remove.textContent = '刪除'
@@ -129,7 +142,7 @@ function renderBoards() {
       if (wasActive) syncActiveBoard(next)
       showInlineUndo(card, board, index, wasActive)
     }
-    actions.replaceChildren(show, remove)
+    actions.appendChild(remove)
     card.replaceChildren(copy, actions)
     boardList.appendChild(card)
   })

@@ -326,8 +326,10 @@ button { cursor: pointer; }
   color: var(--text-muted);
   font-size: 12px;
   font-weight: var(--weight-body);
+  transition: background-color .14s ease, border-color .14s ease, color .14s ease, transform .14s ease;
 }
 .map-chip.active { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.map-chip:active { transform: scale(.98); }
 
 .variant-list { display: grid; gap: 0; border-block: 1px solid var(--line-faint); }
 .variant-button {

@@ -8,6 +8,8 @@ import {
   type FavoriteBus,
 } from '../boards/store'
 import { requestMochiJson } from '../tdx/api-client'
+import type { EtaSource } from '../../src/domain/eta-presentation'
+import { createEtaRow, updateEtaRow, type EtaRowViewModel } from './eta-row-view'
 
 type EtaBootstrap = {
   initialBoard: FavoriteBoard
@@ -18,7 +20,7 @@ type EtaBootstrap = {
 type EtaData = {
   label?: string
   estimateSeconds?: number | null
-  source?: string
+  source?: EtaSource
   fetchedAt?: string
   dataTime?: string | null
   stale?: boolean
@@ -43,7 +45,7 @@ type PlaceRoute = {
   stopName: string
   estimateSeconds: number | null
   etaLabel: string
-  source?: string
+  source?: EtaSource
 }
 
 type RefreshResponse = {
@@ -123,30 +125,36 @@ function routeLink(bus: FavoriteBus): string {
 }
 
 function makeRow(bus: FavoriteBus, data?: EtaData, failed = false): HTMLAnchorElement {
-  const link = document.createElement('a')
-  link.className = 'bus-row'
-  link.href = routeLink(bus)
-  const routeCopy = document.createElement('span')
-  routeCopy.className = 'bus-route-copy'
-  const route = document.createElement('strong')
-  route.className = 'bus-name'
-  route.textContent = bus.routeName
-  const direction = document.createElement('small')
-  direction.className = 'bus-direction'
-  direction.textContent = bus.directionLabel || ''
-  direction.hidden = !bus.directionLabel
-  routeCopy.replaceChildren(route)
-  const eta = document.createElement('span')
-  eta.className = 'bus-eta'
-  eta.textContent = failed ? '暫無資料' : data?.label || '更新中'
-  if (!failed && data?.source === 'stale-realtime') {
-    const freshness = document.createElement('small')
-    freshness.textContent = '稍早'
-    freshness.style.cssText = 'margin-left:7px;color:#777066;font-size:11px;font-weight:750;letter-spacing:0'
-    eta.appendChild(freshness)
+  return createEtaRow(etaRowViewModel(bus, data, failed))
+}
+
+function etaRowViewModel(bus: FavoriteBus, data?: EtaData, failed = false): EtaRowViewModel {
+  return {
+    key: paramsFor(bus).toString(),
+    href: routeLink(bus),
+    routeName: bus.routeName,
+    directionLabel: bus.directionLabel,
+    label: failed ? '暫無資料' : data?.label || '更新中',
+    estimateSeconds: data?.estimateSeconds,
+    source: failed ? 'none' : data?.source,
+    stale: !failed && (data?.stale === true || data?.source === 'stale-realtime'),
   }
-  link.replaceChildren(routeCopy, eta, direction)
-  return link
+}
+
+function reconcileRows(responses: RefreshResponse[]): void {
+  const existingRows = new Map(
+    Array.from(listNode.children)
+      .filter((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement && Boolean(node.dataset.busKey))
+      .map((row) => [row.dataset.busKey!, row]),
+  )
+  const rows = responses.map((item) => {
+    const model = etaRowViewModel(item.bus, item.data, item.failed)
+    const row = existingRows.get(model.key)
+    if (!row) return createEtaRow(model)
+    updateEtaRow(row, model)
+    return row
+  })
+  listNode.replaceChildren(...rows)
 }
 
 async function fillDirectionLabel(bus: FavoriteBus): Promise<void> {
@@ -291,7 +299,7 @@ async function refreshBoard(): Promise<void> {
     const bEta = typeof b.data?.estimateSeconds === 'number' ? b.data.estimateSeconds : Number.POSITIVE_INFINITY
     return aEta - bEta || a.bus.routeName.localeCompare(b.bus.routeName, 'zh-Hant', { numeric: true })
   })
-  listNode.replaceChildren(...responses.map((item) => makeRow(item.bus, item.data, item.failed)))
+  reconcileRows(responses)
   if (useLocalBoard && !demoBoard) writeBoards(migrateBoards().map((board) => board.id === currentBoard.id ? currentBoard : board))
   const fresh = responses.filter((item) => item.data).map((item) => item.data as EtaData)
   const tdxWarning = ['tdx-quota', 'tdx-rate-limit', 'tdx-unavailable'].find((kind) => fresh.some((item) => item.warning === kind))

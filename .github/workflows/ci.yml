@@ -59,6 +59,7 @@ jobs:
           test/e2e/map-trip-stop-matching.spec.ts
           test/e2e/map-variant-back-layout.spec.ts
           test/e2e/security-csp.spec.ts
+          test/e2e/setup.spec.ts
           --reporter=line,html
       - name: Upload Playwright diagnostics
         if: always()

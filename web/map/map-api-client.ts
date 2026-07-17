@@ -1,5 +1,5 @@
 import type { TransferEstimate } from '../../src/domain/map/transfer-estimate'
-import type { EtaSource } from '../lib/eta-presentation'
+import type { EtaSource } from '../../src/domain/eta-presentation'
 import { requestMochiJson } from '../tdx/api-client'
 
 export type RegionCode = 'north' | 'central' | 'south' | 'east' | 'islands'
