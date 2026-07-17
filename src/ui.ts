@@ -208,6 +208,10 @@ const enhancementStyles = `.onboard-sign{position:relative;overflow:hidden;margi
 const credentialStyles = `.credential-field{display:grid;gap:6px}.credential-field>label{color:#716a60;font-size:13px;font-weight:750}.credential-field input[aria-invalid="true"]{border-color:var(--accent-deep)}.tdx-remember{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #ded6c9;border-radius:12px;cursor:pointer}.tdx-remember input{flex:none;width:18px;height:18px;margin:2px 0 0;padding:0;border-radius:4px;background:transparent;accent-color:var(--accent)}.tdx-remember span{display:grid;gap:3px}.tdx-remember strong{font-size:14px}.tdx-remember small{color:#777066;font-size:13px;line-height:1.5}.form-message.form-message-error{color:var(--accent-deep);font-weight:750}.panel h1.error-title{font-size:clamp(26px,7vw,40px);line-height:1.15;letter-spacing:-.03em}.error-copy{margin:0 0 20px;color:#777066;font-size:15px;line-height:1.75}.error-links{display:flex;flex-wrap:wrap;gap:16px}.error-links a{color:var(--accent-deep);font-weight:750;text-underline-offset:3px}@media(prefers-color-scheme:dark){.credential-field>label,.tdx-remember small{color:#aaa197}.tdx-remember{border-color:#4d473e}.credential-field input[aria-invalid="true"]{border-color:#f09b80}.form-message.form-message-error{color:#f09b80}.error-copy{color:#aaa197}.error-links a{color:#f09b80}}`
 
 const designRefinementStyles = `
+.onboard-sign-track{position:relative;z-index:1}
+.onboard-sign::after{z-index:2}
+.onboard-sign::before{content:"";position:absolute;z-index:3;inset:0;background:linear-gradient(90deg,#211e19 0,rgba(33,30,25,.92) 8px,transparent 32px,transparent calc(100% - 32px),rgba(33,30,25,.92) calc(100% - 8px),#211e19 100%);pointer-events:none}
+.advanced-panel>summary,.glossary summary{color:#777066}
 .eta-footer-actions{display:flex;align-items:center;gap:8px}
 .footer-action{padding:10px 14px;border:1px solid #d8d0c2;border-radius:999px;color:inherit;font-weight:750;text-decoration:none}
 .about-panel{margin-top:14px;padding-top:13px;border-top:1px solid #ded6c9}
@@ -225,6 +229,7 @@ const designRefinementStyles = `
   .eta-footer-actions>*{flex:1;text-align:center}
 }
 @media(prefers-color-scheme:dark){
+  .advanced-panel>summary,.glossary summary{color:#aaa197}
   .footer-action{border-color:#4d473e}
   .about-panel{border-color:#4d473e}
   .about-panel p{color:#aaa197}

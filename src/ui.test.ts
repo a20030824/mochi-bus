@@ -74,6 +74,20 @@ describe('SEO metadata', () => {
     expect(html).toContain('<meta name="robots" content="noindex">')
   })
 
+  it('keeps informational disclosures neutral instead of styling them as primary actions', () => {
+    const html = renderSetupPage([['Taipei', '臺北']], requestUrl)
+
+    expect(html).toContain('.advanced-panel>summary,.glossary summary{color:#777066}')
+  })
+
+  it('fades marquee text at fixed sign edges without masking the sign surface', () => {
+    const html = renderETAPage({ query, useLocalBoard: true, requestUrl })
+
+    expect(html).toContain('.onboard-sign::before{content:""')
+    expect(html).toContain('transparent 32px')
+    expect(html).not.toContain('mask-image')
+  })
+
   it('does not noindex the shareable ETA and map pages', () => {
     expect(renderETAPage({ query, useLocalBoard: true, requestUrl })).not.toContain('name="robots"')
     expect(renderMapPage({ heading: '台北市公車地圖' })).not.toContain('name="robots"')
