@@ -66,6 +66,13 @@ async function mockPlaceMap(page: Page) {
       }],
     },
   }))
+  await page.route('**/api/v1/map/network*', (request) => request.fulfill({
+    json: {
+      version: 'test',
+      routes: [],
+      places: [],
+    },
+  }))
 }
 
 test('uses the desktop map stage for closer overview and region framing', async ({ page }) => {
@@ -124,6 +131,28 @@ test('keeps the focused place in the visible map stage when the drawer or viewpo
 
   await page.setViewportSize({ width: 390, height: 700 })
   await expectFocusedContentAboveDrawer(drawer, routePath, 350)
+})
+
+test('keeps the current map context when the city network overlay is toggled', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockPlaceMap(page)
+  await page.goto('/map?city=Tainan&place=P1')
+
+  const drawer = page.locator('#map-drawer')
+  const routePath = page.locator('.leaflet-routePreview-pane svg path')
+  const network = page.getByRole('button', { name: '切換全路網與全部站點' })
+  await expect(drawer.getByRole('heading', { name: place.name })).toBeVisible()
+  await expect(routePath).toHaveCount(1)
+
+  await network.click()
+  await expect(network).toHaveAttribute('aria-pressed', 'true')
+  await expect(routePath).toHaveCount(1)
+  await expect(drawer.getByRole('heading', { name: place.name })).toBeVisible()
+
+  await network.click()
+  await expect(network).toHaveAttribute('aria-pressed', 'false')
+  await expect(routePath).toHaveCount(1)
+  await expect(drawer.getByRole('heading', { name: place.name })).toBeVisible()
 })
 
 async function expectFocusedContentAboveDrawer(

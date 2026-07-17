@@ -22,7 +22,6 @@ type CityNetworkControllerOptions = {
   isStaleRequest: (requestId: number) => boolean
   loadNetwork: (city: string, signal?: AbortSignal) => Promise<CityNetwork>
   setStatus: (text: string, error?: boolean) => void
-  onActivate: () => void
 }
 
 export function createCityNetworkController(options: CityNetworkControllerOptions) {
@@ -79,7 +78,6 @@ export function createCityNetworkController(options: CityNetworkControllerOption
   }
 
   function draw(network: CityNetwork): void {
-    options.onActivate()
     options.layer.clearLayers()
     clearHover()
     stopMarkers = []

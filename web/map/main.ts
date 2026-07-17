@@ -229,12 +229,6 @@ const cityNetwork = createCityNetworkController({
   isStaleRequest: isStaleNav,
   loadNetwork: mapApi.network,
   setStatus,
-  onActivate: () => {
-    stopVehicleRefresh()
-    routeLayer.clearLayers()
-    previewLayer.clearLayers()
-    nearbyLayer.clearLayers()
-  },
 })
 
 function browserStorage(): Storage | undefined {
