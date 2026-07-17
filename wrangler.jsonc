@@ -10,7 +10,10 @@
     "directory": "./public"
   },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": {
+      "invocation_logs": false
+    }
   },
   // Workers Rate Limiting API 是每個 Cloudflare location 的快速、寬鬆限流；
   // namespace_id 由本帳號自行管理，三種政策分開避免互相吃額度。
@@ -24,11 +27,6 @@
       "name": "API_EXPENSIVE_RATE_LIMITER",
       "namespace_id": "96336002",
       "simple": { "limit": 30, "period": 60 }
-    },
-    {
-      "name": "TDX_VERIFY_RATE_LIMITER",
-      "namespace_id": "96336003",
-      "simple": { "limit": 5, "period": 60 }
     }
   ],
   "d1_databases": [

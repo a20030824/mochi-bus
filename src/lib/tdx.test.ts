@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedBusQuery } from '../domain/bus-query'
-import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getRouteStopGroups, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, TDXServiceError, verifyTDXCredentials, withUserTDX, type StopGroup, type TDXEnv } from './tdx'
+import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getRouteStopGroups, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, tdxCredentialScope, TDXServiceError, withUserTDXAccessToken, type StopGroup, type TDXEnv } from './tdx'
 
 describe('TDX presentation', () => {
   it('formats immediate arrivals', () => {
@@ -17,24 +17,28 @@ describe('TDX presentation', () => {
   })
 })
 
-describe('withUserTDX', () => {
+describe('withUserTDXAccessToken', () => {
   const env: TDXEnv = { TDX_CLIENT_ID: 'shared-id', TDX_CLIENT_SECRET: 'shared-secret' }
 
-  it('attaches trimmed user credentials without touching the shared ones', () => {
-    const result = withUserTDX(env, ' user-id ', ' user-secret ')
-    expect(result.TDX_USER_CLIENT_ID).toBe('user-id')
-    expect(result.TDX_USER_CLIENT_SECRET).toBe('user-secret')
+  it('attaches a short-lived user token without touching the shared credentials', () => {
+    const result = withUserTDXAccessToken(env, 'user-token')
+    expect(result.TDX_USER_ACCESS_TOKEN).toBe('user-token')
     expect(result.TDX_CLIENT_ID).toBe('shared-id')
-    // 原本的 env 物件不可以被改到(它是跨請求共用的 bindings)
-    expect(env).not.toHaveProperty('TDX_USER_CLIENT_ID')
+    expect(env).not.toHaveProperty('TDX_USER_ACCESS_TOKEN')
   })
 
-  it('ignores missing, blank, or oversized credentials', () => {
-    expect(withUserTDX(env)).toBe(env)
-    expect(withUserTDX(env, 'id-only')).toBe(env)
-    expect(withUserTDX(env, '  ', 'secret')).toBe(env)
-    expect(withUserTDX(env, 'x'.repeat(121), 'secret')).toBe(env)
-    expect(withUserTDX(env, 'id', 'x'.repeat(241))).toBe(env)
+  it('keeps the shared environment when no user token is present', () => {
+    expect(withUserTDXAccessToken(env)).toBe(env)
+    expect(withUserTDXAccessToken(env, null)).toBe(env)
+  })
+
+  it('isolates user cooldown and circuit scopes without retaining the raw token', async () => {
+    const first = await tdxCredentialScope({ ...env, TDX_USER_ACCESS_TOKEN: 'token-a' })
+    const second = await tdxCredentialScope({ ...env, TDX_USER_ACCESS_TOKEN: 'token-b' })
+
+    expect(first).not.toBe(second)
+    expect(first).not.toContain('token-a')
+    expect(second).not.toContain('token-b')
   })
 })
 
@@ -68,7 +72,7 @@ describe('TDX credential cache resilience', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('single-flights concurrent token requests for the exact same credential', async () => {
+  it('reuses a token that completed while a concurrent request was fingerprinting credentials', async () => {
     const fetchMock = vi.fn(async () => tokenResponse('one-token'))
     vi.stubGlobal('fetch', fetchMock)
     const env: TDXEnv = { TDX_CLIENT_ID: 'concurrent-id', TDX_CLIENT_SECRET: 'concurrent-secret' }
@@ -99,7 +103,7 @@ describe('TDX credential cache resilience', () => {
     expect(fetchMock).toHaveBeenCalledTimes(130)
   })
 
-  it('single-flights concurrent data misses for the same credential', async () => {
+  it('does not retain in-flight data promises across Worker requests', async () => {
     const cacheMatch = vi.fn(async () => undefined)
     const cachePut = vi.fn(async () => undefined)
     vi.stubGlobal('caches', { default: { match: cacheMatch, put: cachePut } })
@@ -124,8 +128,8 @@ describe('TDX credential cache resilience', () => {
 
     expect(first).toEqual([{ id: 'result' }])
     expect(second).toEqual(first)
-    expect(dataRequests).toBe(1)
-    expect(cachePut).toHaveBeenCalledTimes(1)
+    expect(dataRequests).toBe(2)
+    expect(cachePut).toHaveBeenCalledTimes(2)
   })
 
   it('returns TDX data before a scheduled edge-cache write finishes', async () => {
@@ -209,7 +213,8 @@ describe('TDX credential cache resilience', () => {
       throw new DOMException('timed out', 'TimeoutError')
     }))
 
-    await expect(verifyTDXCredentials('timeout-id', 'timeout-secret')).rejects.toBeInstanceOf(TDXServiceError)
+    await expect(getTDXToken({ TDX_CLIENT_ID: 'timeout-id', TDX_CLIENT_SECRET: 'timeout-secret' }))
+      .rejects.toBeInstanceOf(TDXServiceError)
     expect(timeoutSpy).toHaveBeenCalledWith(6000)
   })
 
@@ -219,9 +224,10 @@ describe('TDX credential cache resilience', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await expect(verifyTDXCredentials('circuit-id', 'circuit-secret')).rejects.toBeInstanceOf(TDXServiceError)
+      await expect(getTDXToken({ TDX_CLIENT_ID: 'circuit-id', TDX_CLIENT_SECRET: 'circuit-secret' }))
+        .rejects.toBeInstanceOf(TDXServiceError)
     }
-    await expect(verifyTDXCredentials('circuit-id', 'circuit-secret')).rejects.toMatchObject({
+    await expect(getTDXToken({ TDX_CLIENT_ID: 'circuit-id', TDX_CLIENT_SECRET: 'circuit-secret' })).rejects.toMatchObject({
       warning: 'tdx-unavailable',
       status: 503,
     })
@@ -269,15 +275,16 @@ describe('TDX credential cache resilience', () => {
       .mockResolvedValueOnce(tokenResponse('recovered-token'))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(verifyTDXCredentials('retry-id', 'retry-secret')).rejects.toBeInstanceOf(TDXServiceError)
-    await expect(verifyTDXCredentials('retry-id', 'retry-secret')).rejects.toMatchObject({
+    const env: TDXEnv = { TDX_CLIENT_ID: 'retry-id', TDX_CLIENT_SECRET: 'retry-secret' }
+    await expect(getTDXToken(env)).rejects.toBeInstanceOf(TDXServiceError)
+    await expect(getTDXToken(env)).rejects.toMatchObject({
       warning: 'tdx-rate-limit',
       status: 429,
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     vi.advanceTimersByTime(10_000)
-    await expect(verifyTDXCredentials('retry-id', 'retry-secret')).resolves.toBeUndefined()
+    await expect(getTDXToken(env)).resolves.toMatchObject({ token: 'recovered-token', isShared: true })
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })
@@ -334,19 +341,42 @@ describe('TDX upstream failures', () => {
     expect(second.warning).toBe('tdx-quota')
   })
 
-  it('does not let a personal credential test on the setup page contaminate the shared quota tracker', async () => {
+  it('does not let a personal access token contaminate the shared quota tracker', async () => {
     stubRateLimitedTDX()
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-08T08:00:00+08:00'))
 
-    // setup 頁「儲存並測試」打的是使用者自備憑證,持續撞 429 是他個人帳號的事。
-    await expect(verifyTDXCredentials('personal-id', 'personal-secret')).rejects.toThrow()
+    await expect(fetchTDXJson(
+      { ...env, TDX_USER_ACCESS_TOKEN: 'personal-access-token' },
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?personal=1'),
+      30,
+    )).rejects.toThrow()
     vi.setSystemTime(new Date('2026-07-08T08:15:00+08:00'))
-    await expect(verifyTDXCredentials('personal-id', 'personal-secret')).rejects.toThrow()
 
-    // 共用憑證本身一次都還沒失敗過,不該被這些測試請求的 429 波及而升級成「額度已用完」。
     const result = await getCommuteETA(env, query)
     expect(result.warning).toBe('tdx-rate-limit')
+  })
+
+  it('never writes upstream bodies, credentials, or authorization values to logs', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('caches', {
+      default: {
+        match: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      'sentinel-secret Authorization: Bearer sentinel-token',
+      { status: 401 },
+    )))
+
+    await expect(getTDXToken({
+      TDX_CLIENT_ID: 'sentinel-id',
+      TDX_CLIENT_SECRET: 'sentinel-secret',
+    })).rejects.toThrow()
+
+    const output = JSON.stringify(log.mock.calls)
+    expect(output).not.toMatch(/sentinel-secret|sentinel-token|Authorization/)
   })
 
   it('recognizes quota responses even when TDX does not use HTTP 429', async () => {

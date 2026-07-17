@@ -18,10 +18,10 @@ import {
   isFavoriteDirection,
   readBoards,
   setActiveCity,
-  tdxHeaders,
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
+import { tdxHeaders } from '../tdx/client'
 import {
   formatJourneyWait,
   splitEtaLabel,
@@ -887,10 +887,10 @@ function renderRoutePicker() {
 
 // 會落到 TDX 即時查詢的端點(到站、車輛、行程 ETA、路線的 TDX fallback)
 // 帶上使用者自備的憑證;純快照端點(D1/R2)用一般 fetch 就好。
-function tdxFetch(url: string, init?: RequestInit): Promise<Response> {
+async function tdxFetch(url: string, init?: RequestInit): Promise<Response> {
   return fetch(url, {
     ...init,
-    headers: { ...(init?.headers as Record<string, string> | undefined), ...tdxHeaders() },
+    headers: { ...(init?.headers as Record<string, string> | undefined), ...await tdxHeaders() },
   })
 }
 

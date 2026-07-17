@@ -219,11 +219,6 @@ export function consumeTdxAuthMigrationNotice(): boolean {
 }
 
 // 會落到 TDX 即時查詢的 API 呼叫帶上這組 header;沒設定憑證就是空物件,行為不變。
-export function tdxHeaders(): Record<string, string> {
-  const auth = getTdxAuth()
-  return auth ? { 'x-tdx-client-id': auth.clientId, 'x-tdx-client-secret': auth.clientSecret } : {}
-}
-
 // 清掉這個站台的所有本機資料(常用站牌、封面指定、縣市記憶、TDX 憑證與舊版資料)。
 export function clearLocalData(): void {
   for (const key of [BOARDS_KEY, ACTIVE_BOARD_KEY, ACTIVE_CITY_KEY, LEGACY_PRESETS_KEY, LEGACY_ACTIVE_KEY]) {

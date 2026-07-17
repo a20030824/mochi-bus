@@ -99,7 +99,9 @@ TDX 回應與資料庫版本查詢走兩層快取:模組層記憶體(isolate 內
 
 線上版內建一組共用 TDX 憑證,讓第一次打開的人不用先研究 API 就能查車。但 TDX 免費額度畢竟不是無底洞;白話一點說,共用額度是我先墊一把,不是大家一起把同一組免費額度喝乾。
 
-所以 `/setup` 的進階設定支援 **Bring Your Own Key**:填入自己的 TDX Client ID / Secret 後,瀏覽器發出的即時查詢會優先走你的額度。預設只保留在目前分頁的 sessionStorage（不可用時退回頁面記憶體）；只有明確勾選「記住於此裝置」才寫入 localStorage。舊版長期保存的 `mochi.bus.tdxAuth.v1` 會在第一次讀取時移到 session 並刪除原副本。憑證只在查詢時送到 Worker 換 token，不寫進伺服器儲存或 log；如果執行期失效，服務會退回共用憑證，不會直接讓整個看板熄火。
+所以 `/setup` 的進階設定支援 **Bring Your Own Key**:填入自己的 TDX Client ID / Secret 後,瀏覽器發出的即時查詢會優先走你的額度。預設只保留在目前分頁的 sessionStorage（不可用時退回頁面記憶體）；只有明確勾選「記住於此裝置」才寫入 localStorage。舊版長期保存的 `mochi.bus.tdxAuth.v1` 會在第一次讀取時移到 session 並刪除原副本。
+
+瀏覽器會直接向 TDX token endpoint 驗證憑證並換取短效 access token；Client Secret 不經過 Mochi Bus Worker。access token 只在頁面記憶體短暫快取、按 `SHA-256(clientId + secret)` 指紋隔離，送到 Worker 時使用標準 `Authorization: Bearer` header。Worker 的 invocation logs 已停用，應用 log 只記錄狀態與錯誤分類，不記錄 upstream body、憑證或 Authorization header。Worker 只代理 TDX data API（該 API 不支援瀏覽器跨來源呼叫），不再提供憑證驗證端點。
 
 ## 驗證與部署自己的一套
 

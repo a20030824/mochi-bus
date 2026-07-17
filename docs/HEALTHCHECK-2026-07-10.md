@@ -84,7 +84,7 @@
 | PERF-001 | P1 | 大型城市全路網 payload、parse、index 與記憶體過高 | `web/map/main.ts:1112-1153`、`scripts/sync-transit-snapshot.mjs:328` | Phase 4 | In Progress：50m 實驗雖縮小 payload，但因視覺正確性已回退至 8m；其他優化另案評估 |
 | COR-003 | P1 | 路線、路網、附近站牌與地點請求存在 stale response race | `web/map/main.ts:864-905,1112-1124,1256-1301,1924-2008`；`src/ui.ts:395-397` | Phase 2 | Verified：共用 nav-request coordinator 已部署 `ef8eefaf-…` |
 | SEC-002 | P1 | 公開重型 API 缺 body size、runtime schema、rate limit 與併發保護 | `src/rate-limit.ts`、`src/lib/tdx.ts`、`src/routes/map.ts:450-532` | Phase 1 | Verified：input boundaries、per-location edge rate limit、single-flight 與 credential-scoped circuit breaker 已部署 `8fa1fd3d-…` |
-| SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `src/lib/tdx.ts`、`web/boards/store.ts:135-305`、`src/ui.ts:331-407` | Phase 1 | Verified：server fingerprint/LRU 與 session-first browser lifecycle 已部署 `b71d9105-…` |
+| SEC-003 | P1 | BYOK token cache 僅以 clientId 分桶，secret 長期存在 localStorage | `web/tdx/client.ts`、`web/boards/store.ts`、`src/lib/tdx.ts` | Phase 1 | Verified：session-first lifecycle；瀏覽器直連 TDX 換 token，Client Secret 不再進 Worker |
 | CICD-001 | P1 | CI secret scope 過大、Actions 用 mutable tag、缺 PR/push quality gate | `.github/workflows/sync-transit.yml:24-33,72-74` | Phase 1 | In Progress：本地 workflow 驗證通過；待 push 後首次 CI run 與 Environment 保護 |
 | TEST-001 | P1 | 缺 Cloudflare Workers runtime 與瀏覽器整合／競態測試 | `vitest` 現況與測試目錄 | Phase 1-5 | In Progress：`@cloudflare/vitest-pool-workers` 已納入 CI 覆蓋 middleware/body-limit；瀏覽器 Playwright／axe 仍 Open |
 | COR-004 | P1 | 轉乘時間使用固定假設卻呈現精確分鐘，且未納入步行距離 | `src/domain/map/transfer-estimate.ts`、`web/map/main.ts` | Phase 2 | Verified：時間範圍、步行與候車不確定性已部署 `c298089c-…` |

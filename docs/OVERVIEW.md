@@ -28,7 +28,7 @@
 - 進階摺疊區:
   - **用詞小抄**:「約」「稍早」「N 分後發車」這些小字的意思、地圖操作提示
   - **關於 Mochi Bus**:為什麼路線應該畫在地圖上、資料來源、開源授權與 GitHub 入口
-  - **自備 TDX 憑證(BYOK)**:儲存即驗證、憑證只存在裝置端;共用額度是先墊一把,不是要大家一起把同一組免費額度喝乾
+  - **自備 TDX 憑證(BYOK)**:瀏覽器直接向 TDX 驗證並換短效 token，Client Secret 不進 Mochi Bus Worker;共用額度是先墊一把,不是要大家一起把同一組免費額度喝乾
   - 清除本機資料(常用站牌、封面設定與憑證一併刪除)
 
 ### 地圖 `/map`
@@ -48,7 +48,7 @@
 - **公路客運攤入縣市路網**:行經本縣市(依 TDX LocationCityCode)的 THB 路線整條併進該縣市快照,站位靠正規化站名 + 200m 網格與市區站牌自然合併;即時查詢按 RouteUID 前綴自動切 InterCity 端點——苗栗這種市區公車只有 27 個站位、公路客運卻有 733 站的縣市,才真的有路網可看
 - 三態班表支援(逐站時刻/起點發車/班距制)+ 支線班表互借(雙北班表缺漏的解法)
 - 兩層快取(isolate 記憶體 → Cache API)、429 縣市冷卻 + stale 回放
-- BYOK:使用者自備 TDX 憑證只跟著請求進來、用完即丟;token 以憑證為 key 短暫快取、429 冷卻按憑證來源隔離、回應快取全站共享
+- BYOK:Client Secret 只在瀏覽器與 TDX token endpoint 之間傳送;瀏覽器按 credential fingerprint 隔離短效 token，Worker 只接收 access token 並代理不支援 CORS 的 data API。Invocation logs 關閉，應用 log 不記 upstream body、憑證或 Authorization header
 
 ---
 

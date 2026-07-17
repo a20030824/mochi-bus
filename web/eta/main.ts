@@ -3,11 +3,11 @@ import {
   migrateBoards,
   setActiveCity,
   syncActiveBoard,
-  tdxHeaders,
   writeBoards,
   type FavoriteBoard,
   type FavoriteBus,
 } from '../boards/store'
+import { tdxHeaders } from '../tdx/client'
 
 type EtaBootstrap = {
   initialBoard: FavoriteBoard
@@ -154,7 +154,7 @@ async function fillDirectionLabel(bus: FavoriteBus): Promise<void> {
   try {
     const params = new URLSearchParams({ city: bus.city || '', route: bus.routeName })
     if (bus.routeUid) params.set('routeUid', bus.routeUid)
-    const response = await fetch('/api/v1/stops?' + params, { headers: tdxHeaders() })
+    const response = await fetch('/api/v1/stops?' + params, { headers: await tdxHeaders() })
     const body = await response.json() as { groups?: StopGroup[] }
     const group = body.groups?.find((candidate) =>
       candidate.direction === bus.direction
@@ -201,7 +201,7 @@ async function repairBusFromPlace(bus: FavoriteBus): Promise<boolean> {
     }
     const params = new URLSearchParams({ city, route: bus.routeName })
     if (bus.routeUid) params.set('routeUid', bus.routeUid)
-    const response = await fetch('/api/v1/stops?' + params, { headers: tdxHeaders() })
+    const response = await fetch('/api/v1/stops?' + params, { headers: await tdxHeaders() })
     const body = await response.json() as { groups?: StopGroup[] }
     if (!response.ok) return false
     const groups = (body.groups || []).filter((group) =>
@@ -233,7 +233,7 @@ async function loadPlaceArrivals(): Promise<PlaceRoute[] | null> {
     if (focus && (focus.direction === 0 || focus.direction === 1 || focus.direction === 2)) {
       params.set('focusDirection', String(focus.direction))
     }
-    const response = await fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/arrivals?' + params, { cache: 'no-store', headers: tdxHeaders() })
+    const response = await fetch('/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/arrivals?' + params, { cache: 'no-store', headers: await tdxHeaders() })
     const body = await response.json() as { routes?: PlaceRoute[] }
     return response.ok && Array.isArray(body.routes) ? body.routes : null
   } catch { return null }
@@ -269,7 +269,7 @@ async function refreshBoard(): Promise<void> {
       }}
     }
     try {
-      const response = await fetch('/api/v1/eta?' + paramsFor(bus), { cache: 'no-store', headers: tdxHeaders() })
+      const response = await fetch('/api/v1/eta?' + paramsFor(bus), { cache: 'no-store', headers: await tdxHeaders() })
       const body = await response.json() as EtaData & { error?: string }
       if (!response.ok) throw new Error(body.error)
       return { bus, data: body }

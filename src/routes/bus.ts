@@ -18,9 +18,8 @@ import {
   TDXServiceError,
   tdxWarningFromError,
   tdxWarningMessages,
-  verifyTDXCredentials,
   withTDXBackgroundTasks,
-  withUserTDX,
+  withUserTDXAccessToken,
   type TDXEnv,
   type TDXWarning,
 } from '../lib/tdx'
@@ -32,20 +31,16 @@ import {
   ApiInputError,
   apiInputErrorBody,
   optionalQueryString,
-  parseTdxCredentials,
+  parseTdxAccessToken,
   requiredQueryString,
 } from '../lib/api-input'
 
 type Env = { Bindings: TDXEnv & TransitBindings }
 const bus = new Hono<Env>()
 
-// API 請求可帶使用者自備的 TDX 憑證(setup 頁進階設定),即時查詢改用他的額度。
+// 瀏覽器直接向 TDX 換 token；Worker 只接收短效 token，永遠不接觸 Client Secret。
 const tdxEnv = (c: Context<Env>) => {
-  const credentials = parseTdxCredentials(
-    c.req.header('x-tdx-client-id'),
-    c.req.header('x-tdx-client-secret'),
-  )
-  const env = withUserTDX(c.env, credentials?.clientId, credentials?.clientSecret)
+  const env = withUserTDXAccessToken(c.env, parseTdxAccessToken(c.req.header('Authorization')))
   try {
     const executionCtx = c.executionCtx
     return withTDXBackgroundTasks(env, (promise) => executionCtx.waitUntil(promise))
@@ -202,27 +197,6 @@ bus.get('/api/v1/stop-routes', async (c) => {
     return c.json({ city, stopName, buses }, 200, noStoreHeaders)
   } catch (error) {
     return jsonError(c, error)
-  }
-})
-
-// setup 頁「儲存並測試」:驗證使用者自備的 TDX 憑證換不換得到 token。
-// 憑證只從 header 進來、用完即丟;絕不寫進任何儲存或 log。
-bus.get('/api/v1/tdx/verify', async (c) => {
-  let credentials
-  try {
-    credentials = parseTdxCredentials(
-      c.req.header('x-tdx-client-id'),
-      c.req.header('x-tdx-client-secret'),
-      true,
-    )!
-  } catch (error) {
-    return jsonError(c, error)
-  }
-  try {
-    await verifyTDXCredentials(credentials.clientId, credentials.clientSecret)
-    return c.json({ ok: true }, 200, noStoreHeaders)
-  } catch {
-    return c.json({ error: '這組憑證換不到 token，檢查一下是不是貼錯了' }, 401, noStoreHeaders)
   }
 })
 

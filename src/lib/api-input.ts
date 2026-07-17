@@ -122,24 +122,16 @@ export function parseRadius(value: string | undefined, fallback = 500): number {
   return radius
 }
 
-export function parseTdxCredentials(
-  clientIdValue: string | undefined,
-  clientSecretValue: string | undefined,
-  required = false,
-): { clientId: string; clientSecret: string } | null {
-  const clientId = clientIdValue?.trim()
-  const clientSecret = clientSecretValue?.trim()
-  if (!clientId && !clientSecret) {
-    if (required) throw new ApiInputError(400, 'INVALID_REQUEST', 'Client ID 與 Client Secret 都要填')
-    return null
+export function parseTdxAccessToken(authorization: string | undefined): string | null {
+  if (authorization === undefined) return null
+  if (!authorization.startsWith('Bearer ')) {
+    throw new ApiInputError(400, 'INVALID_REQUEST', 'TDX access token 格式錯誤')
   }
-  if (!clientId || !clientSecret) {
-    throw new ApiInputError(400, 'INVALID_REQUEST', 'Client ID 與 Client Secret 必須一起提供')
+  const token = authorization.slice('Bearer '.length)
+  if (!token || token.length > 8_192 || /\s/.test(token)) {
+    throw new ApiInputError(400, 'INVALID_REQUEST', 'TDX access token 格式錯誤')
   }
-  if (clientId.length > 120 || clientSecret.length > 240) {
-    throw new ApiInputError(400, 'INVALID_REQUEST', 'TDX 憑證格式錯誤')
-  }
-  return { clientId, clientSecret }
+  return token
 }
 
 export function apiInputErrorBody(error: ApiInputError): { error: string; code: ApiInputCode } {

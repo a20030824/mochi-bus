@@ -73,21 +73,23 @@ describe('GET and credential boundaries', () => {
     await expect(place.json()).resolves.toMatchObject({ code: 'INVALID_QUERY' })
   })
 
-  it('rejects partial or oversized BYOK credentials before token exchange', async () => {
-    const partial = await app.request(`${baseUrl}/api/v1/eta`, {
-      headers: { 'x-tdx-client-id': 'only-an-id' },
+  it('rejects malformed or oversized BYOK access tokens before TDX access', async () => {
+    const malformed = await app.request(`${baseUrl}/api/v1/eta`, {
+      headers: { Authorization: 'Basic credentials' },
     })
-    expect(partial.status).toBe(400)
-    await expect(partial.json()).resolves.toMatchObject({ code: 'INVALID_REQUEST' })
+    expect(malformed.status).toBe(400)
+    await expect(malformed.json()).resolves.toMatchObject({ code: 'INVALID_REQUEST' })
 
-    const oversized = await app.request(`${baseUrl}/api/v1/tdx/verify`, {
-      headers: {
-        'x-tdx-client-id': 'x'.repeat(121),
-        'x-tdx-client-secret': 'secret',
-      },
+    const oversized = await app.request(`${baseUrl}/api/v1/eta`, {
+      headers: { Authorization: `Bearer ${'x'.repeat(8_193)}` },
     })
     expect(oversized.status).toBe(400)
     await expect(oversized.json()).resolves.toMatchObject({ code: 'INVALID_REQUEST' })
+  })
+
+  it('does not expose a Worker credential verification endpoint', async () => {
+    const response = await app.request(`${baseUrl}/api/v1/tdx/verify`)
+    expect(response.status).toBe(404)
   })
 })
 

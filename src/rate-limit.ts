@@ -3,14 +3,13 @@ import type { MiddlewareHandler } from 'hono'
 type RateLimitBindingName =
   | 'API_STANDARD_RATE_LIMITER'
   | 'API_EXPENSIVE_RATE_LIMITER'
-  | 'TDX_VERIFY_RATE_LIMITER'
 
 export type RateLimitBindings = Pick<CloudflareBindings, RateLimitBindingName>
 type Env = { Bindings: RateLimitBindings }
 
 export type ApiRateLimitPolicy = {
   binding: RateLimitBindingName
-  scope: 'standard' | 'expensive' | 'tdx-verify'
+  scope: 'standard' | 'expensive'
 }
 
 const NO_LIMIT_PATHS = new Set([
@@ -28,9 +27,6 @@ const EXPENSIVE_PATHS = new Set([
 export function apiRateLimitPolicy(method: string, pathname: string): ApiRateLimitPolicy | undefined {
   if (!pathname.startsWith('/api/')) return undefined
   if (NO_LIMIT_PATHS.has(pathname)) return undefined
-  if (pathname === '/api/v1/tdx/verify') {
-    return { binding: 'TDX_VERIFY_RATE_LIMITER', scope: 'tdx-verify' }
-  }
   if (
     EXPENSIVE_PATHS.has(pathname)
     || /^\/api\/v1\/map\/place\/[^/]+\/arrivals$/.test(pathname)

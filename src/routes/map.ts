@@ -29,7 +29,7 @@ import {
   searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, TDXServiceError, tdxRouteScope, withTDXBackgroundTasks, withUserTDX, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, TDXServiceError, tdxCredentialScope, tdxRouteScope, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv } from '../lib/tdx'
 import {
   ApiInputError,
   apiInputErrorBody,
@@ -39,7 +39,7 @@ import {
   parseJourneyEtaInput,
   parseOptionalDirection,
   parseRadius,
-  parseTdxCredentials,
+  parseTdxAccessToken,
   readJsonBody,
   requiredQueryString,
 } from '../lib/api-input'
@@ -50,13 +50,9 @@ import { renderMapPage } from '../map-page'
 type Env = { Bindings: TDXEnv & TransitBindings }
 const map = new Hono<Env>()
 
-// API 請求可帶使用者自備的 TDX 憑證(setup 頁進階設定),即時查詢改用他的額度。
+// 瀏覽器直接向 TDX 換 token；Worker 只接收短效 token，永遠不接觸 Client Secret。
 const tdxEnv = (c: Context<Env>) => {
-  const credentials = parseTdxCredentials(
-    c.req.header('x-tdx-client-id'),
-    c.req.header('x-tdx-client-secret'),
-  )
-  const env = withUserTDX(c.env, credentials?.clientId, credentials?.clientSecret)
+  const env = withUserTDXAccessToken(c.env, parseTdxAccessToken(c.req.header('Authorization')))
   try {
     const executionCtx = c.executionCtx
     return withTDXBackgroundTasks(env, (promise) => executionCtx.waitUntil(promise))
@@ -64,10 +60,6 @@ const tdxEnv = (c: Context<Env>) => {
     return env
   }
 }
-
-// 429 冷卻以「縣市+憑證來源」為範圍:共用池在冷卻時,自備憑證的人不必連坐,
-// 反過來他的 429 也不該冷卻到共用池。client_id 不是機密(secret 才是),當 key 沒問題。
-const tdxScope = (env: TDXEnv) => env.TDX_USER_CLIENT_ID ?? 'shared'
 
 const REALTIME_COOLDOWN_SECONDS = 60
 const LAST_REALTIME_SECONDS = 120
@@ -383,7 +375,7 @@ map.get('/api/v1/map/place/:placeId/routes', async (c) => {
 map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
   try {
     const env = tdxEnv(c)
-    const scope = tdxScope(env)
+    const scope = await tdxCredentialScope(env)
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
     const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)

@@ -10,11 +10,11 @@ import {
   setActiveBoard,
   setTdxAuth,
   syncActiveBoard,
-  tdxHeaders,
   writeBoards,
   type FavoriteBoard,
   type FavoriteBus,
 } from '../boards/store'
+import { clearTdxAccessTokenCache, tdxHeaders, verifyTdxCredentials } from '../tdx/client'
 import { attachScrollFade } from '../lib/scroll-fade'
 
 type RouteItem = {
@@ -241,7 +241,7 @@ async function loadRoutes() {
   try {
     const response = await fetch('/api/v1/routes?schema=2&city=' + encodeURIComponent(city.value), {
       cache: 'no-store',
-      headers: tdxHeaders(),
+      headers: await tdxHeaders(),
     })
     const body = await response.json() as { routes?: RouteItem[]; error?: string }
     if (!response.ok) throw new Error(body.error)
@@ -265,7 +265,7 @@ async function chooseRoute(route: RouteItem) {
   const params = new URLSearchParams({ city: city.value, route: route.routeName })
   if (route.routeUid) params.set('routeUid', route.routeUid)
   try {
-    const response = await fetch('/api/v1/stops?' + params, { headers: tdxHeaders() })
+    const response = await fetch('/api/v1/stops?' + params, { headers: await tdxHeaders() })
     const body = await response.json() as { groups?: DirectionGroup[]; error?: string }
     if (!response.ok) throw new Error(body.error)
     if (id !== requestId) return
@@ -332,7 +332,7 @@ async function loadSuggestions(group: DirectionGroup, stop: DirectionGroup['stop
   let suggestions: SuggestionBus[] = []
   try {
     const params = new URLSearchParams({ city: city.value, stop: stop.stopName, stopUid: stop.stopUid })
-    const response = await fetch('/api/v1/stop-routes?' + params, { headers: tdxHeaders() })
+    const response = await fetch('/api/v1/stop-routes?' + params, { headers: await tdxHeaders() })
     const body = await response.json() as { buses?: SuggestionBus[] }
     if (response.ok) suggestions = body.buses ?? []
   } catch {
@@ -492,12 +492,7 @@ tdxSave.onclick = async () => {
   tdxMessage.classList.remove('form-message-error')
   setTdxFieldValidity([])
   try {
-    const response = await fetch('/api/v1/tdx/verify', {
-      cache: 'no-store',
-      headers: { 'x-tdx-client-id': clientId, 'x-tdx-client-secret': clientSecret },
-    })
-    const body = await response.json() as { error?: string }
-    if (!response.ok) throw new Error(body.error)
+    await verifyTdxCredentials({ clientId, clientSecret })
     const persistence = tdxRemember.checked ? 'device' : 'session'
     setTdxAuth({ clientId, clientSecret }, persistence)
     tdxSecret.value = ''
@@ -509,6 +504,7 @@ tdxSave.onclick = async () => {
 }
 
 tdxRemove.onclick = () => {
+  clearTdxAccessTokenCache()
   clearTdxAuth()
   tdxId.value = ''
   tdxSecret.value = ''
@@ -523,6 +519,7 @@ renderTdx(consumeTdxAuthMigrationNotice()
 
 ;(document.querySelector('#clear-local-button') as HTMLButtonElement).onclick = () => {
   if (!confirm('確定清除所有本機資料？常用站牌、封面設定與 TDX 憑證會全部刪除，無法復原。')) return
+  clearTdxAccessTokenCache()
   clearLocalData()
   tdxId.value = ''
   tdxSecret.value = ''

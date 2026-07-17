@@ -10,7 +10,6 @@ function bindings(overrides: Partial<RateLimitBindings> = {}): RateLimitBindings
   return {
     API_STANDARD_RATE_LIMITER: rateLimiter(true),
     API_EXPENSIVE_RATE_LIMITER: rateLimiter(true),
-    TDX_VERIFY_RATE_LIMITER: rateLimiter(true),
     ...overrides,
   }
 }
@@ -22,10 +21,7 @@ describe('API rate-limit policy', () => {
     expect(apiRateLimitPolicy('GET', '/api/v1/map/locate')).toBeUndefined()
   })
 
-  it('uses dedicated policies for verification and expensive routes', () => {
-    expect(apiRateLimitPolicy('GET', '/api/v1/tdx/verify')).toEqual({
-      binding: 'TDX_VERIFY_RATE_LIMITER', scope: 'tdx-verify',
-    })
+  it('uses a dedicated policy for expensive routes', () => {
     expect(apiRateLimitPolicy('POST', '/api/v1/map/journey-eta')).toEqual({
       binding: 'API_EXPENSIVE_RATE_LIMITER', scope: 'expensive',
     })

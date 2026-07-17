@@ -6,7 +6,6 @@ import {
   getTdxAuthState,
   resetTdxAuthMemoryForTests,
   setTdxAuth,
-  tdxHeaders,
   type TdxAuth,
 } from './store'
 
@@ -59,10 +58,6 @@ describe('TDX browser credential lifecycle', () => {
     expect(JSON.parse(session.getItem(SESSION_KEY) ?? 'null')).toEqual(auth)
     expect(local.getItem(DEVICE_KEY)).toBeNull()
     expect(getTdxAuthState()).toEqual({ auth, persistence: 'session' })
-    expect(tdxHeaders()).toEqual({
-      'x-tdx-client-id': 'client-id',
-      'x-tdx-client-secret': 'client-secret',
-    })
   })
 
   it('uses localStorage only after explicit device opt-in', () => {

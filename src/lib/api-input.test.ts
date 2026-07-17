@@ -5,7 +5,7 @@ import {
   parseJourneyEtaInput,
   parseOptionalDirection,
   parseRadius,
-  parseTdxCredentials,
+  parseTdxAccessToken,
   readJsonBody,
 } from './api-input'
 
@@ -84,10 +84,11 @@ describe('query and credential boundaries', () => {
     expect(() => parseOptionalDirection('3')).toThrow(ApiInputError)
   })
 
-  it('requires a complete, bounded TDX credential pair', () => {
-    expect(parseTdxCredentials(undefined, undefined)).toBeNull()
-    expect(() => parseTdxCredentials('id', undefined)).toThrow(ApiInputError)
-    expect(() => parseTdxCredentials('x'.repeat(121), 'secret')).toThrow(ApiInputError)
-    expect(parseTdxCredentials(' id ', ' secret ', true)).toEqual({ clientId: 'id', clientSecret: 'secret' })
+  it('accepts only a bounded Bearer token', () => {
+    expect(parseTdxAccessToken(undefined)).toBeNull()
+    expect(parseTdxAccessToken('Bearer short-lived-token')).toBe('short-lived-token')
+    expect(() => parseTdxAccessToken('Basic credentials')).toThrow(ApiInputError)
+    expect(() => parseTdxAccessToken('Bearer token with spaces')).toThrow(ApiInputError)
+    expect(() => parseTdxAccessToken(`Bearer ${'x'.repeat(8_193)}`)).toThrow(ApiInputError)
   })
 })
