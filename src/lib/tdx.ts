@@ -158,6 +158,12 @@ export class TDXServiceError extends Error {
   }
 }
 
+export function isRejectedUserTdxToken(error: unknown, authorization?: string): boolean {
+  return Boolean(authorization)
+    && error instanceof TDXServiceError
+    && error.status === 401
+}
+
 export type TDXWarning = 'tdx-rate-limit' | 'tdx-quota' | 'tdx-unavailable'
 
 // 給使用者看的 TDX 異常說明,唯一的一份;SSR、API 錯誤與前端輪詢共用,改文案只改這裡。

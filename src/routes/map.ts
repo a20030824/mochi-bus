@@ -3,6 +3,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
+import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import { selectBestEta } from '../domain/map/eta'
 import { buildRouteTimetable } from '../domain/map/timetable'
 import {
@@ -29,7 +30,7 @@ import {
   searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, TDXServiceError, tdxCredentialScope, tdxRouteScope, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, TDXServiceError, tdxCredentialScope, tdxRouteScope, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv } from '../lib/tdx'
 import {
   ApiInputError,
   apiInputErrorBody,
@@ -629,6 +630,12 @@ function scheduleFields(schedules: ScheduleItem[], query: ScheduleQuery, now: Da
 function mapJsonError(c: Context<Env>, error: unknown, fallback: string) {
   if (error instanceof ApiInputError) {
     return c.json(apiInputErrorBody(error), error.status, { 'Cache-Control': 'no-store' })
+  }
+  if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) {
+    return c.json({
+      code: TDX_ACCESS_TOKEN_REJECTED_CODE,
+      error: TDX_ACCESS_TOKEN_REJECTED_MESSAGE,
+    }, 401, { 'Cache-Control': 'no-store' })
   }
   const isQueryError = error instanceof QueryValidationError
   return c.json({ error: isQueryError ? error.message : fallback }, isQueryError ? 400 : 502, {

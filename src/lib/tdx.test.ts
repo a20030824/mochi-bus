@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedBusQuery } from '../domain/bus-query'
-import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getRouteStopGroups, getTDXToken, mergeEquivalentStopGroups, resetTDXTestState, tdxCredentialScope, TDXServiceError, withUserTDXAccessToken, type StopGroup, type TDXEnv } from './tdx'
+import { fetchTDXJson, formatETALabel, formatStopStatus, getCommuteETA, getRouteStopGroups, getTDXToken, isRejectedUserTdxToken, mergeEquivalentStopGroups, resetTDXTestState, tdxCredentialScope, TDXServiceError, withUserTDXAccessToken, type StopGroup, type TDXEnv } from './tdx'
 
 describe('TDX presentation', () => {
   it('formats immediate arrivals', () => {
@@ -39,6 +39,15 @@ describe('withUserTDXAccessToken', () => {
     expect(first).not.toBe(second)
     expect(first).not.toContain('token-a')
     expect(second).not.toContain('token-b')
+  })
+})
+
+describe('user TDX token rejection', () => {
+  it('exposes a refresh signal only for an upstream 401 on a personal token request', () => {
+    expect(isRejectedUserTdxToken(new TDXServiceError('rejected', 401), 'Bearer personal-token')).toBe(true)
+    expect(isRejectedUserTdxToken(new TDXServiceError('shared rejected', 401))).toBe(false)
+    expect(isRejectedUserTdxToken(new TDXServiceError('forbidden', 403), 'Bearer personal-token')).toBe(false)
+    expect(isRejectedUserTdxToken(new Error('unrelated'), 'Bearer personal-token')).toBe(false)
   })
 })
 

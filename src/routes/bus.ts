@@ -7,12 +7,14 @@ import {
   toBusSearchParams,
   type BusQuery,
 } from '../domain/bus-query'
+import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
   getRouteCatalog,
   getRouteDetail,
   getRouteStopGroups,
   getStopRouteSuggestions,
+  isRejectedUserTdxToken,
   QueryResolutionError,
   resolveBusQuery,
   TDXServiceError,
@@ -368,6 +370,12 @@ function renderPageError(c: Context<Env>, error: unknown) {
 function jsonError(c: Context<Env>, error: unknown) {
   if (error instanceof ApiInputError) {
     return c.json(apiInputErrorBody(error), error.status, noStoreHeaders)
+  }
+  if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) {
+    return c.json({
+      code: TDX_ACCESS_TOKEN_REJECTED_CODE,
+      error: TDX_ACCESS_TOKEN_REJECTED_MESSAGE,
+    }, 401, noStoreHeaders)
   }
   if (!(error instanceof QueryValidationError || error instanceof QueryResolutionError)) {
     console.error('bus_api_failed', error)

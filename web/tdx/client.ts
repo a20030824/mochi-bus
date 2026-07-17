@@ -19,6 +19,17 @@ export async function tdxHeaders(): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${await accessTokenFor(auth)}` }
 }
 
+// 只淘汰「這次真的被拒絕」的 token。若多個 API 同時收到 401，第一個請求
+// 可能已換到新 token；後到的 401 不得把那顆新 token 一併清掉。
+export async function invalidateRejectedTdxAccessToken(authorization: string): Promise<void> {
+  const auth = getTdxAuth()
+  if (!auth) return
+  const rejectedToken = bearerToken(authorization)
+  if (!rejectedToken) return
+  const key = await credentialFingerprint(auth)
+  if (tokenCache.get(key)?.accessToken === rejectedToken) tokenCache.delete(key)
+}
+
 export async function verifyTdxCredentials(auth: TdxAuth): Promise<void> {
   const key = await credentialFingerprint(auth)
   tokenCache.delete(key)
@@ -123,4 +134,9 @@ function cacheToken(key: string, entry: TokenCacheEntry): void {
     if (oldest === undefined) break
     tokenCache.delete(oldest)
   }
+}
+
+function bearerToken(authorization: string): string | undefined {
+  const prefix = 'Bearer '
+  return authorization.startsWith(prefix) ? authorization.slice(prefix.length) || undefined : undefined
 }

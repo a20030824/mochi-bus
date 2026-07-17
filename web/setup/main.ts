@@ -14,7 +14,8 @@ import {
   type FavoriteBoard,
   type FavoriteBus,
 } from '../boards/store'
-import { clearTdxAccessTokenCache, tdxHeaders, verifyTdxCredentials } from '../tdx/client'
+import { requestMochiJson } from '../tdx/api-client'
+import { clearTdxAccessTokenCache, verifyTdxCredentials } from '../tdx/client'
 import { attachScrollFade } from '../lib/scroll-fade'
 
 type RouteItem = {
@@ -239,12 +240,11 @@ async function loadRoutes() {
   suggestionStep.hidden = true
   const id = ++requestId
   try {
-    const response = await fetch('/api/v1/routes?schema=2&city=' + encodeURIComponent(city.value), {
-      cache: 'no-store',
-      headers: await tdxHeaders(),
-    })
-    const body = await response.json() as { routes?: RouteItem[]; error?: string }
-    if (!response.ok) throw new Error(body.error)
+    const body = await requestMochiJson<{ routes?: RouteItem[] }>(
+      '/api/v1/routes?schema=2&city=' + encodeURIComponent(city.value),
+      { cache: 'no-store' },
+      { authenticated: true, fallback: '路線載入失敗' },
+    )
     if (id !== requestId) return
     routes = body.routes ?? []
     message.textContent = '共 ' + routes.length + ' 條路線'
@@ -265,9 +265,11 @@ async function chooseRoute(route: RouteItem) {
   const params = new URLSearchParams({ city: city.value, route: route.routeName })
   if (route.routeUid) params.set('routeUid', route.routeUid)
   try {
-    const response = await fetch('/api/v1/stops?' + params, { headers: await tdxHeaders() })
-    const body = await response.json() as { groups?: DirectionGroup[]; error?: string }
-    if (!response.ok) throw new Error(body.error)
+    const body = await requestMochiJson<{ groups?: DirectionGroup[] }>(
+      '/api/v1/stops?' + params,
+      {},
+      { authenticated: true, fallback: '站牌載入失敗' },
+    )
     if (id !== requestId) return
     routePicker.hidden = true
     renderDirections(body.groups ?? [])
@@ -332,9 +334,12 @@ async function loadSuggestions(group: DirectionGroup, stop: DirectionGroup['stop
   let suggestions: SuggestionBus[] = []
   try {
     const params = new URLSearchParams({ city: city.value, stop: stop.stopName, stopUid: stop.stopUid })
-    const response = await fetch('/api/v1/stop-routes?' + params, { headers: await tdxHeaders() })
-    const body = await response.json() as { buses?: SuggestionBus[] }
-    if (response.ok) suggestions = body.buses ?? []
+    const body = await requestMochiJson<{ buses?: SuggestionBus[] }>(
+      '/api/v1/stop-routes?' + params,
+      {},
+      { authenticated: true },
+    )
+    suggestions = body.buses ?? []
   } catch {
     // 同站其他公車只是加分項,失敗就只留目前選擇的那一班。
   }

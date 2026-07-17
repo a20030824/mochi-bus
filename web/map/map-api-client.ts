@@ -1,6 +1,6 @@
 import type { TransferEstimate } from '../../src/domain/map/transfer-estimate'
 import type { EtaSource } from '../lib/eta-presentation'
-import { tdxHeaders } from '../tdx/client'
+import { requestMochiJson } from '../tdx/api-client'
 
 export type RegionCode = 'north' | 'central' | 'south' | 'east' | 'islands'
 
@@ -164,8 +164,6 @@ export type JourneyEtaEstimate = {
   source?: EtaSource
 }
 
-type ErrorPayload = { error?: string }
-
 export const mapApi = {
   async cities(): Promise<MapCity[]> {
     const data = await requestJson<{ cities?: MapCity[] }>('/api/v1/map/cities', {}, false, '地圖初始化失敗')
@@ -325,12 +323,5 @@ async function requestJson<T>(
   authenticated = false,
   fallback = '資料讀取失敗',
 ): Promise<T> {
-  const headers = new Headers(init.headers)
-  if (authenticated) {
-    for (const [name, value] of Object.entries(await tdxHeaders())) headers.set(name, value)
-  }
-  const response = await fetch(url, { ...init, headers })
-  const data = await response.json() as T & ErrorPayload
-  if (!response.ok) throw new Error(data.error || fallback)
-  return data
+  return requestMochiJson<T>(url, init, { authenticated, fallback })
 }
