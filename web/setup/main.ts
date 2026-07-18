@@ -128,6 +128,7 @@ function renderBoards() {
   const value = boards()
   const active = activeBoardId()
   boardList.replaceChildren()
+  boardList.classList.toggle('has-boards', value.length > 0)
   addBoardButton.classList.toggle('empty-state', value.length === 0)
   if (!value.length) {
     boardList.innerHTML = '<p class="empty">這裡還空著，加一塊常用站牌吧。</p>'
@@ -142,6 +143,7 @@ function renderBoards() {
     const titleLine = document.createElement('div')
     titleLine.className = 'board-title-line'
     const title = document.createElement('strong')
+    title.className = 'favorite-stop-name'
     title.textContent = board.title
     titleLine.appendChild(title)
     if (board.id === active) {
@@ -151,6 +153,7 @@ function renderBoards() {
       titleLine.appendChild(status)
     }
     const detail = document.createElement('span')
+    detail.className = 'favorite-route-number'
     const ambiguous = board.buses.some((bus) => bus.identityStatus === 'legacy-ambiguous')
     detail.textContent = board.buses.map((bus) => bus.routeName).join('、') + (ambiguous ? ' · 需重新選擇路線' : '')
     copy.replaceChildren(titleLine, detail)
@@ -158,6 +161,7 @@ function renderBoards() {
     actions.className = 'item-actions'
     if (board.id !== active) {
       const show = document.createElement('button')
+      show.className = 'board-cover-action'
       show.textContent = '顯示在封面'
       show.onclick = () => {
         setActiveBoard(board.id)
@@ -166,6 +170,7 @@ function renderBoards() {
       actions.appendChild(show)
     }
     const remove = document.createElement('button')
+    remove.className = 'board-delete-action'
     remove.textContent = '刪除'
     remove.onclick = () => {
       const current = boards()

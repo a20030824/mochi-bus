@@ -91,9 +91,16 @@ test.describe('ETA page', () => {
     await page.goto('/')
 
     await expect(page.locator('.eta-copy:not(.eta-copy-exit)')).toContainText('約10分')
+    const estimatedColors = await page.locator('.eta-copy:not(.eta-copy-exit)').evaluate((copy) =>
+      ['.eta-prefix', '.eta-value', '.eta-suffix'].map((selector) =>
+        getComputedStyle(copy.querySelector(selector)!).color))
+    expect(new Set(estimatedColors)).toEqual(new Set(['rgb(107, 99, 89)']))
     await expect(page.locator('#notice')).toContainText('即時查詢暫時受限')
     await expect(page.locator('#notice').getByRole('link', { name: '檢查 TDX 設定' })).toHaveAttribute('href', '/setup')
     await expect(page.getByRole('button', { name: '重新整理' })).toBeEnabled()
+    const footerHeights = await page.locator('.eta-footer-actions > *').evaluateAll((controls) =>
+      controls.map((control) => control.getBoundingClientRect().height))
+    expect(footerHeights).toEqual([44, 44])
   })
 
   test('offers credential recovery on the homepage when the replacement token is rejected', async ({ page }) => {

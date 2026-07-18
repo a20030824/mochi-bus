@@ -21,6 +21,7 @@ test('softens marquee text at the fixed sign edges', async ({ page }) => {
   expect(layers.signMask).toBe('none')
   expect(layers.textMask).toContain('32px')
   expect(layers.textureBackground).toContain('repeating-linear-gradient')
+  await expect(sign).toHaveCSS('margin-bottom', '30px')
   await expect(sign).toHaveScreenshot('home-marquee.png', {
     animations: 'disabled',
     caret: 'hide',
