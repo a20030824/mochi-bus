@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import bus from './routes/bus'
+import health from './routes/health'
 import map from './routes/map'
 import { cspViolationSummaries, httpsRedirectTarget, securityHeaders } from './security'
 import { apiRateLimit } from './rate-limit'
@@ -37,6 +38,7 @@ app.post('/api/v1/csp-report', bodyLimit({
   return c.body(null, 204, { 'Cache-Control': 'no-store' })
 })
 
+app.route('/', health)
 app.route('/', map)
 app.route('/', bus)
 

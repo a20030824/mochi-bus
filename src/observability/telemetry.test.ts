@@ -15,6 +15,7 @@ function validEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryEnvelo
     event: 'api_operation_completed',
     releaseSha: null,
     workerVersionId: null,
+    workerCreatedAt: null,
     deploymentId: null,
     city: 'Taipei',
     operation: 'map_routes',
@@ -47,6 +48,7 @@ describe('telemetry contract', () => {
     expect(parseTelemetryEvent({ ...validEvent(), operation: 'arbitrary_path' })).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), result: 'ok' })).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), sampleProbability: 0 })).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validEvent(), releaseSha: '0123456' })).toBeUndefined()
   })
 
   it.each([

@@ -1,6 +1,6 @@
 # Mochi Bus 生產可觀測性與故障復原審計 — 2026-07-19
 
-> 本文件記錄唯讀審計結論、隱私安全 telemetry contract 與分批實作順序。審計本身不導入第三方平台；執行從 Phase A1 的共用 schema 與隱私邊界開始。
+> 本文件記錄唯讀審計結論、隱私安全 telemetry contract 與分批實作順序。A1 已以 `b13057c` 獨立提交並推送；A2 正在建立 Worker release identity，仍不導入第三方平台。
 
 ## 1. 結論
 
@@ -39,7 +39,7 @@ flowchart LR
   DECIDE -. Worker rollback .-> W
 ```
 
-必要因果鍵為 `releaseSha + workerVersionId/deploymentId + city + snapshotVersion + operation`。缺少其中任一層時，只能知道「有錯」，不能可靠判斷是 release、城市資料、artifact、TDX 或瀏覽器造成。
+必要因果鍵為 `releaseSha + workerVersionId + city + snapshotVersion + operation`；`deploymentId` 只有在 CI／Cloudflare deployment API 能可靠提供時才加入。缺少 release 或 snapshot 軸時，只能知道「有錯」，不能可靠判斷是 Worker、城市資料、artifact、TDX 或瀏覽器造成。
 
 ## 3. 現有能力與盲區
 
@@ -85,7 +85,8 @@ Cloudflare 現行建議以 object 形式寫入結構化 JSON，讓 Workers Logs 
 | `event` | allowlist event name |
 | `releaseSha` | Git SHA 或 `null`；A2 才注入 |
 | `workerVersionId` | Cloudflare Worker version ID 或 `null`；A2 才注入 |
-| `deploymentId` | deploy/run identity 或 `null`；A2 才注入 |
+| `workerCreatedAt` | Version Metadata timestamp 的正規化 ISO 時間或 `null`；A2 才注入 |
+| `deploymentId` | 本輪固定 `null`；不得用 Worker version ID 冒充 deployment ID |
 | `city` | 22 個 TDX city code 之一或 `null` |
 | `operation` | allowlist operation；不得使用完整 path/URL |
 | `result` | `success | degraded | empty | error` |
@@ -225,7 +226,7 @@ Phase A1 event allowlist：`api_operation_completed`、`tdx_resolution_completed
 每項可獨立由 High 處理的小 PR：
 
 1. **A1 telemetry schema/privacy boundary**：allowlist enums、common envelope、禁止欄位 validator、safe fingerprint、fail-open emitter、單元測試；不接產品路由。
-2. **A2 release identity**：Cloudflare Version Metadata binding、release SHA/deployment ID 注入與 smoke identity。參考：[Version metadata binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/version-metadata/)。
+2. **A2 release identity**：Cloudflare Version Metadata binding、完整 Git SHA version tag、唯讀 release endpoint 與 telemetry envelope builder；`deploymentId` 固定 `null`，不包含 post-deploy smoke。參考：[Version metadata binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/version-metadata/)。
 3. **A3 API/TDX completion**：先接 map routes、place arrivals、vehicles、journey ETA；每次 operation 一個 completion event，同 cohort success denominator。
 4. **A4 rollback authority**：D1 為服務權威，rollback 後同步 R2 state，加入 divergence test。
 5. **A5 snapshot window records**：weekly window outcome 與 07:30 close 判定。
@@ -254,8 +255,9 @@ Phase A1 event allowlist：`api_operation_completed`、`tdx_resolution_completed
 
 | 批次 | 狀態 | 驗證 |
 | --- | --- | --- |
-| A1 telemetry schema/privacy boundary | 已完成本機實作與驗證 | `src/observability/telemetry.ts`；targeted 28/28；完整 check 54 files、354 tests、typecheck、build、Worker dry-run 通過；尚未接任何產品 callsite |
-| A2–A10 | 已排程，未開始 | 各批保持可獨立 review/rollback |
+| A1 telemetry schema/privacy boundary | 已提交並推送（`b13057c`） | `src/observability/telemetry.ts`；完整 check 54 files、354 tests、typecheck、build、Worker dry-run 通過；沒有產品 callsite |
+| A2 release identity | 本機實作與 review/check 完成，待獨立提交 | Version Metadata binding、生成型別、release helper/endpoint、CI full-SHA tag/message；targeted 53/53、完整 check 55 files/367 tests、typecheck、build、Worker dry-run 與含 tag/message 的 deploy dry-run 通過 |
+| A3–A10 | 已排程，未開始 | 各批保持可獨立 review/rollback |
 | Phase B/C | 未開始 | 等 Phase A 事件量與操作需求證明 |
 
 ## 12. 最值得先實作的三項

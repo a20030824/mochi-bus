@@ -17,6 +17,7 @@ function bindings(overrides: Partial<RateLimitBindings> = {}): RateLimitBindings
 describe('API rate-limit policy', () => {
   it('leaves pages and lightweight metadata endpoints unmetered', () => {
     expect(apiRateLimitPolicy('GET', '/')).toBeUndefined()
+    expect(apiRateLimitPolicy('GET', '/api/v1/health/release')).toBeUndefined()
     expect(apiRateLimitPolicy('GET', '/api/v1/map/cities')).toBeUndefined()
     expect(apiRateLimitPolicy('GET', '/api/v1/map/locate')).toBeUndefined()
   })

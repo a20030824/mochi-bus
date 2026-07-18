@@ -13,6 +13,7 @@ export type ApiRateLimitPolicy = {
 }
 
 const NO_LIMIT_PATHS = new Set([
+  '/api/v1/health/release',
   '/api/v1/map/cities',
   '/api/v1/map/locate',
 ])

@@ -1,4 +1,5 @@
 import { supportedCities } from '../config'
+import type { ReleaseIdentity } from './release-identity'
 
 export const TELEMETRY_EVENT_SCHEMA = 1 as const
 
@@ -119,6 +120,7 @@ export type TelemetryEnvelope = Readonly<{
   event: TelemetryEventName
   releaseSha: string | null
   workerVersionId: string | null
+  workerCreatedAt: string | null
   deploymentId: string | null
   city: TelemetryCity | null
   operation: TelemetryOperation
@@ -135,6 +137,10 @@ export type TelemetryEnvelope = Readonly<{
 }>
 
 export type TelemetrySink = (event: TelemetryEnvelope) => void
+export type TelemetryEnvelopeFields = Omit<
+  TelemetryEnvelope,
+  'releaseSha' | 'workerVersionId' | 'workerCreatedAt' | 'deploymentId'
+>
 
 type AllowedKey = keyof TelemetryEnvelope
 
@@ -143,6 +149,7 @@ const allowedKeys = new Set<AllowedKey>([
   'event',
   'releaseSha',
   'workerVersionId',
+  'workerCreatedAt',
   'deploymentId',
   'city',
   'operation',
@@ -163,6 +170,7 @@ const requiredKeys = new Set<AllowedKey>([
   'event',
   'releaseSha',
   'workerVersionId',
+  'workerCreatedAt',
   'deploymentId',
   'city',
   'operation',
@@ -189,9 +197,10 @@ const trafficClasses = new Set<string>(telemetryTrafficClasses)
 const httpStatusClasses = new Set<string>(telemetryHttpStatusClasses)
 
 const safeIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
-const safeReleaseSha = /^[a-f0-9]{7,64}$/i
+const safeReleaseSha = /^[a-f0-9]{40}$/
 const safeErrorFingerprint = /^err_[a-f0-9]{16}$/
 const sensitiveMarker = /(?:authorization|bearer\s|client[ _-]?secret|access[ _-]?token|cf-connecting-ip)/i
+const safeIsoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 const allowedErrorTypes = new Set([
   'Error',
   'TypeError',
@@ -213,6 +222,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
     if (!enumValue(value.event, events)) return undefined
     if (!nullableIdentifier(value.releaseSha, safeReleaseSha)) return undefined
     if (!nullableIdentifier(value.workerVersionId, safeIdentifier)) return undefined
+    if (!nullableIdentifier(value.workerCreatedAt, safeIsoTimestamp)) return undefined
     if (!nullableIdentifier(value.deploymentId, safeIdentifier)) return undefined
     if (!(value.city === null || enumValue(value.city, cityCodes))) return undefined
     if (!enumValue(value.operation, operations)) return undefined
@@ -232,6 +242,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
       event: value.event as TelemetryEventName,
       releaseSha: value.releaseSha as string | null,
       workerVersionId: value.workerVersionId as string | null,
+      workerCreatedAt: value.workerCreatedAt as string | null,
       deploymentId: value.deploymentId as string | null,
       city: value.city as TelemetryCity | null,
       operation: value.operation as TelemetryOperation,
@@ -245,6 +256,23 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
       sampleProbability: value.sampleProbability as number,
       failureClass: value.failureClass as TelemetryFailureClass,
       ...(value.errorFingerprint === undefined ? {} : { errorFingerprint: value.errorFingerprint as string }),
+    })
+  } catch {
+    return undefined
+  }
+}
+
+export function createTelemetryEnvelope(
+  identity: ReleaseIdentity,
+  fields: TelemetryEnvelopeFields,
+): TelemetryEnvelope | undefined {
+  try {
+    return parseTelemetryEvent({
+      ...fields,
+      releaseSha: identity.releaseSha,
+      workerVersionId: identity.workerVersionId,
+      workerCreatedAt: identity.workerCreatedAt,
+      deploymentId: identity.deploymentId,
     })
   } catch {
     return undefined

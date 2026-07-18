@@ -29,6 +29,21 @@ describe('worker entry (Workers runtime)', () => {
     expect(body.cities.length).toBeGreaterThan(0)
   })
 
+  it('exposes only the uncached Worker release identity', async () => {
+    const response = await SELF.fetch('https://example.com/api/v1/health/release')
+    const body = await response.json<Record<string, unknown>>()
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(Object.keys(body).sort()).toEqual([
+      'releaseSha',
+      'schemaVersion',
+      'workerCreatedAt',
+      'workerVersionId',
+    ])
+    expect(body.schemaVersion).toBe(1)
+  })
+
   it('rejects an oversized journey-eta body with 413 before parsing JSON', async () => {
     const response = await SELF.fetch('https://example.com/api/v1/map/journey-eta', {
       method: 'POST',
