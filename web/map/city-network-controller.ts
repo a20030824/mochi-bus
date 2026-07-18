@@ -23,10 +23,12 @@ type CityNetworkControllerOptions = {
   isStaleRequest: (requestId: number) => boolean
   loadNetwork: (city: string, signal?: AbortSignal) => Promise<CityNetwork>
   setStatus: (text: string, error?: boolean) => void
+  clearStatus: () => void
 }
 
 export function createCityNetworkController(options: CityNetworkControllerOptions) {
   let visible = false
+  let loading = false
   let cache: { city: string; data: CityNetwork; index: NetworkIndex } | undefined
   let stopMarkers: L.CircleMarker[] = []
   let hoverLine: LeafletGeoJSON | undefined
@@ -48,11 +50,15 @@ export function createCityNetworkController(options: CityNetworkControllerOption
   options.map.on('mouseout', clearHover)
 
   async function toggle(city: NetworkCity): Promise<void> {
-    if (visible) {
+    if (visible || loading) {
       hide()
       return
     }
     const { requestId, signal } = options.beginRequest()
+    loading = true
+    options.button.classList.add('active')
+    options.button.setAttribute('aria-pressed', 'true')
+    options.button.setAttribute('aria-busy', 'true')
     options.setStatus('正在展開整個城市路網…')
     try {
       let entry = cache
@@ -75,6 +81,15 @@ export function createCityNetworkController(options: CityNetworkControllerOption
     } catch (error) {
       if (options.isStaleRequest(requestId)) return
       options.setStatus(error instanceof Error && error.message ? error.message : '全路網讀取失敗', true)
+    } finally {
+      if (!options.isStaleRequest(requestId)) {
+        loading = false
+        options.button.removeAttribute('aria-busy')
+        if (!visible) {
+          options.button.classList.remove('active')
+          options.button.setAttribute('aria-pressed', 'false')
+        }
+      }
     }
   }
 
@@ -118,12 +133,15 @@ export function createCityNetworkController(options: CityNetworkControllerOption
 
   function hide(): void {
     options.cancelRequest()
+    loading = false
     clearHover()
     options.layer.clearLayers()
     stopMarkers = []
     visible = false
     options.button.classList.remove('active')
     options.button.setAttribute('aria-pressed', 'false')
+    options.button.removeAttribute('aria-busy')
+    options.clearStatus()
   }
 
   function pickAt(latlng: L.LatLng, routePixels: number, placePixels: number): ResolvedNetworkPick | undefined {

@@ -296,6 +296,7 @@ const cityNetwork = createCityNetworkController({
   isStaleRequest: (requestId) => networkRequests.isStale(requestId),
   loadNetwork: mapApi.network,
   setStatus,
+  clearStatus,
 })
 
 function browserStorage(): Storage | undefined {

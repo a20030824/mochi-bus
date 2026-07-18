@@ -195,6 +195,37 @@ test('loading the city network does not cancel an unrelated route request', asyn
   await expect(drawer.getByRole('heading', { name: 'A', exact: true })).toBeVisible()
 })
 
+test('closing the city network while it loads cancels the overlay and clears its status', async ({ page }) => {
+  await mockBaseMap(page)
+  const networkResponse = deferred()
+  const networkRequested = deferred()
+  await page.route(/\/api\/v1\/map\/network(?:\?|$)/, async (route) => {
+    networkRequested.release()
+    await networkResponse.promise
+    await safelyFulfill(route, { network: { version: 'test', routes: [], places: [] } })
+  })
+
+  await page.goto('/map?city=Tainan')
+  const network = page.getByRole('button', { name: '切換全路網與全部站點' })
+  const status = page.locator('#map-status')
+  await network.click()
+  await networkRequested.promise
+  await expect(network).toHaveAttribute('aria-pressed', 'true')
+  await expect(network).toHaveAttribute('aria-busy', 'true')
+  await expect(status).toHaveText('正在展開整個城市路網…')
+
+  await network.click()
+  await expect(network).toHaveAttribute('aria-pressed', 'false')
+  await expect(network).not.toHaveAttribute('aria-busy')
+  await expect(status).toHaveAttribute('aria-hidden', 'true')
+  await expect(status).toHaveText('')
+
+  networkResponse.release()
+  await page.waitForTimeout(150)
+  await expect(network).toHaveAttribute('aria-pressed', 'false')
+  await expect(status).toHaveAttribute('aria-hidden', 'true')
+})
+
 test('late shared-trip hydration cannot replace the catalogue reached with Back', async ({ page }) => {
   await mockBaseMap(page)
   const placeResponses = deferred()
