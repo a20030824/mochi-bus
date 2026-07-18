@@ -1,7 +1,7 @@
 # Mochi Bus 使用邏輯與互動流程審計 — 2026-07-18
 
 > 本文件記錄 2026-07-18 的唯讀使用邏輯審計，並作為後續修復與回歸測試的執行藍圖。
-> 狀態：第一輪修復已提交為 `e371914`；修復後反向驗證的追補修正已於本機完成，尚未另行 commit、push 或部署。
+> 狀態：8 項產品問題與測試矩陣缺口已完成修復；第一輪為 `e371914`，反向驗證追補為 `e372663`，皆已推送並部署。Production 目前為包含兩者的 `80fa855`。
 
 ## 1. 紀錄資訊
 
@@ -9,11 +9,11 @@
 | --- | --- |
 | 專案 | Mochi Bus / mochi-tools |
 | 稽核日期 | 2026-07-18（Asia/Taipei） |
-| 稽核版本 | main @ 24fc827 |
+| 稽核版本 | 原始稽核：main @ 24fc827；修復：e371914 + e372663；目前 production：80fa855 |
 | 稽核型態 | 唯讀的使用流程、狀態轉移、非同步競態、錯誤恢復與 Playwright 覆蓋審計 |
 | 稽核視角 | 從使用者實際操作順序檢查跨入口等價性，不是單檔 code review |
-| 本次變更 | 第一輪修復為 `e371914`；本文件末尾另記錄該 commit 反向驗證後的未提交追補修正 |
-| 驗證基線 | 追補修正後 `npm test`：51 個測試檔、316/316 tests；desktop 75/75、touch 25/25、visual 6/6 |
+| 本次變更 | 第一輪修復為 `e371914`；反向驗證追補為 `e372663`；兩者均已進入 main，並由後續 `80fa855` production deploy 帶上線 |
+| 驗證基線 | `e372663`：51 個測試檔、316/316 tests，desktop 75/75、touch 25/25、visual 6/6；目前 `80fa855` 本機重驗：53 個測試檔、326/326 tests、typecheck、build 通過 |
 | 互動驗證限制 | 本輪沒有可用的互動瀏覽器工作階段；確認存在項目由控制流程或資料契約直接證明，競態項目列為可重現風險，未冒充真人點擊重現 |
 
 ## 2. 分類規則
@@ -102,15 +102,15 @@ stateDiagram-v2
 
 | ID | 分類 | 等級 | 問題 | 主要位置 | 建議階段 | 狀態 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ULA-001 | 確認存在 | P0 | 地圖 URL、畫面返回、Back/Forward 與 reload 不一致 | web/map/main.ts | Phase 2 | 本機已修復驗證，未部署 |
-| ULA-002 | 確認存在 | P1 | setup wizard 的 UI back 與 Browser Back 不等價 | web/setup/main.ts | Phase 3 | 本機已修復驗證，未部署 |
-| ULA-003 | 確認存在 | P1 | setup 與地圖收藏同一站牌，首頁 Map 入口不同 | web/setup/main.ts、web/boards/store.ts、web/eta/main.ts | Phase 3 | 本機已修復驗證，未部署 |
-| ULA-004 | 確認存在 | P0 | 地圖初始化失敗無 retry；短橫向看不到錯誤 | web/map/main.ts、web/map/style.css | Phase 1 | 本機已修復驗證，未部署 |
-| ULA-005 | 可重現風險 | P0 | 返回／取消未使 route、nearby、trip 請求失效 | web/map/main.ts、src/domain/map/nav-request.ts | Phase 0 | 本機已修復驗證，未部署 |
-| ULA-006 | 可重現風險 | P0 | 舊路線 vehicle 回應可覆蓋新路線 | web/map/main.ts、web/map/map-api-client.ts | Phase 0 | 本機已修復驗證，未部署 |
-| ULA-007 | 確認存在 | P0 | token rejected 與 rate-limit 被降級流程吞掉 | src/routes/map.ts、src/lib/tdx.ts、web/tdx/api-client.ts | Phase 1 | 本機已修復驗證，未部署 |
-| ULA-008 | 確認存在 | P0 | Journey 丟失起點發車／班距語意並拿來判斷轉乘 | src/domain/map/journey-estimate.ts、src/domain/map/transfer-estimate.ts | Phase 0 | 本機已修復驗證，未部署 |
-| ULA-TEST-001 | 測試風險 | P1 | Playwright 缺跨入口、history、offline、visibility 與真 touch project | playwright.config.ts、test/e2e | Phase 0-4 | 本機已修復驗證，未部署 |
+| ULA-001 | 確認存在 | P0 | 地圖 URL、畫面返回、Back/Forward 與 reload 不一致 | web/map/main.ts | Phase 2 | 已修復並部署（e371914 + e372663） |
+| ULA-002 | 確認存在 | P1 | setup wizard 的 UI back 與 Browser Back 不等價 | web/setup/main.ts | Phase 3 | 已修復並部署（e371914 + e372663） |
+| ULA-003 | 確認存在 | P1 | setup 與地圖收藏同一站牌，首頁 Map 入口不同 | web/setup/main.ts、web/boards/store.ts、web/eta/main.ts | Phase 3 | 已修復並部署（e371914 + e372663） |
+| ULA-004 | 確認存在 | P0 | 地圖初始化失敗無 retry；短橫向看不到錯誤 | web/map/main.ts、web/map/style.css | Phase 1 | 已修復並部署（e371914） |
+| ULA-005 | 可重現風險 | P0 | 返回／取消未使 route、nearby、trip 請求失效 | web/map/main.ts、src/domain/map/nav-request.ts | Phase 0 | 已修復並部署（e371914 + e372663） |
+| ULA-006 | 可重現風險 | P0 | 舊路線 vehicle 回應可覆蓋新路線 | web/map/main.ts、web/map/map-api-client.ts | Phase 0 | 已修復並部署（e371914 + e372663） |
+| ULA-007 | 確認存在 | P0 | token rejected 與 rate-limit 被降級流程吞掉 | src/routes/map.ts、src/lib/tdx.ts、web/tdx/api-client.ts | Phase 1 | 已修復並部署（e371914 + e372663） |
+| ULA-008 | 確認存在 | P0 | Journey 丟失起點發車／班距語意並拿來判斷轉乘 | src/domain/map/journey-estimate.ts、src/domain/map/transfer-estimate.ts | Phase 0 | 已修復並部署（e371914 + e372663） |
+| ULA-TEST-001 | 測試風險 | P1 | Playwright 缺跨入口、history、offline、visibility 與真 touch project | playwright.config.ts、test/e2e | Phase 0-4 | 已修復並部署（e371914 + e372663） |
 
 ## 7. 詳細問題
 
@@ -519,13 +519,13 @@ stateDiagram-v2
 | --- | --- |
 | loading | city、route、place、timetable 等主要流程多有 loading 文案或 skeleton |
 | empty | nearby、direct、transfer、timetable 多有明確 empty 文案與父層出口 |
-| error | 多數 map request 有 retry；初始化失敗亦已於本機補上可見 error drawer 與原地 retry，尚未部署 |
+| error | 多數 map request 有 retry；初始化失敗已提供可見 error drawer 與原地 retry，已部署 |
 | stale | ETA 以稍早標示，方向正確 |
-| estimated | 一般 ETA 以約標示；Journey 起點發車／班距語意已於本機修復，尚未部署 |
-| offline | 初始化離線失敗已於本機支援 online 後原地 retry；進入應用後多數 request 可手動 retry；尚未部署 |
-| rate-limited | 本機已保留 stale/schedule rows 並顯示警示、retry、setup；尚未部署 |
-| token rejected | 本機已恢復 coded-401、單次換 token／重送及 setup recovery；尚未部署 |
-| 今日無班次／班距 | timetable 與 Journey 卡片皆已能區分；Journey 修復尚未部署 |
+| estimated | 一般 ETA 以約標示；Journey 已區分起點發車與班距語意，已部署 |
+| offline | 初始化離線失敗支援 online 後原地 retry；進入應用後多數 request 可手動 retry；已部署 |
+| rate-limited | 保留 stale/schedule rows 並顯示警示、retry、setup；已部署 |
+| token rejected | 已恢復 coded-401、單次換 token／重送及 setup recovery；已部署 |
+| 今日無班次／班距 | timetable 與 Journey 卡片皆已能區分，已部署 |
 
 ## 9. 手機與桌面
 
@@ -613,7 +613,7 @@ flowchart LR
 - vehicle polling 已使用獨立 epoch 與 `AbortController`；停止或切換路線後，舊回應不能再清空／重畫目前 vehicle layer。
 - 新增 `test/e2e/map-async-navigation.spec.ts`，deterministic 覆蓋 route 返回、trip 取消與 A→B vehicle late response 三條操作序列。
 - 本機驗證：`npm test` 51 files／309 tests 通過；`npm run typecheck` 通過；`npm run build:map` 通過；相關 Playwright 8 tests（3 條新競態測試＋5 條既有 route/trip 測試）通過。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並隨 main production deploy 上線。
 
 **驗收條件**
 
@@ -637,7 +637,7 @@ flowchart LR
 - 轉乘的 `likely`／`tight`／`missed` 只接受可靠即時本站到站；schedule、stale、departure-only、headway 與 next-day 都維持 `unknown`，卡片顯示車程＋步行範圍並註明未含候車。
 - 新增 `test/e2e/map-journey-semantics.spec.ts`，實際覆蓋班距卡片與 schedule-only 轉乘不產生假銜接結論。
 - 本機驗證：`npm test` 51 files／314 tests 通過；`npm run typecheck` 通過；`npm run build:map` 通過；相關 Playwright 5 tests（2 條新 Journey 語意測試＋3 條既有 direct/transfer 測試）通過。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並由 `e372663` 追補後上線。
 
 **驗收條件**
 
@@ -665,7 +665,7 @@ flowchart LR
 - map 站牌 drawer 與首頁 ETA 會在保留 stale/schedule 資料時明確顯示即時資料受限，並提供 retry 與 `/setup`；token rejected 也提供相同復原出口，不再靜默降級。
 - 新增 `src/tdx-api-contract.test.ts`、map client contract test、`test/e2e/map-degraded-data.spec.ts` 與首頁 degraded/rejected Playwright 情境。
 - 本機驗證：`npm test` 52 files／316 tests 通過；`npm run typecheck` 通過；`npm run build:map` 通過；相關 Playwright 10 tests 通過；`git diff --check` 通過。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並由 `e372663` 追補後上線。
 
 **驗收條件**
 
@@ -689,7 +689,7 @@ flowchart LR
 - 新增 `test/e2e/map-bootstrap-recovery.spec.ts`，使用 636×381 短橫向 viewport 驗證錯誤標題與 retry 均可見、可操作，且 URL 維持 `/map`。
 - Phase 0B 對 schedule-only 轉乘文案的刻意修正亦已同步更新既有 `map-trip-results` 視覺基準；核對後內容為「車程＋步行」與「未含候車與路況」，不是本階段版面回歸。
 - 本機驗證：`npm test` 52 files／316 tests 通過；`npm run typecheck` 通過；`npm run build:map` 通過；bootstrap、短橫向與 map visual Playwright 6 tests 通過；`git diff --check` 通過。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並隨 main production deploy 上線。
 
 **驗收條件**
 
@@ -722,7 +722,7 @@ flowchart LR
 - 新增 `test/e2e/map-navigation-equivalence.spec.ts`，覆蓋 catalogue 搜尋／捲動 → route、overview → region → catalogue、nearby → place 的 drawer back／Browser Back／Forward／reload 等價性。
 - 新增／擴充 `test/e2e/map-navigation-equivalence.spec.ts` 與 `test/e2e/map-direct.spec.ts`，覆蓋 UI back、Browser Back／Forward、reload、深連結父層、無 history.state 的 trip 分享還原，以及 search/category/scroll preservation。
 - 最終本機驗證：`npm test` 51 files／311 tests 通過；`npm run typecheck` 與 `npm run build:map` 通過；完整 Playwright 66 tests 通過；`git diff --check` 通過。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並由 `e372663` 反向驗證追補後上線。
 
 **驗收條件**
 
@@ -751,7 +751,7 @@ flowchart LR
 - 換縣市會清除 route／stop／suggestion 下游狀態並啟動新 request epoch；關閉 picker、連續返回或舊回應晚到都不會重新打開已離開步驟。
 - 初始 `/setup` 不搶焦點；只有 Escape、關閉或 popstate 回到 closed 時，才將焦點還給「新增常用站牌」。既有 setup 視覺快照維持不變。
 - `test/e2e/setup.spec.ts` golden path 已覆蓋 routes → stops → suggestions 的 Browser Back／Forward、UI back、reload 與 filter preservation。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並由 `e372663` 強化後上線。
 
 #### PR 3B：Favorite place identity
 
@@ -765,7 +765,7 @@ flowchart LR
 - setup suggestion snapshot 保留 place identity；使用者儲存看板時一併寫入 board-level `city`、`placeId`、`latitude`、`longitude`，首頁因此能產生 `/map?city=…&place=…` 直達站牌連結。
 - 新增 repository 單元測試，鎖定 prepared statement join 與 bind 參數；Playwright 以同一站實際走完「setup 收藏 → 首頁 → 地圖」及「地圖收藏 → 首頁 → 地圖」，斷言 href、最終 URL 與站牌 heading 完全相同。
 - Phase 3 最終本機驗證：`npm test` 51 files／312 tests 通過；`npm run typecheck` 與 `npm run build:map` 通過；完整 Playwright 67/67 通過；`git diff --check` 通過。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並由 `e372663` 強化後上線。
 
 **驗收條件**
 
@@ -791,7 +791,7 @@ flowchart LR
 - `.github/workflows/ci.yml` 已由手動列舉 13 個 spec 改為執行完整 desktop＋touch projects；視覺 project 維持獨立本機／專用 job 能力，不讓平台限定 PNG 阻擋 Linux 互動矩陣。
 - Phase 4 沒有暴露新的產品程式缺陷，因此本階段只修改 Playwright／CI 設定與回歸測試，未為了讓測試通過而改產品互動。
 - 最終本機驗證：`npm test` 51 files／312 tests、`npm run typecheck`、`npm run build:map` 皆通過；desktop＋touch 66/66、visual 6/6，合計 Playwright 72/72；`git diff --check` 通過。
-- 狀態僅代表工作樹本機驗證完成；尚未 commit、push 或部署。
+- 此為階段完成當時的本機證據；後續已納入 `e371914`，並由 `e372663` 擴充核心 touch 矩陣後上線。
 
 **驗收條件**
 
@@ -857,4 +857,16 @@ flowchart LR
 - `mobile-touch`：25/25；包含核心 navigation equivalence、async navigation 與 setup，不再只有 touch 專用 spec。
 - `visual-chromium`：6/6；unknown ETA 不再顯示精確分鐘，因此更新 `map-trip-results-win32.png` 基準。
 - `git diff --check`：通過。
-- 尚未另行 commit、push 或部署。
+- 追補已提交為 `e372663`、推送至 main，並通過 CI 與 production deploy。
+
+## 15. 提交、CI 與 production 證據
+
+| 範圍 | 證據 |
+| --- | --- |
+| 第一輪修復 | `e371914`（fix: align navigation and transit state flows）；CI run 29637312279 成功 |
+| 反向驗證追補 | `e372663`（fix: harden usage flow state restoration）；CI run 29639925344 成功 |
+| 目前 production | `80fa855` 包含上述兩個修復提交；CI run 29647516730 的 `quality`、`Map UI regression`、`Deploy production` 全部成功 |
+| 最新本機重驗 | 2026-07-18：`npm test` 53 files／326 tests、`npm run typecheck`、`npm run build:map` 全部通過 |
+| Production smoke | 2026-07-18 22:29（Asia/Taipei）：cache-busted `/setup` 與 `/map` 均回 200；HTML 分別載入 `/assets/setup.js` 與 `/assets/map.js`／`map.css` |
+
+CI 詳情：[e371914 CI](https://github.com/a20030824/mochi-bus/actions/runs/29637312279)、[e372663 CI](https://github.com/a20030824/mochi-bus/actions/runs/29639925344)、[目前 production CI／deploy](https://github.com/a20030824/mochi-bus/actions/runs/29647516730)。
