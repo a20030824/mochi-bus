@@ -93,6 +93,8 @@ describe('release identity', () => {
       trafficClass: 'synthetic',
       sampleProbability: 1,
       failureClass: 'none',
+      emptyReason: 'not_applicable',
+      qualityBucket: 'not_applicable',
     }
 
     expect(createTelemetryEnvelope(identity, fields)).toMatchObject(identity)

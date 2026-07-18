@@ -1,6 +1,6 @@
 # Mochi Bus 生產可觀測性與故障復原審計 — 2026-07-19
 
-> 本文件記錄唯讀審計結論、隱私安全 telemetry contract 與分批實作順序。A1 已以 `b13057c` 獨立提交並推送；A2 正在建立 Worker release identity，仍不導入第三方平台。
+> 本文件記錄唯讀審計結論、隱私安全 telemetry contract 與分批實作順序。A1 已以 `b13057c`、A2 已以 `baea152` 獨立提交並推送；A3 的四個主要 API completion 分母已在本機完成 review/check，尚未提交，且仍未導入第三方平台。
 
 ## 1. 結論
 
@@ -81,7 +81,7 @@ Cloudflare 現行建議以 object 形式寫入結構化 JSON，讓 Workers Logs 
 
 | 欄位 | 契約 |
 | --- | --- |
-| `eventSchema` | 數字 schema version；第一版為 `1` |
+| `eventSchema` | 數字 schema version；A3 加入嚴格空資料／品質欄位後為 `2` |
 | `event` | allowlist event name |
 | `releaseSha` | Git SHA 或 `null`；A2 才注入 |
 | `workerVersionId` | Cloudflare Worker version ID 或 `null`；A2 才注入 |
@@ -94,10 +94,12 @@ Cloudflare 現行建議以 object 形式寫入結構化 JSON，讓 Workers Logs 
 | `snapshotVersion` | bounded identifier 或 `null` |
 | `httpStatusClass` | `2xx | 3xx | 4xx | 5xx | none`；不得記完整 request |
 | `latencyBucket` | `lt_50ms | 50_199ms | 200_999ms | 1_3s | 3_6s | gt_6s | unknown` |
-| `cacheResult` | `memory_hit | edge_hit | miss | bypass | error | not_applicable` |
+| `cacheResult` | `memory_hit | edge_hit | miss | bypass | error | unknown | not_applicable`；A3 無可靠 cache provenance 時固定 `unknown`，不得猜測 |
 | `trafficClass` | `user | synthetic | snapshot_publish` |
 | `sampleProbability` | `(0, 1]`；success 與 failure 必須用同 cohort 規則 |
 | `failureClass` | bounded enum；成功為 `none`，TDX 至少區分 401/429/quota/timeout/5xx/invalid payload |
+| `emptyReason` | 嚴格 enum；非空通常為 `not_applicable`，空資料至少區分 no routes/arrivals/vehicles、identity mismatch、invalid coordinates、all estimates unknown、upstream failure、route-object fallback |
+| `qualityBucket` | 嚴格 enum；journey 為 `complete_realtime | complete_mixed | complete_schedule | partial_unknown | all_unknown`，其他 operation 為 `not_applicable` |
 | `errorFingerprint` | 選填；只能由 error type、asset basename、25-line bucket 產生的短 SHA-256 |
 
 Phase A1 event allowlist：`api_operation_completed`、`tdx_resolution_completed`、`snapshot_window_completed`、`snapshot_probe_completed`、`snapshot_fallback_selected`、`rate_limit_decision`、`circuit_state_changed`、`release_smoke_completed`、`frontend_boot_completed`、`frontend_error`。
@@ -118,18 +120,34 @@ Phase A1 event allowlist：`api_operation_completed`、`tdx_resolution_completed
 
 `api_operation_completed` 必須在被抽樣的每次 operation 結束時恰好出現一次；error、empty、degraded、success 共用相同 sampling decision。`sampleProbability` 用於校正不同 cohort，不能只抽 success 或只記 error。
 
+A3 的 organic API cohort 在 operation 開始時以 10% 固定決策；同一次 operation 後續走 success、fallback、early return 或 catch 都沿用該決策。`synthetic` 與 `snapshot_publish` 為 100%。目前四個產品 callsite 都標成 `user`；後續 release smoke 必須由受信任的內部流程傳入 `synthetic`，不得接受可由公開 request header 任意偽造的 traffic class。
+
+分母邊界：handler 內的 query/body validation、coded BYOK 401、upstream failure、fallback 與正常回應都納入；發生在 handler 前的全域 API rate-limit 429，以及 journey `bodyLimit` 的 413 不納入 A3 operation 分母，未來分別由 `rate_limit_decision`／保護層事件計數。這是明確契約，不依 middleware 排列偶然決定。
+
 | 指標 | 分子／分母 |
 | --- | --- |
-| realtime success rate | `source=realtime,result=success` / 同 city+operation 的全部 `tdx_resolution_completed` |
-| stale replay rate | `source=stale` / 同 cohort resolution total |
-| schedule fallback rate | `source=schedule|fallback` / 同 cohort resolution total |
+| API realtime success rate | `source=realtime,result=success` / 同 city+operation 的全部 `api_operation_completed` |
+| TDX resolution success rate（A4） | `source=realtime,result=success` / 同 cohort 的全部 `tdx_resolution_completed` |
+| stale replay rate | `source=stale` / 同 cohort operation 或 resolution total；事件種類不得混用 |
+| schedule fallback rate | `source=schedule|fallback` / 同 cohort operation 或 resolution total；事件種類不得混用 |
 | unavailable rate | `result=error,source=none` / 同 cohort operation total |
 | TDX failure class rate | 指定 `failureClass` / 全部 TDX resolution total |
 | empty vehicles rate | `operation=map_vehicles,result=empty` / vehicles total；另依 service window、identity probe、failureClass 分群 |
-| journey unknown rate | journey ETA 中 unknown result / journey ETA total |
+| journey unknown rate | journey ETA 的 `qualityBucket=partial_unknown|all_unknown` / journey ETA total |
 | arrivals schedule-only rate | place arrivals `source=schedule|fallback` 且仍有資料 / place arrivals total |
 
 `empty` 不是故障同義詞。vehicles 至少再以「營運時段／非營運時段」、「route identity probe 成功／失敗」、「upstream success／degraded」、「契約 parse 成功／失敗」診斷；只有 identity 或契約失敗、或與歷史基線顯著偏離時才升級。
+
+### 5.4 A3 四個 operation 的 result/source 契約
+
+| operation | success | degraded | empty | error |
+| --- | --- | --- | --- | --- |
+| `map_routes` | snapshot catalogue 可用／`snapshot` | snapshot 無資料而 TDX static catalogue 可用／`fallback` | fallback 成功但確無 routes／`fallback + no_routes` | validation、D1 或 fallback 無有效 response／`none` |
+| `map_place_arrivals` | bundle + realtime 完整／`realtime` | stale、schedule、mixed、route-object fallback 或帶 warning／對應 source | bundle 與來源成功但確無 arrivals／`none + no_arrivals` | validation、coded 401 或 operation failure／`none` |
+| `map_vehicles` | upstream 有有效且符合 identity/座標的 vehicles／`realtime` | upstream failure 後仍回可操作的 warning + empty／`fallback + upstream_failure` | upstream schema 成功，依序區分 `no_vehicles`、`identity_mismatch`、`invalid_coordinates` | validation、coded 401 或 response 無法形成／`none` |
+| `map_journey_eta` | 所有 requested legs 都解析且有 realtime／`realtime` | realtime/schedule mixed、schedule/departure/headway、unresolved leg／partial unknown、或 warning 後 all unknown／對應 source + quality bucket | 成功完成解析但全部 unknown／`none + all_estimates_unknown` | validation、coded 401 或 operation failure／`none` |
+
+A3 尚不能可靠區分 TDX invalid JSON 與一般 5xx、memory/edge/upstream cache provenance、合法空車發生於非營運時段或 route identity 本身不存在，以及 journey schedule 最終來自 snapshot 或 TDX。這些不猜測；A4 由 TDX/cache resolution 回傳最小的 bounded internal metadata，再發 `tdx_resolution_completed`。
 
 ## 6. 22 城市 probe 與 freshness contract
 
@@ -227,14 +245,15 @@ Phase A1 event allowlist：`api_operation_completed`、`tdx_resolution_completed
 
 1. **A1 telemetry schema/privacy boundary**：allowlist enums、common envelope、禁止欄位 validator、safe fingerprint、fail-open emitter、單元測試；不接產品路由。
 2. **A2 release identity**：Cloudflare Version Metadata binding、完整 Git SHA version tag、唯讀 release endpoint 與 telemetry envelope builder；`deploymentId` 固定 `null`，不包含 post-deploy smoke。參考：[Version metadata binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/version-metadata/)。
-3. **A3 API/TDX completion**：先接 map routes、place arrivals、vehicles、journey ETA；每次 operation 一個 completion event，同 cohort success denominator。
-4. **A4 rollback authority**：D1 為服務權威，rollback 後同步 R2 state，加入 divergence test。
-5. **A5 snapshot window records**：weekly window outcome 與 07:30 close 判定。
-6. **A6 unchanged active probe**：early-exit 前驗 D1/R2/critical artifacts/rotating sample。
-7. **A7 post-deploy HTTP smoke**：release-specific pages/assets、大城小城 API、degraded contract。
-8. **A8 fresh-browser smoke**：全新 context、boot marker、pageerror、unhandled rejection、asset failure。
-9. **A9 frontend organic collector**：bounded payload、URL query removal、sampling、dedupe、rate limit；與 CSP route 分開。
-10. **A10 daily 22-city probe**：硬狀態輸出、active/previous 與 rotating artifacts。
+3. **A3 API completion denominator**：只接 map routes、place arrivals、vehicles、journey ETA；每次 sampled operation 一個 completion event，同 cohort success denominator。
+4. **A4 TDX resolution completion**：由 TDX/cache 邊界回傳 bounded source/failure/recovery metadata；不重複發 API completion。
+5. **A5 rollback authority**：D1 為服務權威，rollback 後同步 R2 state，加入 divergence test。
+6. **A6 snapshot window records**：weekly window outcome 與 07:30 close 判定。
+7. **A7 unchanged active probe**：early-exit 前驗 D1/R2/critical artifacts/rotating sample。
+8. **A8 post-deploy HTTP smoke**：release-specific pages/assets、大城小城 API、degraded contract。
+9. **A9 fresh-browser smoke**：全新 context、boot marker、pageerror、unhandled rejection、asset failure。
+10. **A10 frontend organic collector**：bounded payload、URL query removal、sampling、dedupe、rate limit；與 CSP route 分開。
+11. **A11 daily 22-city probe**：硬狀態輸出、active/previous 與 rotating artifacts。
 
 ### Phase B：城市級聚合與健康頁面
 
@@ -256,12 +275,13 @@ Phase A1 event allowlist：`api_operation_completed`、`tdx_resolution_completed
 | 批次 | 狀態 | 驗證 |
 | --- | --- | --- |
 | A1 telemetry schema/privacy boundary | 已提交並推送（`b13057c`） | `src/observability/telemetry.ts`；完整 check 54 files、354 tests、typecheck、build、Worker dry-run 通過；沒有產品 callsite |
-| A2 release identity | 本機實作與 review/check 完成，待獨立提交 | Version Metadata binding、生成型別、release helper/endpoint、CI full-SHA tag/message；targeted 53/53、完整 check 55 files/367 tests、typecheck、build、Worker dry-run 與含 tag/message 的 deploy dry-run 通過 |
-| A3–A10 | 已排程，未開始 | 各批保持可獨立 review/rollback |
+| A2 release identity | 已提交並推送（`baea152`） | Version Metadata binding、生成型別、release helper/endpoint、CI full-SHA tag/message；targeted 53/53、完整 check 55 files/367 tests、typecheck、build、Worker dry-run 與含 tag/message 的 deploy dry-run 通過 |
+| A3 API completion denominator | 本機實作與 review/check 完成，待獨立提交 | schema v2、complete-once tracker、固定 cohort sampling、四個 route callsite 與 result/source/empty/quality contract；targeted 5 files/63 tests、完整 check 58 files/390 tests、typecheck、build、Worker dry-run 通過；不含 `tdx_resolution_completed` |
+| A4–A11 | 已排程，未開始 | 各批保持可獨立 review/rollback |
 | Phase B/C | 未開始 | 等 Phase A 事件量與操作需求證明 |
 
 ## 12. 最值得先實作的三項
 
 1. A1 telemetry schema 與隱私邊界。
 2. A2 release identity，讓部署、log 與 smoke 能對到同一版。
-3. A3 API/TDX completion events，先建立 realtime、fallback、empty 與 error 的成功分母。
+3. A3 API completion events，先建立 realtime、fallback、empty 與 error 的成功分母；A4 再補底層 TDX resolution。

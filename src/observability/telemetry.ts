@@ -1,7 +1,7 @@
 import { supportedCities } from '../config'
 import type { ReleaseIdentity } from './release-identity'
 
-export const TELEMETRY_EVENT_SCHEMA = 1 as const
+export const TELEMETRY_EVENT_SCHEMA = 2 as const
 
 export const telemetryEvents = [
   'api_operation_completed',
@@ -79,6 +79,7 @@ export const telemetryFailureClasses = [
   'contract_parse',
   'asset_load',
   'bootstrap',
+  'completion_missing',
   'unknown',
 ] as const
 
@@ -88,7 +89,29 @@ export const telemetryCacheResults = [
   'miss',
   'bypass',
   'error',
+  'unknown',
   'not_applicable',
+] as const
+
+export const telemetryEmptyReasons = [
+  'not_applicable',
+  'no_routes',
+  'no_arrivals',
+  'no_vehicles',
+  'identity_mismatch',
+  'invalid_coordinates',
+  'all_estimates_unknown',
+  'upstream_failure',
+  'route_object_fallback',
+] as const
+
+export const telemetryQualityBuckets = [
+  'not_applicable',
+  'complete_realtime',
+  'complete_mixed',
+  'complete_schedule',
+  'partial_unknown',
+  'all_unknown',
 ] as const
 
 export const telemetryLatencyBuckets = [
@@ -113,6 +136,8 @@ export type TelemetryCacheResult = typeof telemetryCacheResults[number]
 export type TelemetryLatencyBucket = typeof telemetryLatencyBuckets[number]
 export type TelemetryTrafficClass = typeof telemetryTrafficClasses[number]
 export type TelemetryHttpStatusClass = typeof telemetryHttpStatusClasses[number]
+export type TelemetryEmptyReason = typeof telemetryEmptyReasons[number]
+export type TelemetryQualityBucket = typeof telemetryQualityBuckets[number]
 export type TelemetryCity = typeof supportedCities[number][0]
 
 export type TelemetryEnvelope = Readonly<{
@@ -133,6 +158,8 @@ export type TelemetryEnvelope = Readonly<{
   trafficClass: TelemetryTrafficClass
   sampleProbability: number
   failureClass: TelemetryFailureClass
+  emptyReason: TelemetryEmptyReason
+  qualityBucket: TelemetryQualityBucket
   errorFingerprint?: string
 }>
 
@@ -162,6 +189,8 @@ const allowedKeys = new Set<AllowedKey>([
   'trafficClass',
   'sampleProbability',
   'failureClass',
+  'emptyReason',
+  'qualityBucket',
   'errorFingerprint',
 ])
 
@@ -183,6 +212,8 @@ const requiredKeys = new Set<AllowedKey>([
   'trafficClass',
   'sampleProbability',
   'failureClass',
+  'emptyReason',
+  'qualityBucket',
 ])
 
 const cityCodes = new Set<string>(supportedCities.map(([code]) => code))
@@ -195,6 +226,8 @@ const cacheResults = new Set<string>(telemetryCacheResults)
 const latencyBuckets = new Set<string>(telemetryLatencyBuckets)
 const trafficClasses = new Set<string>(telemetryTrafficClasses)
 const httpStatusClasses = new Set<string>(telemetryHttpStatusClasses)
+const emptyReasons = new Set<string>(telemetryEmptyReasons)
+const qualityBuckets = new Set<string>(telemetryQualityBuckets)
 
 const safeIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const safeReleaseSha = /^[a-f0-9]{40}$/
@@ -235,6 +268,12 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
     if (!enumValue(value.trafficClass, trafficClasses)) return undefined
     if (!sampleProbability(value.sampleProbability)) return undefined
     if (!enumValue(value.failureClass, failureClasses)) return undefined
+    if (!enumValue(value.emptyReason, emptyReasons)) return undefined
+    if (!enumValue(value.qualityBucket, qualityBuckets)) return undefined
+    if (value.result === 'empty' && value.emptyReason === 'not_applicable') return undefined
+    if (value.result !== 'empty' && value.result !== 'degraded' && value.emptyReason !== 'not_applicable') return undefined
+    if ((value.result === 'success' || value.result === 'empty') && value.failureClass !== 'none') return undefined
+    if (value.result === 'error' && value.failureClass === 'none') return undefined
     if (value.errorFingerprint !== undefined && !identifier(value.errorFingerprint, safeErrorFingerprint)) return undefined
 
     return Object.freeze({
@@ -255,6 +294,8 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
       trafficClass: value.trafficClass as TelemetryTrafficClass,
       sampleProbability: value.sampleProbability as number,
       failureClass: value.failureClass as TelemetryFailureClass,
+      emptyReason: value.emptyReason as TelemetryEmptyReason,
+      qualityBucket: value.qualityBucket as TelemetryQualityBucket,
       ...(value.errorFingerprint === undefined ? {} : { errorFingerprint: value.errorFingerprint as string }),
     })
   } catch {

@@ -47,9 +47,21 @@ import {
 } from '../lib/api-input'
 import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
 import { cacheMatchFailOpen, cachePutFailOpen } from '../lib/edge-cache'
+import { beginApiOperationTelemetry, type ApiOperationTracker } from '../observability/api-operation'
+import {
+  journeyEtaOutcome,
+  mapOperationErrorOutcome,
+  mapRoutesOutcome,
+  placeArrivalsOutcome,
+  vehiclesOutcome,
+} from '../observability/map-api-outcomes'
+import { releaseIdentity } from '../observability/release-identity'
+import type { TelemetryCity, TelemetryFailureClass, TelemetryOperation } from '../observability/telemetry'
 import { renderMapPage } from '../map-page'
 
-type Env = { Bindings: TDXEnv & TransitBindings }
+type Env = {
+  Bindings: TDXEnv & TransitBindings & Pick<CloudflareBindings, 'CF_VERSION_METADATA'>
+}
 const map = new Hono<Env>()
 
 // 瀏覽器直接向 TDX 換 token；Worker 只接收短效 token，永遠不接觸 Client Secret。
@@ -137,6 +149,52 @@ function routeIdentity(routeName: string, routeUid?: string): string {
   return routeUid ? `uid:${routeUid}` : `name:${routeName}`
 }
 
+function telemetryCity(value: string | undefined): TelemetryCity | null {
+  return value && supportedCityCodes.has(value) ? value as TelemetryCity : null
+}
+
+function beginMapOperation(
+  c: Context<Env>,
+  operation: TelemetryOperation,
+  city: TelemetryCity | null,
+): ApiOperationTracker {
+  return beginApiOperationTelemetry({
+    operation,
+    city,
+    trafficClass: 'user',
+    releaseIdentity: releaseIdentity(c.env?.CF_VERSION_METADATA),
+  })
+}
+
+function mapFailureClass(error: unknown, authorization?: string): TelemetryFailureClass {
+  if (error instanceof QueryValidationError || error instanceof ApiInputError) return 'input_validation'
+  if (isRejectedUserTdxToken(error, authorization)) return 'tdx_401'
+  if (!(error instanceof TDXServiceError)) return 'unknown'
+  if (error.status === 401) return 'tdx_401'
+  if (error.warning === 'tdx-quota') return 'tdx_quota'
+  if (error.status === 429 || error.warning === 'tdx-rate-limit') return 'tdx_429'
+  if (error.status !== undefined && error.status >= 500) return 'tdx_5xx'
+  const causeName = error.cause instanceof Error ? error.cause.name : ''
+  if (causeName === 'AbortError' || causeName === 'TimeoutError') return 'tdx_timeout'
+  return error.status === undefined ? 'network' : 'unknown'
+}
+
+function completeMapError(
+  c: Context<Env>,
+  tracker: ApiOperationTracker,
+  error: unknown,
+  fallback: string,
+  city?: TelemetryCity | null,
+) {
+  const response = mapJsonError(c, error, fallback)
+  tracker.complete({
+    ...mapOperationErrorOutcome(mapFailureClass(error, c.req.header('Authorization'))),
+    httpStatus: response.status,
+    ...(city === undefined ? {} : { city }),
+  })
+  return response
+}
+
 map.get('/map', (c) => {
   // 深連結的標題直接從 query 組(路線名就在網址裡,不用查庫);
   // place 深連結要查 DB 才有名字,不值得為標題多一次往返,維持通用標題。
@@ -171,13 +229,14 @@ map.get('/api/v1/map/locate', (c) => {
 })
 
 map.get('/api/v1/map/routes', async (c) => {
+  const tracker = beginMapOperation(c, 'map_routes', telemetryCity(c.req.query('city')?.trim()))
   try {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
     const snapshotRoutes = await getSnapshotRouteCatalog(c.env, city)
     const routes = snapshotRoutes.length ? snapshotRoutes : await getRouteCatalog(tdxEnv(c), city)
     const snapshotVersion = snapshotRoutes.length ? await getActiveSnapshotVersion(c.env, city) : null
-    return c.json({
+    const response = c.json({
       schemaVersion: 2,
       city,
       source: snapshotRoutes.length ? 'snapshot' : 'tdx',
@@ -186,8 +245,18 @@ map.get('/api/v1/map/routes', async (c) => {
     }, 200, {
       'Cache-Control': `public, max-age=${snapshotRoutes.length ? 86400 : 300}`,
     })
+    tracker.complete({
+      ...mapRoutesOutcome({
+        snapshotRouteCount: snapshotRoutes.length,
+        routeCount: routes.length,
+        snapshotVersion,
+      }),
+      httpStatus: 200,
+      city: telemetryCity(city),
+    })
+    return response
   } catch (error) {
-    return mapJsonError(c, error, '路線目錄讀取失敗')
+    return completeMapError(c, tracker, error, '路線目錄讀取失敗')
   }
 })
 
@@ -292,6 +361,7 @@ map.get('/api/v1/map/network', async (c) => {
 })
 
 map.get('/api/v1/map/vehicles', async (c) => {
+  const tracker = beginMapOperation(c, 'map_vehicles', telemetryCity(c.req.query('city')?.trim()))
   try {
     const city = c.req.query('city')?.trim()
     const routeName = c.req.query('route')?.trim()
@@ -305,8 +375,10 @@ map.get('/api/v1/map/vehicles', async (c) => {
     url.searchParams.set('$format', 'JSON')
     let items: VehicleItem[] = []
     let warning: TDXWarning | undefined
+    let upstreamSucceeded = false
     try {
       items = await fetchTDXJson<VehicleItem[]>(tdxEnv(c), url, 15)
+      upstreamSucceeded = true
     } catch (error) {
       if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
       warning = tdxWarningFromError(error) ?? 'tdx-unavailable'
@@ -315,9 +387,10 @@ map.get('/api/v1/map/vehicles', async (c) => {
         error: error instanceof Error ? error.message : String(error),
       }))
     }
-    const vehicles = items
+    const identityMatchedItems = items
       .filter((item) => !routeUid || item.RouteUID === routeUid)
       .filter((item) => direction === undefined || item.Direction === direction)
+    const vehicles = identityMatchedItems
       .filter((item) => Number.isFinite(item.BusPosition?.PositionLat) && Number.isFinite(item.BusPosition?.PositionLon))
       .map((item) => ({
         plate: item.PlateNumb ?? null,
@@ -327,11 +400,23 @@ map.get('/api/v1/map/vehicles', async (c) => {
         azimuth: item.Azimuth ?? null,
         gpsTime: item.GPSTime ?? item.UpdateTime ?? null,
       }))
-    return c.json({ schemaVersion: 1, city, routeName, vehicles, warning }, 200, {
+    const response = c.json({ schemaVersion: 1, city, routeName, vehicles, warning }, 200, {
       'Cache-Control': warning || c.req.header('Authorization') ? 'no-store' : 'public, max-age=15',
     })
+    tracker.complete({
+      ...vehiclesOutcome({
+        upstreamSucceeded,
+        rawCount: items.length,
+        identityMatchedCount: identityMatchedItems.length,
+        validVehicleCount: vehicles.length,
+        warning,
+      }),
+      httpStatus: 200,
+      city: telemetryCity(city),
+    })
+    return response
   } catch (error) {
-    return mapJsonError(c, error, '車輛位置讀取失敗')
+    return completeMapError(c, tracker, error, '車輛位置讀取失敗')
   }
 })
 
@@ -388,6 +473,7 @@ map.get('/api/v1/map/place/:placeId/routes', async (c) => {
 })
 
 map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
+  const tracker = beginMapOperation(c, 'map_place_arrivals', telemetryCity(c.req.query('city')?.trim()))
   try {
     const env = tdxEnv(c)
     const scope = await tdxCredentialScope(env)
@@ -496,7 +582,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       (a.estimateSeconds ?? Number.POSITIVE_INFINITY) - (b.estimateSeconds ?? Number.POSITIVE_INFINITY)
       || a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }),
     )
-    return c.json({
+    const response = c.json({
       schemaVersion: 1,
       city,
       routes: arrivals,
@@ -504,8 +590,19 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       warning,
       realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
     }, 200, { 'Cache-Control': warning || c.req.header('Authorization') ? 'no-store' : 'public, max-age=15' })
+    tracker.complete({
+      ...placeArrivalsOutcome({
+        bundleUsed: Boolean(bundle),
+        sources: arrivals.map((arrival) => arrival.source),
+        warning,
+        snapshotVersion: bundle?.version ?? null,
+      }),
+      httpStatus: 200,
+      city: telemetryCity(city),
+    })
+    return response
   } catch (error) {
-    return mapJsonError(c, error, '到站時間讀取失敗')
+    return completeMapError(c, tracker, error, '到站時間讀取失敗')
   }
 })
 
@@ -571,8 +668,11 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
     'Cache-Control': 'no-store',
   }),
 }), async (c) => {
+  const tracker = beginMapOperation(c, 'map_journey_eta', null)
+  let observedCity: TelemetryCity | null = null
   try {
     const { city, legs } = parseJourneyEtaInput(await readJsonBody(c.req.raw), supportedCityCodes)
+    observedCity = telemetryCity(city)
     const env = tdxEnv(c)
     let warning: TDXWarning | undefined
 
@@ -640,9 +740,15 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
       }
     }
     const estimates = refs.map((ref) => realtimeEstimates.get(ref.key))
-    return c.json({ schemaVersion: 1, city, fetchedAt: new Date().toISOString(), estimates, warning }, 200, {
+    const response = c.json({ schemaVersion: 1, city, fetchedAt: new Date().toISOString(), estimates, warning }, 200, {
       'Cache-Control': 'no-store',
     })
+    tracker.complete({
+      ...journeyEtaOutcome({ estimates, expectedCount: legs.length, warning }),
+      httpStatus: 200,
+      city: observedCity,
+    })
+    return response
   } catch (error) {
     if (!(error instanceof QueryValidationError || error instanceof ApiInputError)) {
       console.error(JSON.stringify({
@@ -650,7 +756,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
         error: error instanceof Error ? error.message : String(error),
       }))
     }
-    return mapJsonError(c, error, 'ETA 排序資料讀取失敗')
+    return completeMapError(c, tracker, error, 'ETA 排序資料讀取失敗', observedCity)
   }
 })
 

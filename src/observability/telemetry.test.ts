@@ -28,6 +28,8 @@ function validEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryEnvelo
     trafficClass: 'user',
     sampleProbability: 0.1,
     failureClass: 'none',
+    emptyReason: 'not_applicable',
+    qualityBucket: 'not_applicable',
     ...overrides,
   }
 }
@@ -49,6 +51,8 @@ describe('telemetry contract', () => {
     expect(parseTelemetryEvent({ ...validEvent(), result: 'ok' })).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), sampleProbability: 0 })).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), releaseSha: '0123456' })).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validEvent(), result: 'empty' })).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validEvent(), result: 'error', failureClass: 'none' })).toBeUndefined()
   })
 
   it.each([
