@@ -25,6 +25,7 @@ import {
   getSnapshotRouteCatalog,
   getSnapshotSchedule,
   getStopPlace,
+  getStopPlaceByStopUid,
   getStopPlaceBundle,
   getStopPlaceRoutes,
   searchStopPlaces,
@@ -303,10 +304,12 @@ map.get('/api/v1/map/vehicles', async (c) => {
     )
     url.searchParams.set('$format', 'JSON')
     let items: VehicleItem[] = []
+    let warning: TDXWarning | undefined
     try {
       items = await fetchTDXJson<VehicleItem[]>(tdxEnv(c), url, 15)
     } catch (error) {
       if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
+      warning = tdxWarningFromError(error) ?? 'tdx-unavailable'
       console.error(JSON.stringify({
         message: 'vehicle_position_upstream_failed', city, routeName,
         error: error instanceof Error ? error.message : String(error),
@@ -324,8 +327,8 @@ map.get('/api/v1/map/vehicles', async (c) => {
         azimuth: item.Azimuth ?? null,
         gpsTime: item.GPSTime ?? item.UpdateTime ?? null,
       }))
-    return c.json({ schemaVersion: 1, city, routeName, vehicles }, 200, {
-      'Cache-Control': 'public, max-age=15',
+    return c.json({ schemaVersion: 1, city, routeName, vehicles, warning }, 200, {
+      'Cache-Control': warning || c.req.header('Authorization') ? 'no-store' : 'public, max-age=15',
     })
   } catch (error) {
     return mapJsonError(c, error, '車輛位置讀取失敗')
@@ -452,7 +455,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       } catch (error) {
         if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
         rateLimited ||= error instanceof TDXServiceError && error.rateLimited
-        warning = strongerTDXWarning(warning, tdxWarningFromError(error))
+        warning = strongerTDXWarning(warning, tdxWarningFromError(error) ?? 'tdx-unavailable')
         console.error(JSON.stringify({
           message: 'place_arrival_realtime_failed', city, routeName,
           error: error instanceof Error ? error.message : String(error),
@@ -519,6 +522,19 @@ map.get('/api/v1/map/place/:placeId', async (c) => {
   }
 })
 
+map.get('/api/v1/map/stop-place', async (c) => {
+  try {
+    const city = c.req.query('city')?.trim()
+    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
+    const stopUid = requiredQueryString(c.req.query('stopUid'), 'StopUID', 100)
+    const place = await getStopPlaceByStopUid(c.env, city, stopUid)
+    if (!place) return c.json({ error: '找不到這個站牌' }, 404)
+    return c.json({ schemaVersion: 1, city, stopUid, place }, 200, { 'Cache-Control': 'public, max-age=3600' })
+  } catch (error) {
+    return mapJsonError(c, error, '站牌資料讀取失敗')
+  }
+})
+
 map.get('/api/v1/map/direct', async (c) => {
   try {
     const city = c.req.query('city')?.trim()
@@ -558,6 +574,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
   try {
     const { city, legs } = parseJourneyEtaInput(await readJsonBody(c.req.raw), supportedCityCodes)
     const env = tdxEnv(c)
+    let warning: TDXWarning | undefined
 
     const refs = await getJourneyLegStopRefs(env, city, legs)
     // 逐路線查 ETA(legs ≤ 12,去重後更少),與站牌到站查詢共用同一份快取。
@@ -573,6 +590,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
         )] as const
       } catch (error) {
         if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
+        warning = strongerTDXWarning(warning, tdxWarningFromError(error) ?? 'tdx-unavailable')
         console.error(JSON.stringify({
           message: 'journey_eta_upstream_failed',
           city,
@@ -599,6 +617,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
             ] as const
           } catch (error) {
             if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
+            warning = strongerTDXWarning(warning, tdxWarningFromError(error) ?? 'tdx-unavailable')
             console.error(JSON.stringify({
               message: 'journey_schedule_route_failed',
               city,
@@ -612,6 +631,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
         scheduled.forEach((estimate, key) => realtimeEstimates.set(key, estimate))
       } catch (error) {
         if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
+        warning = strongerTDXWarning(warning, tdxWarningFromError(error) ?? 'tdx-unavailable')
         console.error(JSON.stringify({
           message: 'journey_schedule_fallback_failed',
           city,
@@ -620,7 +640,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
       }
     }
     const estimates = refs.map((ref) => realtimeEstimates.get(ref.key))
-    return c.json({ schemaVersion: 1, city, fetchedAt: new Date().toISOString(), estimates }, 200, {
+    return c.json({ schemaVersion: 1, city, fetchedAt: new Date().toISOString(), estimates, warning }, 200, {
       'Cache-Control': 'no-store',
     })
   } catch (error) {

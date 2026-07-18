@@ -89,8 +89,8 @@ test.describe('direct journey candidate selection', () => {
     })
     await page.route('**/api/v1/map/journey-eta', async (route) => {
       await route.fulfill({ json: { estimates: [
-        { key: 'direct:0', minutes: 5 },
-        { key: 'direct:1', minutes: 8 },
+        { key: 'direct:0', minutes: 5, source: 'realtime' },
+        { key: 'direct:1', minutes: 8, source: 'realtime' },
       ] } })
     })
     await page.route(/\/api\/v1\/map\/route(?:\?|$)/, async (route) => {

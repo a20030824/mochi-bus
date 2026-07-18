@@ -1,4 +1,5 @@
 import { expect, test, type Page } from './fixtures'
+import { TDX_ACCESS_TOKEN_REJECTED_CODE } from '../../src/domain/tdx-api-error'
 
 const city = { code: 'Taipei', name: '臺北', region: 'north', center: [25, 121] }
 const places = {
@@ -101,4 +102,61 @@ test('keeps transfer certainty unknown when both waits only come from schedules'
   await expect(card).not.toHaveClass(/connection-tight/)
   await expect(card.locator('.transfer-leg-button').nth(0)).toContainText('約 5 分後發車')
   await expect(card.locator('.transfer-leg-button').nth(1)).toContainText('約 20 分')
+})
+
+test('does not treat minutes without a source as a precise or best ETA', async ({ page }) => {
+  await mockJourneyShell(page)
+  await page.route('**/api/v1/map/direct*', (route) => route.fulfill({ json: { routes: [
+    { routeName: 'B', variantKey: 'B:0', direction: 0, label: 'B 起點 → 終點', subRouteName: 'B', boardSequence: 1, alightSequence: 3, stopCount: 3 },
+    { routeName: 'A', variantKey: 'A:0', direction: 0, label: 'A 起點 → 終點', subRouteName: 'A', boardSequence: 1, alightSequence: 5, stopCount: 5 },
+  ] } }))
+  await page.route('**/api/v1/map/journey-eta', (route) => route.fulfill({ json: { estimates: [
+    { key: 'direct:0', minutes: 1 },
+    { key: 'direct:1', minutes: 8, source: 'realtime' },
+  ] } }))
+
+  await planJourney(page)
+
+  const cards = page.locator('.direct-route-card')
+  await expect(cards.nth(0)).toContainText('A')
+  await expect(cards.nth(0)).toContainText('8 分到站')
+  await expect(cards.nth(1)).toContainText('B')
+  await expect(cards.nth(1)).not.toContainText('1 分')
+})
+
+test('keeps schedule candidates visible while exposing a journey degradation warning', async ({ page }) => {
+  await mockJourneyShell(page)
+  await page.route('**/api/v1/map/direct*', (route) => route.fulfill({ json: { routes: [{
+    routeName: 'A', variantKey: 'A:0', direction: 0, label: 'A 起點 → 終點',
+    subRouteName: 'A', boardSequence: 1, alightSequence: 3, stopCount: 3,
+  }] } }))
+  await page.route('**/api/v1/map/journey-eta', (route) => route.fulfill({ json: {
+    estimates: [{ key: 'direct:0', minutes: 12, source: 'schedule' }],
+    warning: 'tdx-rate-limit',
+  } }))
+
+  await planJourney(page)
+
+  await expect(page.locator('.direct-route-card')).toContainText('約 12 分')
+  await expect(page.locator('.degraded-notice')).toContainText('即時查詢暫時受限')
+  await expect(page.locator('.degraded-notice').getByRole('button', { name: '再試一次' })).toBeEnabled()
+})
+
+test('offers credential recovery when journey ETA rejects the personal token', async ({ page }) => {
+  await mockJourneyShell(page)
+  await page.route('**/api/v1/map/direct*', (route) => route.fulfill({ json: { routes: [{
+    routeName: 'A', variantKey: 'A:0', direction: 0, label: 'A 起點 → 終點',
+    subRouteName: 'A', boardSequence: 1, alightSequence: 3, stopCount: 3,
+  }] } }))
+  await page.route('**/api/v1/map/journey-eta', (route) => route.fulfill({
+    status: 401,
+    json: { code: TDX_ACCESS_TOKEN_REJECTED_CODE, error: 'TDX 授權已失效' },
+  }))
+
+  await planJourney(page)
+
+  const recovery = page.locator('#map-drawer .credential-recovery')
+  await expect(recovery).toContainText('TDX 授權已失效')
+  await expect(recovery.getByRole('button', { name: '再試一次' })).toBeEnabled()
+  await expect(recovery.getByRole('link', { name: '檢查 TDX 設定' })).toHaveAttribute('href', '/setup')
 })

@@ -80,10 +80,10 @@ test('transfer cards isolate keyboard selection from inner route actions', async
   })
   await page.route('**/api/v1/map/journey-eta', async (route) => {
     await route.fulfill({ json: { estimates: [
-      { key: 'transfer:0:first', minutes: 5 },
-      { key: 'transfer:0:second', minutes: 8 },
-      { key: 'transfer:1:first', minutes: 6 },
-      { key: 'transfer:1:second', minutes: 9 },
+      { key: 'transfer:0:first', minutes: 5, source: 'realtime' },
+      { key: 'transfer:0:second', minutes: 8, source: 'realtime' },
+      { key: 'transfer:1:first', minutes: 6, source: 'realtime' },
+      { key: 'transfer:1:second', minutes: 9, source: 'realtime' },
     ] } })
   })
   await page.route(/\/api\/v1\/map\/route(?:\?|$)/, async (route) => {

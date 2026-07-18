@@ -41,4 +41,35 @@ describe('TDX API degraded-data contract', () => {
       code: TDX_ACCESS_TOKEN_REJECTED_CODE,
     })
   })
+
+  it('returns an actionable warning instead of caching an empty vehicle list on rate limit', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('rate limited', { status: 429 })))
+
+    const response = await app.request(
+      'https://bus.moc96336.com/api/v1/map/vehicles?city=Taipei&route=307&routeUid=TPE19108&direction=0',
+      { headers: { Authorization: 'Bearer personal-token' } },
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    await expect(response.json()).resolves.toMatchObject({
+      vehicles: [],
+      warning: 'tdx-rate-limit',
+    })
+  })
+
+  it('keeps a rejected personal token explicit on the vehicle endpoint', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('rejected', { status: 401 })))
+
+    const response = await app.request(
+      'https://bus.moc96336.com/api/v1/map/vehicles?city=Taipei&route=307',
+      { headers: { Authorization: 'Bearer expired-personal-token' } },
+    )
+
+    expect(response.status).toBe(401)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    await expect(response.json()).resolves.toMatchObject({ code: TDX_ACCESS_TOKEN_REJECTED_CODE })
+  })
 })

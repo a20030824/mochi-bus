@@ -61,3 +61,28 @@ test('offers credential recovery instead of a generic dead end after token refre
   await expect(recovery.getByRole('button', { name: '再試一次' })).toBeVisible()
   await expect(recovery.getByRole('link', { name: '檢查 TDX 設定' })).toHaveAttribute('href', '/setup')
 })
+
+test('keeps the route usable and exposes vehicle degradation recovery', async ({ page }) => {
+  await mockMapShell(page)
+  await page.route(/\/api\/v1\/map\/route(?:\?|$)/, (route) => route.fulfill({ json: { variants: [{
+    variantKey: 'A:0', routeName: 'A', routeUid: 'TNN-A', direction: 0,
+    label: '臺南火車站 → 永康火車站', subRouteName: 'A', updatedAt: null,
+    shape: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[120.212, 22.997], [120.23, 23.01]] } },
+    stops: { type: 'FeatureCollection', features: [] },
+  }] } }))
+  await page.route('**/api/v1/map/timetable*', (route) => route.fulfill({ json: {
+    timetable: { mode: 'none', services: [] },
+  } }))
+  await page.route('**/api/v1/map/vehicles*', (route) => route.fulfill({ json: {
+    vehicles: [], warning: 'tdx-rate-limit',
+  } }))
+
+  await page.goto('/map?city=Tainan&route=A&variant=A%3A0')
+
+  const drawer = page.locator('#map-drawer')
+  await expect(drawer.getByRole('heading', { name: 'A' })).toBeVisible()
+  const notice = drawer.locator('.vehicle-degraded-notice')
+  await expect(notice).toContainText('即時查詢暫時受限')
+  await expect(notice.getByRole('button', { name: '再試一次' })).toBeEnabled()
+  await expect(notice.getByRole('link', { name: '檢查 TDX 設定' })).toHaveAttribute('href', '/setup')
+})

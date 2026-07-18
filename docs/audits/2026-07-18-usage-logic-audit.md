@@ -1,7 +1,7 @@
 # Mochi Bus 使用邏輯與互動流程審計 — 2026-07-18
 
 > 本文件記錄 2026-07-18 的唯讀使用邏輯審計，並作為後續修復與回歸測試的執行藍圖。
-> 狀態：審計與 Phase 0–4 修復／回歸硬化皆已於本機驗證完成，尚未 commit、push 或部署。
+> 狀態：第一輪修復已提交為 `e371914`；修復後反向驗證的追補修正已於本機完成，尚未另行 commit、push 或部署。
 
 ## 1. 紀錄資訊
 
@@ -12,8 +12,8 @@
 | 稽核版本 | main @ 24fc827 |
 | 稽核型態 | 唯讀的使用流程、狀態轉移、非同步競態、錯誤恢復與 Playwright 覆蓋審計 |
 | 稽核視角 | 從使用者實際操作順序檢查跨入口等價性，不是單檔 code review |
-| 本次變更 | 審計輪次只新增本文件；後續修復輪次已依下方執行紀錄修改產品程式與測試，尚未部署 |
-| 驗證基線 | npm test 通過：51 個測試檔、307/307 tests |
+| 本次變更 | 第一輪修復為 `e371914`；本文件末尾另記錄該 commit 反向驗證後的未提交追補修正 |
+| 驗證基線 | 追補修正後 `npm test`：51 個測試檔、316/316 tests；desktop 75/75、touch 25/25、visual 6/6 |
 | 互動驗證限制 | 本輪沒有可用的互動瀏覽器工作階段；確認存在項目由控制流程或資料契約直接證明，競態項目列為可重現風險，未冒充真人點擊重現 |
 
 ## 2. 分類規則
@@ -746,8 +746,8 @@ flowchart LR
 **2026-07-18 執行紀錄**
 
 - setup 的 `closed`、`routes`、`stops`、`suggestions` 已成為明確 history entries；UI back、Browser Back／Forward 與 popstate 共用同一組 hydration 邏輯。
-- route entry 保存 city、filter、category、scrollTop 與 route catalog；返回 route picker 時不再清空使用者的篩選與列表位置。
-- stops 與 suggestions entry 保存已選路線、方向／站牌群組與建議 snapshot；同分頁 reload 可還原，不需重送請求才能看到原步驟。
+- route entry 保存 city、filter、category 與 scrollTop；路線目錄不再整包寫進 history.state，reload 時由 API 重取，返回 route picker 仍會還原篩選與列表位置。
+- stops 保存已選路線與方向／站牌群組，suggestions 保存有界的建議 snapshot；狀態具版本、30 分鐘效期與 URL fallback，序列化／容量失敗時會退化成可重新載入的 compact state。
 - 換縣市會清除 route／stop／suggestion 下游狀態並啟動新 request epoch；關閉 picker、連續返回或舊回應晚到都不會重新打開已離開步驟。
 - 初始 `/setup` 不搶焦點；只有 Escape、關閉或 popstate 回到 closed 時，才將焦點還給「新增常用站牌」。既有 setup 視覺快照維持不變。
 - `test/e2e/setup.spec.ts` golden path 已覆蓋 routes → stops → suggestions 的 Browser Back／Forward、UI back、reload 與 filter preservation。
@@ -784,7 +784,7 @@ flowchart LR
 
 **2026-07-18 執行紀錄**
 
-- `playwright.config.ts` 已建立 `desktop-chromium`、Pixel 7 `mobile-touch` 與 `visual-chromium`；快照 path template 刻意不含 project name，因此既有 Win32／Linux 基準仍可沿用。
+- `playwright.config.ts` 已建立 `desktop-chromium`、Pixel 7 `mobile-touch` 與 `visual-chromium`；touch project 除專用觸控 spec 外，也直接執行 navigation equivalence、async navigation 與 setup 核心流程。
 - 新增 `test/e2e/mobile-touch.spec.ts`：runtime 斷言 `maxTouchPoints > 0`、`hover: hover = false`、`pointer: coarse = true`，並實際 tap 26px 透明路線 hit target、全路網 coarse picker 與 636×381 初始化 retry。
 - 新增 `test/e2e/eta-lifecycle.spec.ts`：hidden 狀態不刷新、visible resume 只刷新一次，刷新未完成時的連續 visibility events 由既有 disabled guard 合併，完成後仍可手動 retry。
 - setup 回歸新增 route `dblclick`，確認只建立一個 stops history entry；一次 Back 回 routes、再一次 Back 回 closed，不會產生重複步驟。
@@ -833,3 +833,28 @@ flowchart LR
 - 手機隱藏 zoom controls、取消 hover tooltip、放大 hit target。
 
 上述決策不影響本輪要求的核心 invariant：同一操作的返回結果一致、URL 不說謊、舊回應不能覆蓋新狀態、資料可信度必須清楚。
+
+## 14. `e371914` 修復後反向驗證追補
+
+反向驗證確認第一輪修復仍有次要入口、overlay request scope、deep-link hydration、舊 snapshot identity 與 degraded metadata 的缺口。本輪依「先建立可失敗的操作順序，再改產品程式」處理，沒有重新進行 repo-wide audit。
+
+| 追補範圍 | 本輪處理 |
+| --- | --- |
+| ULA-001 | stop search、network route、place route／preview 與 nearby 選點改走明確 child history；URL 決定 view，missing／malformed／legacy history.state 可原地 canonicalize，不在 popstate 補推 entry |
+| ULA-002 | setup state 加入 version、效期、shape validation、query conflict fallback 與 push／replace 容量降級；route catalogue 不再存入 history.state |
+| ULA-003 | 首頁 deep link 同時帶 `placeId + stopUid`；舊 placeId 404 或缺少 placeId 時，以 active snapshot 的 `city + stopUid` 重新解析 |
+| ULA-005 | 全路網 overlay 使用獨立 request coordinator；URL hydration 使用跨 await identity 與 AbortSignal，Back 後晚到的 place／trip 回應不能復活舊 view |
+| ULA-006 | 保留原 vehicle epoch，另讓 vehicles response 保留 warning；401 與 degraded empty 不再同樣被靜默處理 |
+| ULA-007 | vehicles 與 journey ETA 都回傳 warning metadata；degraded response 採 `no-store`，個人 token 401 保持 coded recovery path |
+| ULA-008 | journey `source` 由 optional 改成必須；client 對 missing／invalid source 將 minutes 降成 unknown，不能參與精確排序或轉乘判斷 |
+| ULA-TEST-001 | 新增 secondary-entry history、legacy state、overlay/main request、late hydration、favorite fallback、setup quota、journey source／warning 契約測試；核心 navigation／async／setup spec 直接跑 Pixel 7 project |
+
+### 反向驗證後的本機證據
+
+- `npm test`：51 files，316/316 tests。
+- `npm run typecheck`、`npm run build:map`：通過。
+- `desktop-chromium`：75/75。
+- `mobile-touch`：25/25；包含核心 navigation equivalence、async navigation 與 setup，不再只有 touch 專用 spec。
+- `visual-chromium`：6/6；unknown ETA 不再顯示精確分鐘，因此更新 `map-trip-results-win32.png` 基準。
+- `git diff --check`：通過。
+- 尚未另行 commit、push 或部署。

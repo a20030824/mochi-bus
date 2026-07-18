@@ -83,4 +83,39 @@ describe('map API client', () => {
       realtime: { rateLimited: true },
     })
   })
+
+  it('drops apparently precise journey minutes when the source contract is missing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      estimates: [
+        { key: 'unknown', minutes: 1 },
+        { key: 'live', minutes: 8, source: 'realtime' },
+      ],
+      warning: 'tdx-rate-limit',
+    }))))
+
+    await expect(mapApi.journeyEta('Taipei', [
+      { key: 'unknown', patternId: 'A:0', sequence: 1 },
+      { key: 'live', patternId: 'B:0', sequence: 1 },
+    ])).resolves.toEqual({
+      estimates: [
+        expect.objectContaining({ key: 'unknown', minutes: null, source: 'none' }),
+        expect.objectContaining({ key: 'live', minutes: 8, source: 'realtime' }),
+      ],
+      warning: 'tdx-rate-limit',
+    })
+  })
+
+  it('preserves vehicle degradation metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      vehicles: [],
+      warning: 'tdx-unavailable',
+    }))))
+
+    await expect(mapApi.vehicles('Taipei', {
+      routeName: '307', routeUid: 'TPE307', variantKey: '307:0', direction: 0,
+      label: '起點 → 終點', subRouteName: '307', updatedAt: null,
+      shape: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } },
+      stops: { type: 'FeatureCollection', features: [] },
+    })).resolves.toEqual({ vehicles: [], warning: 'tdx-unavailable' })
+  })
 })

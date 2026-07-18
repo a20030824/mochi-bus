@@ -136,8 +136,8 @@ async function mockTripResults(page: Page) {
   await page.route('**/api/v1/map/transfer*', (route) => route.fulfill({ json: { plans: [transferPlan] } }))
   await page.route('**/api/v1/map/journey-eta', (route) => route.fulfill({
     json: { estimates: [
-      { key: 'transfer:0:first', minutes: 5 },
-      { key: 'transfer:0:second', minutes: 12 },
+      { key: 'transfer:0:first', minutes: 5, source: 'none' },
+      { key: 'transfer:0:second', minutes: 12, source: 'none' },
     ] },
   }))
   await page.route(/\/api\/v1\/map\/route(?:\?|$)/, (route) => {

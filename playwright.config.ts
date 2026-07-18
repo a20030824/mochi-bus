@@ -23,7 +23,12 @@ export default defineConfig({
     },
     {
       name: 'mobile-touch',
-      testMatch: /mobile-touch\.spec\.ts/,
+      testMatch: [
+        /mobile-touch\.spec\.ts/,
+        /map-navigation-equivalence\.spec\.ts/,
+        /map-async-navigation\.spec\.ts/,
+        /setup\.spec\.ts/,
+      ],
       use: { ...devices['Pixel 7'] },
     },
     {

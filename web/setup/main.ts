@@ -53,6 +53,8 @@ type SuggestionSnapshot = {
 }
 
 type SetupHistoryState = {
+  setupVersion: 1
+  savedAt: number
   setupStep: 'closed' | 'routes' | 'stops' | 'suggestions'
   setupDepth: number
   city?: string
@@ -87,6 +89,7 @@ let category = '全部'
 let selectedRoute: RouteItem | null = null
 let directionGroups: DirectionGroup[] = []
 let suggestionSnapshot: SuggestionSnapshot | undefined
+let pendingRouteScrollTop: number | undefined
 // 快速連續操作(換城市、連點路線)時,慢的舊回應不能蓋掉快的新結果;
 // 三段(路線/站牌/建議)共用一個 epoch,跟 web/map/main.ts 的 nav-request 同一套想法。
 let requestId = 0
@@ -180,7 +183,7 @@ function renderBoards() {
 
 function openPicker() {
   if (setupHistoryState().setupStep === 'closed') {
-    history.pushState(routeHistoryState(1), '', setupUrl('routes'))
+    pushSetupState(routeHistoryState(1), setupUrl('routes'))
   }
   showRoutePicker()
 }
@@ -318,7 +321,16 @@ async function loadRoutes() {
     message.textContent = '共 ' + routes.length + ' 條路線'
     renderCategories()
     renderRoutes()
-    saveRouteHistoryState()
+    if (pendingRouteScrollTop !== undefined) {
+      const scrollTop = pendingRouteScrollTop
+      pendingRouteScrollTop = undefined
+      queueMicrotask(() => {
+        grid.scrollTop = scrollTop
+        saveRouteHistoryState()
+      })
+    } else {
+      saveRouteHistoryState()
+    }
   } catch (error) {
     if (id !== requestId) return
     message.textContent = error instanceof Error && error.message ? error.message : '路線載入失敗'
@@ -343,13 +355,13 @@ async function chooseRoute(route: RouteItem) {
     if (id !== requestId) return
     routePicker.hidden = true
     renderDirections(body.groups ?? [])
-    history.pushState({
+    pushSetupState({
       ...routeHistoryState(2),
       setupStep: 'stops',
       setupDepth: 2,
       selectedRoute: route,
       groups: body.groups ?? [],
-    } satisfies SetupHistoryState, '', setupUrl('stops', route))
+    } satisfies SetupHistoryState, setupUrl('stops', route))
   } catch (error) {
     if (id !== requestId) return
     message.textContent = error instanceof Error && error.message ? error.message : '站牌載入失敗'
@@ -453,14 +465,13 @@ async function loadSuggestions(group: DirectionGroup, stop: DirectionGroup['stop
     .slice(0, 12)
   renderSuggestions(stop.stopName, all, selectedKey, frequency, place)
   suggestionSnapshot = { stopName: stop.stopName, items: all, selectedKey, frequency, place }
-  history.pushState({
+  pushSetupState({
     ...routeHistoryState(3),
     setupStep: 'suggestions',
     setupDepth: 3,
     selectedRoute: selectedRoute ?? undefined,
-    groups: directionGroups,
     suggestion: suggestionSnapshot,
-  } satisfies SetupHistoryState, '', setupUrl('suggestions', selectedRoute ?? undefined, stop))
+  } satisfies SetupHistoryState, setupUrl('suggestions', selectedRoute ?? undefined, stop))
 }
 
 function renderSuggestions(
@@ -648,29 +659,136 @@ city.addEventListener('change', () => {
 })
 renderBoards()
 
+function isRouteItem(value: unknown): value is RouteItem {
+  return Boolean(value && typeof value === 'object' && typeof (value as RouteItem).routeName === 'string')
+}
+
+function isDirectionGroup(value: unknown): value is DirectionGroup {
+  if (!value || typeof value !== 'object') return false
+  const group = value as Partial<DirectionGroup>
+  return typeof group.label === 'string'
+    && typeof group.subRouteName === 'string'
+    && (group.direction === 0 || group.direction === 1 || group.direction === 2)
+    && Array.isArray(group.stops)
+    && group.stops.every((stop) => Boolean(stop
+      && typeof stop.stopUid === 'string'
+      && typeof stop.stopName === 'string'
+      && typeof stop.sequence === 'number'))
+}
+
+function isSuggestionSnapshot(value: unknown): value is SuggestionSnapshot {
+  if (!value || typeof value !== 'object') return false
+  const snapshot = value as Partial<SuggestionSnapshot>
+  const validPlace = snapshot.place === undefined || Boolean(snapshot.place
+    && typeof snapshot.place.placeId === 'string'
+    && typeof snapshot.place.name === 'string'
+    && typeof snapshot.place.latitude === 'number' && Number.isFinite(snapshot.place.latitude)
+    && typeof snapshot.place.longitude === 'number' && Number.isFinite(snapshot.place.longitude))
+  return typeof snapshot.stopName === 'string'
+    && Array.isArray(snapshot.items)
+    && snapshot.items.every((item) => Boolean(item
+      && typeof item.routeName === 'string'
+      && typeof item.stopUid === 'string'
+      && (item.direction === 0 || item.direction === 1 || item.direction === 2)))
+    && typeof snapshot.selectedKey === 'string'
+    && Boolean(snapshot.frequency && typeof snapshot.frequency === 'object')
+    && Object.values(snapshot.frequency ?? {}).every((count) => typeof count === 'number' && Number.isFinite(count))
+    && validPlace
+}
+
 function setupHistoryState(): SetupHistoryState {
   const state = history.state as Partial<SetupHistoryState> | null
-  return state?.setupStep
-    ? { setupStep: state.setupStep, setupDepth: state.setupDepth ?? 0, ...state }
-    : { setupStep: 'closed', setupDepth: 0 }
+  const params = new URLSearchParams(location.search)
+  const urlStep = params.get('step')
+  const expectedStep = urlStep === 'routes' || urlStep === 'stops' || urlStep === 'suggestions' ? urlStep : 'closed'
+  const validStep = state?.setupStep === 'closed' || state?.setupStep === 'routes'
+    || state?.setupStep === 'stops' || state?.setupStep === 'suggestions'
+  const valid = state?.setupVersion === 1
+    && validStep
+    && state.setupStep === expectedStep
+    && Number.isInteger(state.setupDepth)
+    && (state.setupDepth ?? -1) >= 0
+    && (state.setupDepth ?? 4) <= 3
+    && typeof state.savedAt === 'number'
+    && state.savedAt >= 0
+    && state.savedAt <= Date.now() + 60_000
+    && Date.now() - state.savedAt < 30 * 60 * 1000
+    && (state.city === undefined || typeof state.city === 'string')
+    && (state.filter === undefined || typeof state.filter === 'string')
+    && (state.category === undefined || typeof state.category === 'string')
+    && (state.scrollTop === undefined || typeof state.scrollTop === 'number')
+    && (state.routes === undefined || (Array.isArray(state.routes) && state.routes.every(isRouteItem)))
+    && (state.selectedRoute === undefined || isRouteItem(state.selectedRoute))
+    && (state.groups === undefined || (Array.isArray(state.groups) && state.groups.every(isDirectionGroup)))
+    && (state.suggestion === undefined || isSuggestionSnapshot(state.suggestion))
+  if (valid) return state as SetupHistoryState
+  const fallbackCity = params.get('city') ?? undefined
+  if (expectedStep !== 'closed' && fallbackCity) {
+    return {
+      setupVersion: 1,
+      savedAt: Date.now(),
+      setupStep: 'routes',
+      setupDepth: 1,
+      city: fallbackCity,
+    }
+  }
+  return { setupVersion: 1, savedAt: Date.now(), setupStep: 'closed', setupDepth: 0 }
+}
+
+function minimalSetupState(state: SetupHistoryState): SetupHistoryState {
+  return {
+    setupVersion: 1,
+    savedAt: Date.now(),
+    setupStep: state.setupStep,
+    setupDepth: state.setupDepth,
+    city: state.city,
+    filter: state.filter,
+    category: state.category,
+    scrollTop: state.scrollTop,
+  }
+}
+
+function replaceSetupState(state: SetupHistoryState, url: string) {
+  try {
+    history.replaceState(state, '', url)
+  } catch {
+    try {
+      history.replaceState(minimalSetupState(state), '', url)
+    } catch {
+      if (`${location.pathname}${location.search}` !== url) location.replace(url)
+    }
+  }
+}
+
+function pushSetupState(state: SetupHistoryState, url: string) {
+  try {
+    history.pushState(state, '', url)
+  } catch {
+    try {
+      history.pushState(minimalSetupState(state), '', url)
+    } catch {
+      location.assign(url)
+    }
+  }
 }
 
 function routeHistoryState(depth: number): SetupHistoryState {
   return {
+    setupVersion: 1,
+    savedAt: Date.now(),
     setupStep: 'routes',
     setupDepth: depth,
     city: city.value,
     filter: filter.value,
     category,
     scrollTop: grid.scrollTop,
-    routes,
   }
 }
 
 function saveRouteHistoryState() {
   const state = setupHistoryState()
   if (state.setupStep !== 'routes') return
-  history.replaceState(routeHistoryState(state.setupDepth), '', setupUrl('routes'))
+  replaceSetupState(routeHistoryState(state.setupDepth), setupUrl('routes'))
 }
 
 function setupUrl(
@@ -707,10 +825,16 @@ function hydrateSetupHistory(focusClosed = false) {
   directionGroups = state.groups ?? []
   suggestionSnapshot = state.suggestion
   if (state.setupStep === 'routes') {
+    pendingRouteScrollTop = state.scrollTop ?? 0
     showRoutePicker()
     renderCategories()
     renderRoutes()
-    queueMicrotask(() => { grid.scrollTop = state.scrollTop ?? 0 })
+    if (routes.length) {
+      queueMicrotask(() => {
+        grid.scrollTop = pendingRouteScrollTop ?? 0
+        pendingRouteScrollTop = undefined
+      })
+    }
     return
   }
   routePicker.hidden = true
@@ -730,12 +854,19 @@ function hydrateSetupHistory(focusClosed = false) {
     )
     return
   }
-  history.replaceState(routeHistoryState(1), '', setupUrl('routes'))
+  replaceSetupState(routeHistoryState(1), setupUrl('routes'))
   showRoutePicker()
 }
 
-if (!(history.state as Partial<SetupHistoryState> | null)?.setupStep) {
-  history.replaceState({ setupStep: 'closed', setupDepth: 0 } satisfies SetupHistoryState, '', '/setup')
-}
+const initialSetupState = setupHistoryState()
+const initialUrlStep = new URLSearchParams(location.search).get('step')
+replaceSetupState(
+  initialSetupState,
+  initialSetupState.setupStep === 'closed'
+    ? '/setup'
+    : initialSetupState.setupStep === initialUrlStep
+      ? `${location.pathname}${location.search}`
+      : `/setup?${new URLSearchParams({ step: 'routes', city: initialSetupState.city ?? city.value })}`,
+)
 window.addEventListener('popstate', () => hydrateSetupHistory(true))
 hydrateSetupHistory()

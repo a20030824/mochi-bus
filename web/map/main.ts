@@ -23,7 +23,7 @@ import {
   splitEtaLabel,
   type EtaSource,
 } from '../../src/domain/eta-presentation'
-import { tdxWarningMessages } from '../../src/domain/tdx-warning'
+import { tdxWarningMessages, type TDXWarning } from '../../src/domain/tdx-warning'
 import { isTdxTokenRejectedError } from '../tdx/api-client'
 import { splitRouteDisplayName } from '../lib/route-display'
 import { createMapCameraController } from './camera-controller'
@@ -104,6 +104,8 @@ function overviewMaxZoom(baseZoom: number): number {
 }
 
 type TripResultsHistorySnapshot = {
+  version: 1
+  savedAt: number
   city: string
   from: NearbyPlace
   to: NearbyPlace
@@ -113,6 +115,46 @@ type TripResultsHistorySnapshot = {
   transferPlans: TransferPlan[]
   selectedDirectIndex: number
   selectedTransferIndex: number
+  warning?: TDXWarning
+}
+
+type MapView = 'overview' | 'region' | 'catalogue' | 'route' | 'nearby' | 'place' | 'trip-select' | 'trip-results'
+const mapViews = new Set<MapView>(['overview', 'region', 'catalogue', 'route', 'nearby', 'place', 'trip-select', 'trip-results'])
+
+function historyRecord(): Record<string, unknown> {
+  return history.state && typeof history.state === 'object' && !Array.isArray(history.state)
+    ? history.state as Record<string, unknown>
+    : {}
+}
+
+function readMapView(state: unknown): MapView | undefined {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return
+  const view = (state as { mapView?: unknown }).mapView
+  return typeof view === 'string' && mapViews.has(view as MapView) ? view as MapView : undefined
+}
+
+function mapViewFromUrl(params = new URLSearchParams(location.search)): MapView {
+  if (params.get('region')) return 'region'
+  if (!params.get('city')) return 'overview'
+  if (params.has('route')) return 'route'
+  if (params.has('place') || params.has('stopUid')) return 'place'
+  if (params.has('lat') && params.has('lon')) return 'nearby'
+  if (params.get('trip') === 'results') return 'trip-results'
+  if (params.get('trip') === 'select') return 'trip-select'
+  return 'catalogue'
+}
+
+function canonicalizeMapHistoryState(params = new URLSearchParams(location.search)): MapView {
+  const view = mapViewFromUrl(params)
+  const current = historyRecord()
+  const parent = readMapView({ mapView: current.mapParent })
+    ?? (view === 'region' ? 'overview' : view === 'catalogue' ? 'region' : view === 'overview' ? undefined : 'catalogue')
+  if (readMapView(current) !== view || current.mapParent !== parent) {
+    const next = { ...current, mapView: view, ...(parent ? { mapParent: parent } : {}) }
+    if (!parent) delete next.mapParent
+    history.replaceState(next, '', location.href)
+  }
+  return view
 }
 
 const mapNode = requiredElement('map')
@@ -134,11 +176,7 @@ document.getElementById('map-app')?.appendChild(networkButton)
 // 滑鼠本身夠精準,放大命中範圍反而讓 hover 判定跟不上游標移動(看起來卡住不會變回原狀)。
 const hoverCapable = window.matchMedia('(hover: hover)').matches
 
-window.addEventListener('popstate', (event) => {
-  if (['overview', 'region', 'catalogue', 'route', 'nearby', 'place', 'trip-select', 'trip-results'].includes(event.state?.mapView)) {
-    void hydrateMapLocation()
-  }
-})
+window.addEventListener('popstate', () => void hydrateMapLocation())
 
 // 互動圖層一律用 SVG:canvas 會以整張地圖大小攔截點擊,
 // 疊在上層的 pane 會擋住下層線條的 click(候選路線點不到、誤觸地圖點擊)。
@@ -200,6 +238,7 @@ let tripStage: 'idle' | 'from' | 'to' = 'idle'
 let tripSelecting = false
 let lastDirectRoutes: DirectRoute[] = []
 let lastTransferPlans: TransferPlan[] = []
+let journeyWarning: TDXWarning | undefined
 let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = 'browse'
 let routeReturnsToTrip = false
 let activeRouteColor = '#b85f49'
@@ -220,6 +259,15 @@ function cancelNavRequest(): void {
 }
 function isStaleNav(requestId: number): boolean {
   return navRequests.isStale(requestId)
+}
+// 全路網是可疊加的輔助圖層，不是 drawer 主視圖。它不能取消路線、站牌或
+// 行程查詢；關閉圖層時則只作廢自己的載入。
+const networkRequests = createNavRequestCoordinator()
+// URL hydration 可能跨過載入目錄、解析站牌與還原分享行程等多個 await；
+// Back/Forward 或另一個 hydration 一開始就讓整條舊鏈失效。
+const locationHydrations = createNavRequestCoordinator()
+function cancelLocationHydration(): void {
+  locationHydrations.cancel()
 }
 let selectedTransferIndex = 0
 let selectedDirectIndex = 0
@@ -243,8 +291,9 @@ const cityNetwork = createCityNetworkController({
   button: networkButton,
   hoverCapable,
   routeColor,
-  beginRequest: beginNavRequest,
-  isStaleRequest: isStaleNav,
+  beginRequest: () => networkRequests.begin(),
+  cancelRequest: () => networkRequests.cancel(),
+  isStaleRequest: (requestId) => networkRequests.isStale(requestId),
   loadNetwork: mapApi.network,
   setStatus,
 })
@@ -376,7 +425,7 @@ async function initialise() {
 }
 
 function seedInitialMapHistory() {
-  if (history.state?.mapView) return
+  if (readMapView(history.state)) return
   const originalUrl = `${location.pathname}${location.search}`
   const params = new URLSearchParams(location.search)
   const cityCode = params.get('city')
@@ -393,7 +442,7 @@ function seedInitialMapHistory() {
   history.pushState({ mapView: 'catalogue', mapParent: 'region' }, '', `/map?city=${encodeURIComponent(city.code)}`)
   const mapView = params.has('route')
     ? 'route'
-    : params.has('place')
+    : params.has('place') || params.has('stopUid')
       ? 'place'
       : params.has('lat') && params.has('lon')
         ? 'nearby'
@@ -405,6 +454,10 @@ function seedInitialMapHistory() {
 
 async function hydrateMapLocation() {
   const params = new URLSearchParams(location.search)
+  canonicalizeMapHistoryState(params)
+  const hydration = locationHydrations.begin()
+  const hydrationIsStale = () => hydration.signal.aborted
+    || locationHydrations.isStale(hydration.requestId)
   const regionCode = params.get('region') as RegionCode | null
   if (regionCode && regions.some((region) => region.code === regionCode)) {
     showRegion(regionCode)
@@ -424,20 +477,25 @@ async function hydrateMapLocation() {
         const returnToTrip = history.state?.mapParent === 'trip-results' && restoreTripResultsState()
         await loadRoute(routeName, params.get('variant'), returnToTrip)
       } else {
-        if (params.get('trip') === 'results' && restoreTripResultsState()) {
+        if (params.get('trip') === 'results' && restoreTripResultsState(params)) {
           returnToTripResults()
           return
         }
-        if (params.get('trip') === 'results' && await restoreSharedTripResults(params)) return
+        if (params.get('trip') === 'results') {
+          const restored = await restoreSharedTripResults(params, hydration.signal, hydrationIsStale)
+          if (hydrationIsStale() || restored) return
+        }
         if (params.get('trip') === 'select') {
           clearTripState()
           renderTripSelectionStep('from')
           return
         }
         await chooseCity(city)
+        if (hydrationIsStale()) return
         const placeId = params.get('place')
-        if (placeId) {
-          await openPlaceById(placeId)
+        const stopUid = params.get('stopUid')
+        if (placeId || stopUid) {
+          await openPlaceById(placeId, hydration.signal, hydrationIsStale, stopUid)
           return
         }
         const latitudeParam = params.get('lat')
@@ -446,7 +504,7 @@ async function hydrateMapLocation() {
         const longitude = Number(longitudeParam)
         if (latitudeParam !== null && longitudeParam !== null && Number.isFinite(latitude) && Number.isFinite(longitude)) {
           camera.focusPoint([latitude, longitude], 15)
-          await findNearbyPlaces(latitude, longitude)
+          await findNearbyPlaces(latitude, longitude, false, 'replace')
         }
       }
       return
@@ -499,7 +557,7 @@ map.on('click', (event) => {
     return
   }
   if (pick?.kind === 'route') {
-    void loadRoute(pick.route.routeName, pick.route.variantKey, false, routeColor(pick.route.routeName))
+    openChildRoute(pick.route.routeName, pick.route.variantKey, routeColor(pick.route.routeName))
     return
   }
   if (map.getZoom() >= 14) void findNearbyPlaces(event.latlng.lat, event.latlng.lng, true)
@@ -510,6 +568,7 @@ map.on('click', (event) => {
 })
 
 function showTaiwan() {
+  cancelLocationHydration()
   stopVehicleRefresh()
   cancelNavRequest()
   clearPendingTripSelections()
@@ -559,10 +618,12 @@ function locateCityButton(): HTMLButtonElement {
 }
 
 async function jumpToNearestCity(button: HTMLButtonElement) {
+  const { requestId, signal } = beginNavRequest()
   button.disabled = true
   button.textContent = '正在判斷你的位置…'
   try {
-    const data = await mapApi.locate()
+    const data = await mapApi.locate(signal)
+    if (isStaleNav(requestId)) return
     if (!cities.length) throw new Error('這次判斷不出位置，直接手動選吧')
     const origin: [number, number] = [data.latitude, data.longitude]
     const nearest = cities.reduce((best, city) =>
@@ -572,6 +633,7 @@ async function jumpToNearestCity(button: HTMLButtonElement) {
     openCity(nearest)
     setStatus(`猜你在${nearest.name}，猜錯按「返回縣市」重選。`)
   } catch (error) {
+    if (isStaleNav(requestId)) return
     setStatus(error instanceof Error && error.message ? error.message : '定位失敗，直接手動選吧', true)
     button.disabled = false
     button.textContent = '跳到你所在的縣市'
@@ -610,6 +672,7 @@ function renderRegionMarkers() {
 }
 
 function openRegion(regionCode: RegionCode) {
+  cancelLocationHydration()
   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
   history.pushState({ ...currentState, mapView: 'region', mapParent: 'overview' }, '', `/map?region=${regionCode}`)
   showRegion(regionCode)
@@ -670,6 +733,7 @@ function showRegion(regionCode: RegionCode) {
 }
 
 function openCity(city: MapCity) {
+  cancelLocationHydration()
   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
   if (currentState.mapView !== 'region') {
     history.pushState({ ...currentState, mapView: 'region', mapParent: 'overview' }, '', `/map?region=${city.region}`)
@@ -770,16 +834,19 @@ function renderRoutePicker() {
     })
     setViewBack(returnToRegion)
     const cityCode = activeCity.code
+    const { requestId, signal } = beginNavRequest()
     void (async () => {
       try {
-        routes = await mapApi.routes(cityCode)
+        const loadedRoutes = await mapApi.routes(cityCode, signal)
+        if (isStaleNav(requestId) || activeCity?.code !== cityCode || interactionMode !== 'browse') return
+        routes = loadedRoutes
         routesCityCode = cityCode
         category = '全部'
         // 載回來時使用者可能已經離開選單(開了路線、換了城市),別把畫面搶回來
         if (interactionMode === 'browse' && activeCity?.code === cityCode) renderRoutePicker()
       } catch {
         // 同樣不能把失敗畫面搶回使用者已經離開的城市/選單
-        if (interactionMode !== 'browse' || activeCity?.code !== cityCode) return
+        if (isStaleNav(requestId) || interactionMode !== 'browse' || activeCity?.code !== cityCode) return
         setStatus('目前無法載入這個縣市的路線。', true)
         renderDrawer({
           mode: 'compact',
@@ -916,6 +983,7 @@ function saveRouteCatalogueState(url = location.href) {
 
 function openCatalogueRoute(routeName: string) {
   if (!activeCity) return
+  cancelLocationHydration()
   saveRouteCatalogueState()
   history.pushState({
     ...history.state,
@@ -923,6 +991,20 @@ function openCatalogueRoute(routeName: string) {
     mapParent: 'catalogue',
   }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}`)
   void loadRoute(routeName)
+}
+
+function openChildRoute(routeName: string, preferredVariant?: string | null, color = routeColor(routeName)) {
+  if (!activeCity) return
+  cancelLocationHydration()
+  const currentState = historyRecord()
+  const parent = readMapView(currentState) ?? mapViewFromUrl()
+  if (parent === 'catalogue') saveRouteCatalogueState()
+  history.pushState({
+    ...historyRecord(),
+    mapView: 'route',
+    mapParent: parent,
+  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}`)
+  void loadRoute(routeName, preferredVariant, false, color, parent === 'catalogue' ? undefined : () => history.back())
 }
 
 async function searchPlaces(query: string, signal?: AbortSignal): Promise<SearchPlace[]> {
@@ -1100,6 +1182,14 @@ async function selectTripPlace(kind: TripSelectionKind, place: SearchPlace) {
 
 // 搜尋選中的站牌直接開站牌路線視圖(跟 deep link 進站牌同一條路)。
 function openSearchedPlace(place: SearchPlace) {
+  if (!activeCity) return
+  cancelLocationHydration()
+  saveRouteCatalogueState()
+  history.pushState({
+    ...historyRecord(),
+    mapView: 'place',
+    mapParent: 'catalogue',
+  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&place=${encodeURIComponent(place.placeId)}`)
   camera.focusPoint([place.latitude, place.longitude], 16)
   const nearbyPlace: NearbyPlace = { ...place, distanceMeters: 0 }
   lastNearbyOrigin = [place.latitude, place.longitude]
@@ -1115,6 +1205,7 @@ function tripModeButton(): HTMLButtonElement {
   button.setAttribute('aria-label', '路線規劃：選擇出發位置與目的地')
   decorateMapFeatureButton(button, 'trip', '↗', '規劃')
   button.addEventListener('click', () => {
+    cancelLocationHydration()
     markMapFeatureUsed(button, 'trip')
     if (activeCity) {
       const currentState = history.state && typeof history.state === 'object' ? history.state : {}
@@ -1622,7 +1713,12 @@ function drawVariant(variant: RouteMapVariant) {
     direction: String(variant.direction),
     variant: variant.variantKey,
   })
-  history.replaceState(history.state, '', `/map?${params}`)
+  const currentState = historyRecord()
+  history.replaceState({
+    ...currentState,
+    mapView: 'route',
+    mapParent: readMapView({ mapView: currentState.mapParent }) ?? 'catalogue',
+  }, '', `/map?${params}`)
   setDocumentTitle(`${variant.routeName} 公車路線圖`)
   startVehicleRefresh(variant)
 }
@@ -1659,7 +1755,7 @@ function startVehicleRefresh(variant: RouteMapVariant) {
     const controller = new AbortController()
     vehicleRefreshController = controller
     try {
-      const vehicles = await mapApi.vehicles(cityCode, variant, controller.signal)
+      const response = await mapApi.vehicles(cityCode, variant, controller.signal)
       if (
         controller.signal.aborted
         || vehicleRefreshEpoch !== sessionEpoch
@@ -1667,7 +1763,7 @@ function startVehicleRefresh(variant: RouteMapVariant) {
         || interactionMode !== 'route'
       ) return
       vehicleLayer.clearLayers()
-      vehicles.forEach((vehicle) => {
+      response.vehicles.forEach((vehicle) => {
         const azimuth = Number.isFinite(vehicle.azimuth) ? vehicle.azimuth as number : 0
         const marker = L.marker([vehicle.latitude, vehicle.longitude], {
           pane: 'vehiclePane',
@@ -1680,8 +1776,27 @@ function startVehicleRefresh(variant: RouteMapVariant) {
         })
         bindHoverTooltip(marker, `${vehicle.plate ?? '公車'}${vehicle.speed === null ? '' : ` · ${Math.round(vehicle.speed)} km/h`}`).addTo(vehicleLayer)
       })
-    } catch {
-      // 車輛定位是輔助資訊，失敗時保留主路線而不打斷操作。
+      drawer.querySelector('.vehicle-degraded-notice')?.remove()
+      if (response.warning) {
+        const message = tdxWarningMessages[response.warning]
+        setStatus(message, true)
+        const notice = degradedNotice(message, () => void refresh())
+        notice.classList.add('vehicle-degraded-notice')
+        drawer.appendChild(notice)
+      }
+    } catch (error) {
+      // 車輛定位是輔助資訊，失敗時保留主路線，但不能把授權失效誤裝成「沒有車」。
+      if (!controller.signal.aborted && vehicleRefreshEpoch === sessionEpoch) {
+        const credentialRejected = isTdxTokenRejectedError(error)
+        const message = credentialRejected
+          ? 'TDX 授權已失效；路線仍可使用，請到設定更新授權。'
+          : '暫時無法更新車輛位置；路線與站牌仍可使用。'
+        setStatus(message, true)
+        drawer.querySelector('.vehicle-degraded-notice')?.remove()
+        const notice = degradedNotice(message, () => void refresh(), credentialRejected)
+        notice.classList.add('vehicle-degraded-notice')
+        drawer.appendChild(notice)
+      }
     } finally {
       if (vehicleRefreshController === controller) vehicleRefreshController = undefined
     }
@@ -1699,8 +1814,26 @@ function stopVehicleRefresh() {
   vehicleLayer.clearLayers()
 }
 
-async function findNearbyPlaces(latitude: number, longitude: number, autoPreview = false) {
+async function findNearbyPlaces(
+  latitude: number,
+  longitude: number,
+  autoPreview = false,
+  historyMode: 'push' | 'replace' = 'push',
+) {
   if (!activeCity) return
+  if (historyMode === 'push') cancelLocationHydration()
+  const currentState = historyRecord()
+  const currentView = readMapView(currentState) ?? mapViewFromUrl()
+  const nearbyState = {
+    ...currentState,
+    mapView: 'nearby',
+    mapParent: currentView === 'nearby'
+      ? readMapView({ mapView: currentState.mapParent }) ?? 'catalogue'
+      : currentView,
+  }
+  const nearbyUrl = `/map?city=${encodeURIComponent(activeCity.code)}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`
+  if (historyMode === 'push' && currentView !== 'nearby') history.pushState(nearbyState, '', nearbyUrl)
+  else history.replaceState(nearbyState, '', nearbyUrl)
   stopVehicleRefresh()
   cityNetwork.hide()
   // 只有「選點進行中」需要中止規劃;已有行程結果就保留,
@@ -1752,7 +1885,7 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
         drawerBack('附近站牌', renderNearbyPlaces),
         heading('附近站牌讀取失敗', message),
       ],
-      content: [retryButton(() => void findNearbyPlaces(latitude, longitude, autoPreview))],
+      content: [retryButton(() => void findNearbyPlaces(latitude, longitude, autoPreview, 'replace'))],
     })
   }
 }
@@ -1853,12 +1986,13 @@ async function loadDirectRoutes() {
   const from = selectedFrom
   const to = selectedTo
   const { requestId, signal } = beginNavRequest()
+  journeyWarning = undefined
   setStatus(`正在找 ${from.name} → ${to.name} 的直達車…`)
   try {
     const directRoutes = await mapApi.direct(activeCity.code, from.placeId, to.placeId, signal)
     if (isStaleNav(requestId)) return
     if (directRoutes.length) {
-      const rankedRoutes = await rankDirectRoutesByEta(directRoutes)
+      const rankedRoutes = await rankDirectRoutesByEta(directRoutes, signal)
       if (isStaleNav(requestId)) return
       lastDirectRoutes = rankedRoutes
       lastTransferPlans = []
@@ -1872,7 +2006,7 @@ async function loadDirectRoutes() {
     if (isStaleNav(requestId)) return
     lastDirectRoutes = []
     selectedDirectIndex = 0
-    const rankedPlans = await rankTransferPlansByEta(transferPlans)
+    const rankedPlans = await rankTransferPlansByEta(transferPlans, signal)
     if (isStaleNav(requestId)) return
     lastTransferPlans = rankedPlans
     selectedTransferIndex = 0
@@ -1880,7 +2014,9 @@ async function loadDirectRoutes() {
     await previewTransferPlans(rankedPlans, { fitCamera: true })
   } catch (error) {
     if (isStaleNav(requestId)) return
-    setStatus(error instanceof Error && error.message ? error.message : '直達路線查詢失敗', true)
+    const message = error instanceof Error && error.message ? error.message : '直達路線查詢失敗'
+    const credentialRejected = isTdxTokenRejectedError(error)
+    setStatus(message, true)
     // 這時 tripStage 已回 idle(點地圖會變成逛附近站牌),不能把使用者
     // 留在「再點一下目的地」的殘局:給重試,退路則回到重新選目的地。
     renderDrawer({
@@ -1888,38 +2024,44 @@ async function loadDirectRoutes() {
       content: [
         drawerBack('重新選目的地', resumeDestinationSelection),
         heading('查詢失敗了', `${from.name} → ${to.name} 暫時查不到，稍等一下再試。`),
-        retryButton(() => void loadDirectRoutes()),
+        degradedNotice(message, () => void loadDirectRoutes(), credentialRejected),
       ],
     })
     setViewBack(resumeDestinationSelection)
   }
 }
 
-async function fetchJourneyEta(legs: Array<{ key: string; patternId: string; sequence: number }>) {
+async function fetchJourneyEta(
+  legs: Array<{ key: string; patternId: string; sequence: number }>,
+  signal?: AbortSignal,
+) {
   if (!activeCity || !legs.length) return new Map<string, JourneyEtaValue>()
   try {
-    const estimates = await mapApi.journeyEta(activeCity.code, legs)
-    return new Map(estimates.map((estimate) => [
+    const response = await mapApi.journeyEta(activeCity.code, legs, signal)
+    journeyWarning = response.warning
+    return new Map(response.estimates.map((estimate) => [
       estimate.key,
       {
         minutes: estimate.minutes,
-        source: estimate.source ?? 'none',
+        source: estimate.source,
         departureBased: estimate.departureBased ?? false,
         headwayMinutes: estimate.headwayMinutes ?? null,
         nextDay: estimate.nextDay ?? false,
       },
     ]))
-  } catch {
+  } catch (error) {
+    if (isTdxTokenRejectedError(error)) throw error
+    journeyWarning = 'tdx-unavailable'
     return new Map<string, JourneyEtaValue>()
   }
 }
 
-async function rankDirectRoutesByEta(routesToRank: DirectRoute[]): Promise<DirectRoute[]> {
+async function rankDirectRoutesByEta(routesToRank: DirectRoute[], signal?: AbortSignal): Promise<DirectRoute[]> {
   const estimates = await fetchJourneyEta(routesToRank.map((route, index) => ({
     key: `direct:${index}`,
     patternId: route.variantKey,
     sequence: route.boardSequence,
-  })))
+  })), signal)
   return routesToRank.map((route, index) => {
     const estimate = estimates.get(`direct:${index}`)
     return {
@@ -1937,6 +2079,7 @@ async function rankDirectRoutesByEta(routesToRank: DirectRoute[]): Promise<Direc
 }
 
 function sortableJourneyMinutes(route: DirectRoute): number {
+  if (route.etaSource !== 'realtime' && route.etaSource !== 'schedule') return Number.POSITIVE_INFINITY
   if (route.etaDepartureBased || route.etaHeadwayMinutes || route.etaNextDay) return Number.POSITIVE_INFINITY
   return route.etaMinutes ?? Number.POSITIVE_INFINITY
 }
@@ -1949,11 +2092,11 @@ function isReliableJourneyArrival(estimate: JourneyEtaValue | undefined): boolea
     && !estimate.nextDay
 }
 
-async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPlan[]> {
+async function rankTransferPlansByEta(plans: TransferPlan[], signal?: AbortSignal): Promise<TransferPlan[]> {
   const estimates = await fetchJourneyEta(plans.flatMap((plan, index) => [
     { key: `transfer:${index}:first`, patternId: plan.first.variantKey, sequence: plan.first.boardSequence },
     { key: `transfer:${index}:second`, patternId: plan.second.variantKey, sequence: plan.second.boardSequence },
-  ]))
+  ]), signal)
   return plans.map((plan, index) => {
     const firstEstimate = estimates.get(`transfer:${index}:first`)
     const secondEstimate = estimates.get(`transfer:${index}:second`)
@@ -2053,7 +2196,10 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
       heading(`${selectedFrom.name} → ${selectedTo.name}`, directRoutes.length ? `${directRoutes.length} 個直達方向，淡色線為候選路線。` : '沒有直達路線'),
       ...(matchedControls ? [matchedControls] : []),
     ],
-    content: [list],
+    content: [
+      ...(journeyWarning ? [degradedNotice(tdxWarningMessages[journeyWarning], () => void loadDirectRoutes())] : []),
+      list,
+    ],
     footer: [reset],
   })
   clearStatus()
@@ -2156,7 +2302,10 @@ function renderTransferPlans(plans: TransferPlan[]) {
       heading(`${selectedFrom.name} → ${selectedTo.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
       ...(matchedControls ? [matchedControls] : []),
     ],
-    content: [list],
+    content: [
+      ...(journeyWarning ? [degradedNotice(tdxWarningMessages[journeyWarning], () => void loadDirectRoutes())] : []),
+      list,
+    ],
     footer: [tripModeButton()],
   })
   clearStatus()
@@ -2283,7 +2432,7 @@ async function previewPlaceRoutes(placeRoutes: PlaceRoute[], place: NearbyPlace)
   if (requestId !== previewRequest) return
   previews.forEach((preview) => {
     if (!preview) return
-    addSelectablePreview(preview.variant, preview.color, false, () => void showPlaceRoutes(place))
+    addSelectablePreview(preview.variant, preview.color, false)
   })
 }
 
@@ -2304,7 +2453,8 @@ function addSelectablePreview(
   target.on('mouseout', () => line.setStyle(normalStyle))
   target.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
-    void loadRoute(variant.routeName, variant.variantKey, returnToTrip, color, backAction)
+    if (returnToTrip) void loadRoute(variant.routeName, variant.variantKey, true, color, backAction)
+    else openChildRoute(variant.routeName, variant.variantKey, color)
   })
   return line
 }
@@ -2387,9 +2537,23 @@ function addJourneyLegPreview(
   return { fullLine, segmentLine, focusBounds, hasSegment: Boolean(segmentLine) }
 }
 
-async function openPlaceById(placeId: string) {
+async function openPlaceById(
+  placeId: string | null,
+  signal?: AbortSignal,
+  isStale: () => boolean = () => false,
+  stopUid?: string | null,
+) {
   if (!activeCity) return
-  const place = await mapApi.place(activeCity.code, placeId)
+  const cityCode = activeCity.code
+  let place: NearbyPlace
+  try {
+    if (!placeId) throw new Error('缺少站牌識別碼')
+    place = await mapApi.place(cityCode, placeId, signal)
+  } catch (error) {
+    if (!stopUid || signal?.aborted || isStale()) throw error
+    place = await mapApi.stopPlace(cityCode, stopUid, signal)
+  }
+  if (signal?.aborted || isStale() || activeCity?.code !== cityCode) return
   camera.focusPoint([place.latitude, place.longitude], 16)
   lastNearbyOrigin = [place.latitude, place.longitude]
   lastNearbyPlaces = [place]
@@ -2401,6 +2565,8 @@ function writeTripResultsUrl() {
   if (!activeCity || !selectedFrom || !selectedTo) return
   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
   const snapshot: TripResultsHistorySnapshot = {
+    version: 1,
+    savedAt: Date.now(),
     city: activeCity.code,
     from: selectedFrom,
     to: selectedTo,
@@ -2410,6 +2576,7 @@ function writeTripResultsUrl() {
     transferPlans: lastTransferPlans,
     selectedDirectIndex,
     selectedTransferIndex,
+    warning: journeyWarning,
   }
   history.replaceState({
     ...currentState,
@@ -2419,38 +2586,136 @@ function writeTripResultsUrl() {
   setDocumentTitle(`${selectedFrom?.name ?? '出發地'} → ${selectedTo?.name ?? '目的地'}`)
 }
 
-function restoreTripResultsState(): boolean {
+function isHistoryPlace(value: unknown): value is NearbyPlace {
+  if (!value || typeof value !== 'object') return false
+  const place = value as Partial<NearbyPlace>
+  return typeof place.placeId === 'string'
+    && typeof place.name === 'string'
+    && typeof place.latitude === 'number' && Number.isFinite(place.latitude)
+    && typeof place.longitude === 'number' && Number.isFinite(place.longitude)
+}
+
+function isHistoryLeg(value: unknown): value is TransferPlan['first'] {
+  if (!value || typeof value !== 'object') return false
+  const leg = value as Partial<TransferPlan['first']>
+  return typeof leg.routeName === 'string'
+    && typeof leg.variantKey === 'string'
+    && typeof leg.label === 'string'
+    && typeof leg.boardSequence === 'number'
+    && typeof leg.alightSequence === 'number'
+    && typeof leg.stopCount === 'number'
+}
+
+function isHistoryEtaSource(value: unknown): boolean {
+  return value === undefined || value === 'none' || value === 'realtime'
+    || value === 'stale-realtime' || value === 'schedule'
+}
+
+function isHistoryMinute(value: unknown): boolean {
+  return value === undefined || value === null
+    || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+}
+
+function isHistoryHeadway(value: unknown): boolean {
+  return value === undefined || value === null || (Array.isArray(value)
+    && value.length === 2
+    && value.every((minute) => typeof minute === 'number' && Number.isFinite(minute) && minute >= 0))
+}
+
+function isHistoryDirectRoute(value: unknown): value is DirectRoute {
+  if (!isHistoryLeg(value)) return false
+  const route = value as Partial<DirectRoute>
+  return isHistoryMinute(route.etaMinutes)
+    && isHistoryEtaSource(route.etaSource)
+    && isHistoryHeadway(route.etaHeadwayMinutes)
+}
+
+function isHistoryTransferEstimate(value: unknown): value is TransferEstimate {
+  if (!value || typeof value !== 'object') return false
+  const estimate = value as Partial<TransferEstimate>
+  const validRange = (range: unknown) => Boolean(range
+    && typeof range === 'object'
+    && typeof (range as { min?: unknown }).min === 'number'
+    && Number.isFinite((range as { min: number }).min)
+    && typeof (range as { max?: unknown }).max === 'number'
+    && Number.isFinite((range as { max: number }).max))
+  return validRange(estimate.travelMinutes)
+    && (estimate.totalMinutes === null || validRange(estimate.totalMinutes))
+    && (estimate.connectionStatus === 'likely' || estimate.connectionStatus === 'tight'
+      || estimate.connectionStatus === 'missed' || estimate.connectionStatus === 'unknown')
+}
+
+function isHistoryTransferPlan(value: unknown): value is TransferPlan {
+  if (!value || typeof value !== 'object') return false
+  const plan = value as Partial<TransferPlan>
+  return typeof plan.transferPlaceId === 'string'
+    && typeof plan.transferName === 'string'
+    && typeof plan.totalStops === 'number'
+    && isHistoryLeg(plan.first)
+    && isHistoryLeg(plan.second)
+    && isHistoryMinute(plan.firstEtaMinutes)
+    && isHistoryMinute(plan.secondEtaMinutes)
+    && isHistoryEtaSource(plan.firstEtaSource)
+    && isHistoryEtaSource(plan.secondEtaSource)
+    && isHistoryHeadway(plan.firstEtaHeadwayMinutes)
+    && isHistoryHeadway(plan.secondEtaHeadwayMinutes)
+    && (plan.transferEstimate === undefined || isHistoryTransferEstimate(plan.transferEstimate))
+}
+
+function restoreTripResultsState(params?: URLSearchParams): boolean {
   if (!activeCity) return false
   const snapshot = history.state?.tripResults as TripResultsHistorySnapshot | undefined
-  if (!snapshot || snapshot.city !== activeCity.code || !snapshot.from || !snapshot.to) return false
+  if (!snapshot
+    || snapshot.version !== 1
+    || typeof snapshot.savedAt !== 'number'
+    || Date.now() - snapshot.savedAt >= 15 * 60 * 1000
+    || snapshot.city !== activeCity.code
+    || !isHistoryPlace(snapshot.from)
+    || !isHistoryPlace(snapshot.to)
+    || !Array.isArray(snapshot.directRoutes)
+    || snapshot.directRoutes.length > 30
+    || !snapshot.directRoutes.every(isHistoryDirectRoute)
+    || !Array.isArray(snapshot.transferPlans)
+    || snapshot.transferPlans.length > 10
+    || !snapshot.transferPlans.every(isHistoryTransferPlan)
+    || (params?.get('from') && params.get('from') !== snapshot.from.placeId)
+    || (params?.get('to') && params.get('to') !== snapshot.to.placeId)) return false
   selectedFrom = snapshot.from
   selectedTo = snapshot.to
   fromCoordinate = snapshot.fromCoordinate
   toCoordinate = snapshot.toCoordinate
-  lastDirectRoutes = Array.isArray(snapshot.directRoutes) ? snapshot.directRoutes : []
-  lastTransferPlans = Array.isArray(snapshot.transferPlans) ? snapshot.transferPlans : []
+  lastDirectRoutes = snapshot.directRoutes
+  lastTransferPlans = snapshot.transferPlans
   selectedDirectIndex = Number.isInteger(snapshot.selectedDirectIndex) ? snapshot.selectedDirectIndex : 0
   selectedTransferIndex = Number.isInteger(snapshot.selectedTransferIndex) ? snapshot.selectedTransferIndex : 0
+  journeyWarning = snapshot.warning && snapshot.warning in tdxWarningMessages ? snapshot.warning : undefined
   tripStage = 'idle'
   interactionMode = 'trip-results'
   return Boolean(lastDirectRoutes.length || lastTransferPlans.length)
 }
 
-async function restoreSharedTripResults(params: URLSearchParams): Promise<boolean> {
+async function restoreSharedTripResults(
+  params: URLSearchParams,
+  signal?: AbortSignal,
+  isStale: () => boolean = () => false,
+): Promise<boolean> {
   if (!activeCity) return false
+  const cityCode = activeCity.code
   const fromPlaceId = params.get('from')
   const toPlaceId = params.get('to')
   if (!fromPlaceId || !toPlaceId || fromPlaceId === toPlaceId) return false
   const [from, to] = await Promise.all([
-    mapApi.place(activeCity.code, fromPlaceId),
-    mapApi.place(activeCity.code, toPlaceId),
+    mapApi.place(cityCode, fromPlaceId, signal),
+    mapApi.place(cityCode, toPlaceId, signal),
   ])
+  if (signal?.aborted || isStale() || activeCity?.code !== cityCode) return false
   selectedFrom = from
   selectedTo = to
   fromCoordinate = [from.latitude, from.longitude]
   toCoordinate = [to.latitude, to.longitude]
   lastDirectRoutes = []
   lastTransferPlans = []
+  journeyWarning = undefined
   selectedDirectIndex = 0
   selectedTransferIndex = 0
   tripStage = 'idle'
@@ -2463,6 +2728,7 @@ async function restoreSharedTripResults(params: URLSearchParams): Promise<boolea
 
 async function openNearbyPlace(place: NearbyPlace) {
   if (!activeCity) return
+  cancelLocationHydration()
   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
   history.pushState({
     ...currentState,
@@ -2607,13 +2873,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
       button.appendChild(tick)
       button.appendChild(line)
       button.appendChild(detail)
-      button.addEventListener('click', () => void loadRoute(
-        route.routeName,
-        route.variantKey,
-        false,
-        color,
-        () => void showPlaceRoutes(place),
-      ))
+      button.addEventListener('click', () => openChildRoute(route.routeName, route.variantKey, color))
       row.appendChild(button)
       row.appendChild(directionFavoriteControl(place, route))
       list.appendChild(row)

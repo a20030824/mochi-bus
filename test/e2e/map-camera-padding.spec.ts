@@ -99,7 +99,7 @@ async function mockDirectJourney(page: Page) {
     }] } })
   })
   await page.route('**/api/v1/map/journey-eta', async (route) => {
-    await route.fulfill({ json: { estimates: [{ key: 'direct:0', minutes: 5 }] } })
+    await route.fulfill({ json: { estimates: [{ key: 'direct:0', minutes: 5, source: 'realtime' }] } })
   })
   await page.route(/\/api\/v1\/map\/route(?:\?|$)/, async (route) => {
     await route.fulfill({ json: { variants: [routeVariant] } })

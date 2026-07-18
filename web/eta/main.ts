@@ -365,6 +365,7 @@ if (useLocalBoard) {
     setActiveCity(city)
     const mapParams = new URLSearchParams({ city })
     if (currentBoard.placeId) mapParams.set('place', currentBoard.placeId)
+    if (firstBus?.stopUid) mapParams.set('stopUid', firstBus.stopUid)
     mapLink.href = '/map?' + mapParams
   }
   if (currentBoard.id !== initialBoard.id || currentBoard.buses.length > 1 || firstBus?.stopUid !== initialBoard.buses[0].stopUid || firstBus?.routeName !== initialBoard.buses[0].routeName || firstBus?.direction !== initialBoard.buses[0].direction) {

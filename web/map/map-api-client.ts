@@ -178,10 +178,15 @@ export type VehiclePosition = {
   gpsTime: string | null
 }
 
+export type VehiclePositionsResponse = {
+  vehicles: VehiclePosition[]
+  warning?: TDXWarning
+}
+
 export type JourneyEtaEstimate = {
   key: string
   minutes: number | null
-  source?: EtaSource
+  source: EtaSource
   departureBased?: boolean
   headwayMinutes?: [number, number] | null
   nextDay?: boolean
@@ -262,19 +267,19 @@ export const mapApi = {
     )
   },
 
-  async vehicles(city: string, variant: RouteMapVariant, signal?: AbortSignal): Promise<VehiclePosition[]> {
+  async vehicles(city: string, variant: RouteMapVariant, signal?: AbortSignal): Promise<VehiclePositionsResponse> {
     const params = new URLSearchParams({
       city,
       route: variant.routeName,
       routeUid: variant.routeUid,
       direction: String(variant.direction),
     })
-    const data = await requestJson<{ vehicles?: VehiclePosition[] }>(
+    const data = await requestJson<{ vehicles?: VehiclePosition[]; warning?: TDXWarning }>(
       `/api/v1/map/vehicles?${params}`,
       { cache: 'no-store', signal },
       true,
     )
-    return data.vehicles ?? []
+    return { vehicles: data.vehicles ?? [], warning: data.warning }
   },
 
   async network(city: string, signal?: AbortSignal): Promise<CityNetwork> {
@@ -307,23 +312,60 @@ export const mapApi = {
     return data.plans
   },
 
-  async journeyEta(city: string, legs: Array<{ key: string; patternId: string; sequence: number }>): Promise<JourneyEtaEstimate[]> {
-    const data = await requestJson<{ estimates?: JourneyEtaEstimate[] }>(
+  async journeyEta(
+    city: string,
+    legs: Array<{ key: string; patternId: string; sequence: number }>,
+    signal?: AbortSignal,
+  ): Promise<{ estimates: JourneyEtaEstimate[]; warning?: TDXWarning }> {
+    const data = await requestJson<{ estimates?: Array<Partial<JourneyEtaEstimate> & { key?: unknown }>; warning?: TDXWarning }>(
       '/api/v1/map/journey-eta',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ city, legs }),
+        signal,
       },
       true,
     )
-    return data.estimates ?? []
+    const validSources = new Set<EtaSource>(['none', 'realtime', 'stale-realtime', 'schedule'])
+    const estimates = (data.estimates ?? [])
+      .filter((estimate): estimate is Partial<JourneyEtaEstimate> & { key: string } => typeof estimate.key === 'string')
+      .map((estimate): JourneyEtaEstimate => {
+        const source = typeof estimate.source === 'string' && validSources.has(estimate.source as EtaSource)
+          ? estimate.source as EtaSource
+          : 'none'
+        const minutes = typeof estimate.minutes === 'number' && Number.isFinite(estimate.minutes) && estimate.minutes >= 0
+          ? estimate.minutes
+          : null
+        const headway = Array.isArray(estimate.headwayMinutes)
+          && estimate.headwayMinutes.length === 2
+          && estimate.headwayMinutes.every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+          ? estimate.headwayMinutes as [number, number]
+          : null
+        return {
+          key: estimate.key,
+          minutes: source === 'none' ? null : minutes,
+          source,
+          departureBased: estimate.departureBased === true,
+          headwayMinutes: headway,
+          nextDay: estimate.nextDay === true,
+        }
+      })
+    return { estimates, warning: data.warning }
   },
 
-  async place(city: string, placeId: string): Promise<NearbyPlace> {
+  async place(city: string, placeId: string, signal?: AbortSignal): Promise<NearbyPlace> {
     const data = await requestJson<{ place?: NearbyPlace }>(
       `/api/v1/map/place/${encodeURIComponent(placeId)}?city=${encodeURIComponent(city)}`,
+      { signal },
     )
+    if (!data.place) throw new Error('找不到這個站牌')
+    return data.place
+  },
+
+  async stopPlace(city: string, stopUid: string, signal?: AbortSignal): Promise<NearbyPlace> {
+    const params = new URLSearchParams({ city, stopUid })
+    const data = await requestJson<{ place?: NearbyPlace }>(`/api/v1/map/stop-place?${params}`, { signal })
     if (!data.place) throw new Error('找不到這個站牌')
     return data.place
   },

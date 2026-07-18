@@ -19,6 +19,7 @@ type CityNetworkControllerOptions = {
   hoverCapable: boolean
   routeColor: (routeName: string) => string
   beginRequest: () => RequestTicket
+  cancelRequest: () => void
   isStaleRequest: (requestId: number) => boolean
   loadNetwork: (city: string, signal?: AbortSignal) => Promise<CityNetwork>
   setStatus: (text: string, error?: boolean) => void
@@ -116,6 +117,7 @@ export function createCityNetworkController(options: CityNetworkControllerOption
   }
 
   function hide(): void {
+    options.cancelRequest()
     clearHover()
     options.layer.clearLayers()
     stopMarkers = []

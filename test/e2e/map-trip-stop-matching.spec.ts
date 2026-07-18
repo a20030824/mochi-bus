@@ -78,7 +78,7 @@ test('map-picked trip stops show nearby candidates and can be reversed', async (
     } })
   })
   await page.route('**/api/v1/map/journey-eta', async (route) => {
-    await route.fulfill({ json: { estimates: [{ key: 'direct:0', minutes: 6 }] } })
+    await route.fulfill({ json: { estimates: [{ key: 'direct:0', minutes: 6, source: 'realtime' }] } })
   })
   await page.route(/\/api\/v1\/map\/route(?:\?|$)/, async (route) => {
     await route.fulfill({ json: { variants: [routeVariant()] } })
@@ -188,7 +188,7 @@ test('keeps A to B state atomic when either endpoint picks the opposite stop', a
     await route.fulfill({ json: { plans: [] } })
   })
   await page.route('**/api/v1/map/journey-eta', async (route) => {
-    await route.fulfill({ json: { estimates: [{ key: 'direct:0', minutes: 6 }] } })
+    await route.fulfill({ json: { estimates: [{ key: 'direct:0', minutes: 6, source: 'realtime' }] } })
   })
   await page.route(/\/api\/v1\/map\/route(?:\?|$)/, async (route) => {
     await route.fulfill({ json: { variants: [routeVariant()] } })

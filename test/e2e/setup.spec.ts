@@ -52,6 +52,64 @@ async function mockSetupApi(page: Page, stopRoutesDelayMs = 0) {
 }
 
 test.describe('/setup page', () => {
+  test('a legacy deep link without history state degrades to the requested city route picker', async ({ page }) => {
+    await mockSetupApi(page)
+
+    await page.goto('/setup?step=stops&city=NewTaipei&route=307')
+
+    await expect(page).toHaveURL('/setup?step=routes&city=NewTaipei')
+    await expect(page.locator('#city')).toHaveValue('NewTaipei')
+    await expect(page.locator('#route-picker')).toBeVisible()
+    await expect(page.locator('.route-choice').first()).toBeVisible()
+  })
+
+  test('a history quota failure keeps the current step usable and reloads through a compact fallback', async ({ page }) => {
+    await mockSetupApi(page)
+    await page.addInitScript(() => {
+      const nativePushState = history.pushState.bind(history)
+      history.pushState = ((state: unknown, unused: string, url?: string | URL | null) => {
+        if (JSON.stringify(state).length > 250) throw new DOMException('state too large', 'DataCloneError')
+        nativePushState(state, unused, url)
+      }) as History['pushState']
+    })
+
+    await page.goto('/setup')
+    await page.click('#add-board-button')
+    await page.locator('#city').selectOption('NewTaipei')
+    await page.locator('.route-choice').first().click()
+
+    await expect(page.locator('#direction-step .result-card').first()).toBeVisible()
+    await expect(page).toHaveURL(/step=stops/)
+    await page.reload()
+    await expect(page).toHaveURL('/setup?step=routes&city=NewTaipei')
+    await expect(page.locator('#route-picker')).toBeVisible()
+  })
+
+  test('restores route scroll after Back even though the catalogue is refetched', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 700 })
+    await mockSetupApi(page)
+    await page.route('**/api/v1/routes?*', (route) => route.fulfill({ json: {
+      routes: Array.from({ length: 180 }, (_, index) => ({
+        routeName: String(index + 1), category: '數字', routeUid: `NWT-${index + 1}`,
+      })),
+    } }))
+
+    await page.goto('/setup')
+    await page.click('#add-board-button')
+    await page.locator('#city').selectOption('NewTaipei')
+    await expect(page.locator('.route-choice')).toHaveCount(120)
+    const grid = page.locator('#route-grid')
+    await grid.evaluate((element) => { element.scrollTop = 320 })
+    await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBeGreaterThan(100)
+    await page.locator('.route-choice').first().evaluate((button: HTMLButtonElement) => button.click())
+    await expect(page).toHaveURL(/step=stops/)
+
+    await page.goBack()
+    await expect(page).toHaveURL(/step=routes/)
+    await expect(page.locator('.route-choice')).toHaveCount(120)
+    await expect.poll(() => grid.evaluate((element) => element.scrollTop)).toBeGreaterThan(100)
+  })
+
   test('renders saved boards as one divided list and keeps the active state separate from actions', async ({ page }) => {
     const boards = [
       {
@@ -150,7 +208,7 @@ test.describe('/setup page', () => {
     await expect(page).toHaveURL('/')
     await expect(page.locator('.top-actions a').first()).toHaveAttribute(
       'href',
-      '/map?city=NewTaipei&place=NWT%3Ajing-an',
+      '/map?city=NewTaipei&place=NWT%3Ajing-an&stopUid=NWT1',
     )
     const setupMapHref = await page.locator('.top-actions a').first().getAttribute('href')
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('mochi.bus.boards.v2') || '[]'))

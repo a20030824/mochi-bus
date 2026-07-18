@@ -169,3 +169,66 @@ test('a shared route deep link synthesizes the same internal parent history', as
   await page.goBack()
   await expect(page).toHaveURL('/map')
 })
+
+test('a stop search result creates a place child whose Back returns to the catalogue', async ({ page }) => {
+  const place = { placeId: 'P1', name: '臺南火車站', latitude: 22.997, longitude: 120.212 }
+  await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [city] } }))
+  await page.route(/\/api\/v1\/map\/routes(?:\?|$)/, (route) => route.fulfill({
+    json: { routes: [{ routeName: '15', category: '數字' }] },
+  }))
+  await page.route('**/api/v1/map/search*', (route) => route.fulfill({ json: { places: [place] } }))
+  await page.route('**/api/v1/map/place/P1?city=Tainan', (route) => route.fulfill({ json: { place: { ...place, distanceMeters: 0 } } }))
+  await page.route('**/api/v1/map/place/P1/arrivals?city=Tainan', (route) => route.fulfill({ json: { routes: [] } }))
+
+  await page.goto('/map?city=Tainan')
+  const drawer = page.locator('#map-drawer')
+  await drawer.getByRole('textbox', { name: '篩選路線，或搜尋站牌名稱' }).fill('火車站')
+  await drawer.locator('.place-search-results .nearby-place-button').click()
+  await expect(page).toHaveURL('/map?city=Tainan&place=P1')
+  await expect(drawer.getByRole('heading', { name: '臺南火車站' })).toBeVisible()
+
+  await drawer.locator('.drawer-back').click()
+  await expect(page).toHaveURL('/map?city=Tainan')
+  await expect(drawer.getByRole('textbox', { name: '篩選路線，或搜尋站牌名稱' })).toHaveValue('火車站')
+
+  await page.goForward()
+  await expect(page).toHaveURL('/map?city=Tainan&place=P1')
+  await expect(drawer.getByRole('heading', { name: '臺南火車站' })).toBeVisible()
+})
+
+test('a legacy history entry without mapView restores from its URL', async ({ page }) => {
+  await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [city] } }))
+  await page.route(/\/api\/v1\/map\/routes(?:\?|$)/, (route) => route.fulfill({
+    json: { routes: [{ routeName: '15', category: '數字' }] },
+  }))
+  await page.route(/\/api\/v1\/map\/route(?:\?|$)/, (route) => route.fulfill({ json: { variants: [variant('15')] } }))
+  await page.route('**/api/v1/map/timetable*', (route) => route.fulfill({ json: { timetable: { mode: 'none', services: [] } } }))
+  await page.route('**/api/v1/map/vehicles*', (route) => route.fulfill({ json: { vehicles: [] } }))
+
+  await page.goto('/map?city=Tainan')
+  await page.evaluate(() => {
+    history.pushState(null, '', '/map?city=Tainan&route=15')
+    history.pushState({ mapView: 'catalogue' }, '', '/map?city=Tainan')
+  })
+
+  await page.goBack()
+  await expect(page).toHaveURL(/city=Tainan&route=15&.*variant=TNN-15%3A0/)
+  await expect(page.locator('#map-drawer').getByRole('heading', { name: '15' })).toBeVisible()
+})
+
+test('an old favorite placeId falls back to its stable stopUid', async ({ page }) => {
+  const place = { placeId: 'P1', name: '臺南火車站', latitude: 22.997, longitude: 120.212, distanceMeters: 0 }
+  await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [city] } }))
+  await page.route(/\/api\/v1\/map\/routes(?:\?|$)/, (route) => route.fulfill({ json: { routes: [] } }))
+  await page.route('**/api/v1/map/place/OLD?city=Tainan', (route) => route.fulfill({ status: 404, json: { error: '找不到這個站牌' } }))
+  await page.route('**/api/v1/map/stop-place?city=Tainan&stopUid=S1', (route) => route.fulfill({ json: { place } }))
+  await page.route('**/api/v1/map/place/P1/arrivals?city=Tainan', (route) => route.fulfill({ json: { routes: [] } }))
+
+  await page.goto('/map?city=Tainan&place=OLD&stopUid=S1')
+
+  await expect(page).toHaveURL('/map?city=Tainan&place=P1')
+  await expect(page.locator('#map-drawer').getByRole('heading', { name: '臺南火車站' })).toBeVisible()
+})

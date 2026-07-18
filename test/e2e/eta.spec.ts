@@ -67,7 +67,7 @@ test.describe('ETA page', () => {
     await page.goto('/')
     await expect(page.locator('#board-title')).toHaveText('嘉義火車站')
     await expect(page.locator('.bus-name')).toHaveText('7322')
-    await expect(page.locator('.top-actions a').first()).toHaveAttribute('href', '/map?city=Chiayi&place=chiayi-station')
+    await expect(page.locator('.top-actions a').first()).toHaveAttribute('href', '/map?city=Chiayi&place=chiayi-station&stopUid=CYI001')
     await expect.poll(() => refreshCalls).toBeGreaterThan(0)
     await expect.poll(async () => page.evaluate(async () => Boolean(await navigator.serviceWorker.getRegistration()))).toBe(true)
   })

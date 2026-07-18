@@ -57,6 +57,7 @@ async function mockBaseMap(page: Page) {
       },
     },
   }))
+  await page.route('**/api/v1/map/vehicles*', (route) => route.fulfill({ json: { vehicles: [] } }))
 }
 
 function deferred() {
@@ -168,4 +169,56 @@ test('keeps the current route vehicles when an older route response finishes las
   oldVehicles.release()
   await page.waitForTimeout(150)
   await expect(page.locator('.vehicle-marker-wrap')).toHaveCount(2)
+})
+
+test('loading the city network does not cancel an unrelated route request', async ({ page }) => {
+  await mockBaseMap(page)
+  const routeResponse = deferred()
+  const routeRequested = deferred()
+  await page.route(/\/api\/v1\/map\/route(?:\?|$)/, async (route) => {
+    routeRequested.release()
+    await routeResponse.promise
+    await safelyFulfill(route, { variants: [variant('A')] })
+  })
+  await page.route(/\/api\/v1\/map\/network(?:\?|$)/, (route) => route.fulfill({
+    json: { network: { version: 'test', routes: [], places: [] } },
+  }))
+
+  await page.goto('/map?city=Tainan')
+  const drawer = page.locator('#map-drawer')
+  await drawer.getByRole('button', { name: 'A', exact: true }).click()
+  await routeRequested.promise
+  await page.getByRole('button', { name: '切換全路網與全部站點' }).click()
+  routeResponse.release()
+
+  await expect(page).toHaveURL(/city=Tainan&route=A&.*variant=A%3A0/)
+  await expect(drawer.getByRole('heading', { name: 'A', exact: true })).toBeVisible()
+})
+
+test('late shared-trip hydration cannot replace the catalogue reached with Back', async ({ page }) => {
+  await mockBaseMap(page)
+  const placeResponses = deferred()
+  const placesRequested = deferred()
+  let requestCount = 0
+  const from = { placeId: 'Tainan:from', name: '起點', latitude: 22.99, longitude: 120.21 }
+  const to = { placeId: 'Tainan:to', name: '終點', latitude: 23.01, longitude: 120.23 }
+  await page.route(/\/api\/v1\/map\/place\/[^/]+\?city=Tainan$/, async (route) => {
+    requestCount += 1
+    if (requestCount === 2) placesRequested.release()
+    await placeResponses.promise
+    const placeId = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1) ?? '')
+    await safelyFulfill(route, { place: placeId === from.placeId ? from : to })
+  })
+  await page.route('**/api/v1/map/direct*', (route) => route.fulfill({ json: { routes: [] } }))
+  await page.route('**/api/v1/map/transfer*', (route) => route.fulfill({ json: { plans: [] } }))
+
+  await page.goto('/map?city=Tainan&trip=results&from=Tainan%3Afrom&to=Tainan%3Ato')
+  await placesRequested.promise
+  await page.goBack()
+  await expect(page).toHaveURL('/map?city=Tainan')
+
+  placeResponses.release()
+  await page.waitForTimeout(150)
+  await expect(page).toHaveURL('/map?city=Tainan')
+  await expect(page.locator('#map-drawer').getByRole('heading', { name: '臺南' })).toBeVisible()
 })
