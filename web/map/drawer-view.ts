@@ -4,10 +4,12 @@ export type DrawerScrollableMode = 'map-list' | 'results' | 'timetable'
 
 export type DrawerView =
   | {
+      key: string
       mode: 'compact'
       content: readonly Node[]
     }
   | {
+      key: string
       mode: DrawerScrollableMode
       header: readonly Node[]
       content: readonly Node[]
@@ -27,6 +29,7 @@ export type DrawerRenderer = {
 
 export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
   let disposeCurrentView: (() => void) | undefined
+  let currentViewKey: string | undefined
 
   const dispose = () => {
     disposeCurrentView?.()
@@ -40,7 +43,10 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
     const cleanups: Array<() => void> = []
     let active = true
     let scrollRegion: HTMLDivElement | undefined
+    const animateContent = shouldAnimateDrawerTransition(currentViewKey, view.key)
+    currentViewKey = view.key
 
+    drawer.dataset.view = view.key
     drawer.dataset.mode = view.mode
     drawer.scrollTop = 0
     drawer.replaceChildren()
@@ -48,6 +54,7 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
     if (view.mode === 'compact') {
       drawer.dataset.scrollable = 'false'
       appendNodes(drawer, view.content)
+      if (animateContent) animateNodes(view.content)
     } else {
       drawer.dataset.scrollable = 'true'
       const shell = document.createElement('div')
@@ -55,6 +62,7 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
       scrollRegion = document.createElement('div')
       scrollRegion.className = 'drawer-scroll-region'
       appendNodes(scrollRegion, view.content)
+      if (animateContent) scrollRegion.classList.add('drawer-content-enter')
 
       const fade = document.createElement('div')
       fade.className = 'drawer-scroll-fade'
@@ -87,6 +95,16 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
   }
 
   return { render, dispose }
+}
+
+export function shouldAnimateDrawerTransition(previousKey: string | undefined, nextKey: string): boolean {
+  return previousKey !== undefined && previousKey !== nextKey
+}
+
+function animateNodes(nodes: readonly Node[]) {
+  for (const node of nodes) {
+    if (node instanceof HTMLElement) node.classList.add('drawer-content-enter')
+  }
 }
 
 function appendNodes(parent: Node, nodes: readonly Node[]) {

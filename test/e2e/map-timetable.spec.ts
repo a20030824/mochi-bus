@@ -12,7 +12,7 @@ const variant = {
   ] },
 }
 
-type TimetableFixture = 'multiple' | 'single' | 'no-today' | 'long'
+type TimetableFixture = 'multiple' | 'single' | 'no-today' | 'long' | 'time-states'
 
 function timetable(stopUid = 'C1') {
   const stop = stopUid === 'C2'
@@ -54,6 +54,13 @@ function timetableFixture(stopUid: string, fixture: TimetableFixture) {
   if (fixture === 'long') {
     const daily = data.timetable.services.find((service) => service.today)!
     daily.times = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`)
+    daily.firstTime = daily.times[0]
+    daily.lastTime = daily.times.at(-1)!
+    data.timetable.services = [daily]
+  }
+  if (fixture === 'time-states') {
+    const daily = data.timetable.services.find((service) => service.today)!
+    daily.times = ['09:00', '09:30', '10:00']
     daily.firstTime = daily.times[0]
     daily.lastTime = daily.times.at(-1)!
     data.timetable.services = [daily]
@@ -152,6 +159,26 @@ test('selects the next service day without adding another row when today has no 
   await drawer.getByRole('button', { name: '查看時刻表' }).click()
   await expect(drawer.locator('.timetable-tab[aria-selected="true"]')).toHaveText('週六')
   await expect(drawer.locator('.timetable-overview span')).toHaveText('嘉義公園 · 今日無班次')
+})
+
+test('distinguishes past, next, and future departures without changing chip geometry', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-07-14T01:15:00Z'))
+  await mockRoute(page, 'time-states')
+  await page.goto(`/map?city=ChiayiCounty&route=7211&variant=${encodeURIComponent(variant.variantKey)}`)
+
+  const drawer = page.locator('#map-drawer')
+  await drawer.getByRole('button', { name: '查看時刻表' }).click()
+  const past = drawer.locator('.timetable-minute.past')
+  const next = drawer.locator('.timetable-minute.next')
+  const future = drawer.locator('.timetable-minute.future')
+  await expect(past).toHaveCount(1)
+  await expect(next).toHaveCount(1)
+  await expect(future).toHaveCount(1)
+  await expect(past).toHaveAttribute('aria-label', '09:00，已過')
+  await expect(next).toHaveAttribute('aria-label', '09:30，下一班')
+  await expect(future).toHaveAttribute('aria-label', '10:00，尚未發車')
+  const widths = await drawer.locator('.timetable-minute').evaluateAll((chips) => chips.map((chip) => chip.getBoundingClientRect().width))
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1)
 })
 
 test('keeps the timetable header fixed and uses the shared fade lifecycle', async ({ page }) => {

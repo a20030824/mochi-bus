@@ -1,4 +1,5 @@
 import type { RouteTimetable, TimetableService } from './map-api-client'
+import { taipeiServiceClock, timetableMinutes } from '../../src/domain/map/service-clock'
 
 export function timetableSummaryText(timetable: RouteTimetable): string | null {
   const service = currentTimetableService(timetable)
@@ -175,6 +176,23 @@ function timetableServiceContent(
   return fragment
 }
 
+export type TimetableTimeState = 'past' | 'next' | 'future'
+
+export function timetableTimeStates(
+  service: Pick<TimetableService, 'today' | 'times'>,
+  now = new Date(),
+): Map<string, TimetableTimeState> {
+  const nowMinutes = taipeiServiceClock(now).minutes
+  const values = service.times
+    .map((time) => ({ time, minutes: timetableMinutes(time) }))
+    .filter((entry): entry is { time: string; minutes: number } => entry.minutes !== null)
+  const next = service.today ? values.find((entry) => entry.minutes >= nowMinutes)?.time : undefined
+  return new Map(values.map(({ time, minutes }) => [
+    time,
+    time === next ? 'next' : service.today && minutes < nowMinutes ? 'past' : 'future',
+  ]))
+}
+
 function timetableHourList(service: TimetableService): HTMLElement {
   const list = document.createElement('div')
   list.className = 'timetable-hour-list'
@@ -185,8 +203,7 @@ function timetableHourList(service: TimetableService): HTMLElement {
     minutes.push(minute)
     grouped.set(hour, minutes)
   })
-  const nowMinutes = taipeiClockMinutes()
-  const next = service.today ? service.times.find((time) => timetableMinutes(time) >= nowMinutes) : undefined
+  const states = timetableTimeStates(service)
   grouped.forEach((minutes, hour) => {
     const row = document.createElement('div')
     row.className = 'timetable-hour-row'
@@ -198,9 +215,10 @@ function timetableHourList(service: TimetableService): HTMLElement {
       const chip = document.createElement('span')
       chip.className = 'timetable-minute'
       chip.textContent = minute
-      chip.setAttribute('aria-label', value)
-      if (value === next) {
-        chip.classList.add('next')
+      const state = states.get(value) ?? 'future'
+      chip.classList.add(state)
+      chip.setAttribute('aria-label', `${value}，${state === 'past' ? '已過' : state === 'next' ? '下一班' : '尚未發車'}`)
+      if (state === 'next') {
         chip.title = '下一班'
       }
       minuteList.appendChild(chip)
@@ -209,18 +227,4 @@ function timetableHourList(service: TimetableService): HTMLElement {
     list.appendChild(row)
   })
   return list
-}
-
-function timetableMinutes(value: string): number {
-  const [hour, minute] = value.split(':').map(Number)
-  return hour * 60 + minute
-}
-
-function taipeiClockMinutes(): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date())
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0)
-  const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
-  return hour * 60 + minute
 }

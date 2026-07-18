@@ -1,5 +1,6 @@
 import type { Direction } from '../bus-query'
 import type { ScheduleFrequency, ScheduleItem, ScheduleStopTime, ScheduleTimetable } from '../schedule'
+import { taipeiServiceClock, timetableMinutes } from './service-clock'
 
 const DAY_KEYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const
 const DAY_LABELS = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'] as const
@@ -134,10 +135,7 @@ function stripHasTimes(stop: { stopUid: string; stopName: string; sequence: numb
 }
 
 function timeValue(value?: string): number | null {
-  if (!value || !/^\d{2}:\d{2}$/.test(value)) return null
-  const [hour, minute] = value.split(':').map(Number)
-  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute > 59) return null
-  return hour * 60 + minute
+  return value ? timetableMinutes(value) : null
 }
 
 function compareTimes(a: string, b: string): number {
@@ -259,7 +257,5 @@ function serviceDayLabel(days: number[]): string {
 }
 
 function taipeiDayIndex(now: Date): number {
-  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Taipei', weekday: 'long' }).format(now)
-  const index = DAY_KEYS.indexOf(weekday as typeof DAY_KEYS[number])
-  return index < 0 ? 0 : index
+  return taipeiServiceClock(now).dayIndex
 }

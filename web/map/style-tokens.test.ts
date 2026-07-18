@@ -29,6 +29,20 @@ describe('map design tokens', () => {
     expect(contrast(token('text-muted'), token('surface'))).toBeGreaterThanOrEqual(4.5)
   })
 
+  it('keeps estimated timetable and ETA text readable on paper', () => {
+    expect(contrast(token('ink-estimated'), token('paper'))).toBeGreaterThanOrEqual(4.5)
+    expect(css).toContain('.timetable-minute.past')
+    expect(css).toContain('var(--ink-urgent)')
+  })
+
+  it('keeps paper grain subtle, drawer-only, and non-interactive', () => {
+    const opacity = Number(css.match(/--paper-grain-opacity:\s*([\d.]+)/)?.[1])
+    expect(opacity).toBeGreaterThanOrEqual(.02)
+    expect(opacity).toBeLessThanOrEqual(.04)
+    expect(css).toMatch(/\.map-drawer::before\s*\{[^}]*pointer-events:\s*none/s)
+    expect(css).not.toMatch(/#map::before|#map\s*\{[^}]*paper-grain/s)
+  })
+
   it('does not reintroduce retired orphan colors or 10px labels', () => {
     expect(css).not.toContain('#847d70')
     expect(css).not.toContain('#55718a')
