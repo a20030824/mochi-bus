@@ -31,7 +31,7 @@ import {
   searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'
 import {
   ApiInputError,
   apiInputErrorBody,
@@ -118,29 +118,37 @@ async function setRealtimeCooldown(env: TDXEnv, city: string, scope: string): Pr
   }), 'arrivals_cooldown', env.TDX_BACKGROUND_TASKS)
 }
 
-async function readLastRealtime(env: TDXEnv, city: string, routeName: string): Promise<BusETAItem[]> {
-  const memoized = memoryCacheGet<BusETAItem[]>(`arrivals/last/${city}/${routeName}`)
+type LastRealtime = { items: BusETAItem[]; cachedAt?: number }
+
+async function readLastRealtime(env: TDXEnv, city: string, routeName: string): Promise<LastRealtime | undefined> {
+  const memoized = memoryCacheGet<LastRealtime>(`arrivals/last/${city}/${routeName}`)
   if (memoized) return memoized
   const response = await cacheMatchFailOpen(edgeCache(), arrivalCacheKey('last', city, routeName), 'arrivals_last')
-  if (!response) return []
+  if (!response) return undefined
   try {
-    return await response.json<BusETAItem[]>()
+    const items = await response.json<BusETAItem[]>()
+    if (!Array.isArray(items)) return undefined
+    const headerValue = response.headers.get('X-Mochi-Cached-At')
+    const header = headerValue === null ? Number.NaN : Number(headerValue)
+    return { items, ...(Number.isFinite(header) && header >= 0 ? { cachedAt: header } : {}) }
   } catch (error) {
     console.error(JSON.stringify({
       message: 'edge_cache_payload_invalid',
       context: 'arrivals_last',
       error: error instanceof Error ? error.message : String(error),
     }))
-    return []
+    return undefined
   }
 }
 
 async function writeLastRealtime(env: TDXEnv, city: string, routeName: string, items: BusETAItem[]): Promise<void> {
-  memoryCacheSet(`arrivals/last/${city}/${routeName}`, items, LAST_REALTIME_SECONDS)
+  const cachedAt = Date.now()
+  memoryCacheSet(`arrivals/last/${city}/${routeName}`, { items, cachedAt }, LAST_REALTIME_SECONDS)
   await cachePutFailOpen(edgeCache(), arrivalCacheKey('last', city, routeName), new Response(JSON.stringify(items), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': `public, max-age=${LAST_REALTIME_SECONDS}`,
+      'X-Mochi-Cached-At': String(cachedAt),
     },
   }), 'arrivals_last', env.TDX_BACKGROUND_TASKS)
 }
@@ -377,7 +385,11 @@ map.get('/api/v1/map/vehicles', async (c) => {
     let warning: TDXWarning | undefined
     let upstreamSucceeded = false
     try {
-      items = await fetchTDXJson<VehicleItem[]>(tdxEnv(c), url, 15)
+      items = await fetchTDXJson<VehicleItem[]>(tdxEnv(c), url, 15, {
+        operation: 'vehicle_positions',
+        city: telemetryCity(city),
+        validate: isTDXRecordArray<VehicleItem>,
+      })
       upstreamSucceeded = true
     } catch (error) {
       if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
@@ -525,19 +537,27 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
     let realtimeQueries = 0
     for (const { routeName, routeUid } of candidateRouteRefs) {
       const identity = routeIdentity(routeName, routeUid)
-      if (rateLimited) {
-        const staleItems = await readLastRealtime(env, city, identity)
-        if (staleItems.length) {
-          etaItems.push(...staleItems)
-          staleRouteIdentities.add(identity)
-        }
-        continue
-      }
       try {
-        const items = await fetchTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName, routeUid), 15)
-        etaItems.push(...items)
-        await writeLastRealtime(env, city, identity, items)
-        realtimeQueries += 1
+        const resolved = await resolveTDXJson<BusETAItem[]>(env, routeEtaUrl(city, routeName, routeUid), 15, {
+          operation: 'place_arrivals',
+          city: telemetryCity(city),
+          validate: isTDXRecordArray<BusETAItem>,
+          blockedFailureClass: rateLimited ? 'rate_limited' : undefined,
+          staleFallback: async () => {
+            const stale = await readLastRealtime(env, city, identity)
+            return stale?.items.length ? {
+              data: stale.items,
+              dataAgeMilliseconds: stale.cachedAt === undefined ? undefined : Math.max(0, Date.now() - stale.cachedAt),
+            } : undefined
+          },
+        })
+        etaItems.push(...resolved.data)
+        if (resolved.resolution === 'stale_replay') {
+          staleRouteIdentities.add(identity)
+        } else {
+          await writeLastRealtime(env, city, identity, resolved.data)
+          realtimeQueries += 1
+        }
       } catch (error) {
         if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
         rateLimited ||= error instanceof TDXServiceError && error.rateLimited
@@ -547,11 +567,6 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
           error: error instanceof Error ? error.message : String(error),
         }))
         if (rateLimited) await setRealtimeCooldown(env, city, scope)
-        const staleItems = await readLastRealtime(env, city, identity)
-        if (staleItems.length) {
-          etaItems.push(...staleItems)
-          staleRouteIdentities.add(identity)
-        }
       }
     }
     const arrivals = scheduledRoutes.map((route) => {
@@ -687,6 +702,11 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
           env,
           routeEtaUrl(city, ref.routeName, ref.routeUid),
           15,
+          {
+            operation: 'journey_eta',
+            city: telemetryCity(city),
+            validate: isTDXRecordArray<BusETAItem>,
+          },
         )] as const
       } catch (error) {
         if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error

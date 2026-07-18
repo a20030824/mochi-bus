@@ -1,7 +1,7 @@
 import { supportedCities } from '../config'
 import type { ReleaseIdentity } from './release-identity'
 
-export const TELEMETRY_EVENT_SCHEMA = 2 as const
+export const TELEMETRY_EVENT_SCHEMA = 3 as const
 
 export const telemetryEvents = [
   'api_operation_completed',
@@ -59,6 +59,7 @@ export const telemetrySources = [
   'browser',
   'worker',
   'none',
+  'tdx_static',
 ] as const
 
 export const telemetryFailureClasses = [
@@ -80,6 +81,16 @@ export const telemetryFailureClasses = [
   'asset_load',
   'bootstrap',
   'completion_missing',
+  'token_rejected',
+  'rate_limited',
+  'quota',
+  'timeout',
+  'upstream_4xx',
+  'upstream_5xx',
+  'invalid_json',
+  'invalid_schema',
+  'network_error',
+  'circuit_open',
   'unknown',
 ] as const
 
@@ -103,6 +114,7 @@ export const telemetryEmptyReasons = [
   'all_estimates_unknown',
   'upstream_failure',
   'route_object_fallback',
+  'tdx_empty',
 ] as const
 
 export const telemetryQualityBuckets = [
@@ -126,6 +138,26 @@ export const telemetryLatencyBuckets = [
 
 export const telemetryTrafficClasses = ['user', 'synthetic', 'snapshot_publish'] as const
 export const telemetryHttpStatusClasses = ['2xx', '3xx', '4xx', '5xx', 'none'] as const
+export const telemetryTdxOperations = [
+  'route_catalog',
+  'place_arrivals',
+  'vehicle_positions',
+  'journey_eta',
+  'tdx_schedule',
+] as const
+export const telemetryCredentialScopes = ['shared', 'byok', 'none'] as const
+export const telemetryResolutions = ['memory', 'edge', 'upstream', 'circuit_open', 'stale_replay', 'none'] as const
+export const telemetryRetryCountBuckets = ['0', '1', '2_plus'] as const
+export const telemetryDataAgeBuckets = [
+  'fresh',
+  'lt_1m',
+  '1_5m',
+  '5_30m',
+  '30m_6h',
+  'gt_6h',
+  'unknown',
+  'not_applicable',
+] as const
 
 export type TelemetryEventName = typeof telemetryEvents[number]
 export type TelemetryOperation = typeof telemetryOperations[number]
@@ -138,6 +170,11 @@ export type TelemetryTrafficClass = typeof telemetryTrafficClasses[number]
 export type TelemetryHttpStatusClass = typeof telemetryHttpStatusClasses[number]
 export type TelemetryEmptyReason = typeof telemetryEmptyReasons[number]
 export type TelemetryQualityBucket = typeof telemetryQualityBuckets[number]
+export type TelemetryTdxOperation = typeof telemetryTdxOperations[number]
+export type TelemetryCredentialScope = typeof telemetryCredentialScopes[number]
+export type TelemetryResolution = typeof telemetryResolutions[number]
+export type TelemetryRetryCountBucket = typeof telemetryRetryCountBuckets[number]
+export type TelemetryDataAgeBucket = typeof telemetryDataAgeBuckets[number]
 export type TelemetryCity = typeof supportedCities[number][0]
 
 export type TelemetryEnvelope = Readonly<{
@@ -160,6 +197,14 @@ export type TelemetryEnvelope = Readonly<{
   failureClass: TelemetryFailureClass
   emptyReason: TelemetryEmptyReason
   qualityBucket: TelemetryQualityBucket
+  tdxOperation?: TelemetryTdxOperation
+  credentialScope?: TelemetryCredentialScope
+  resolution?: TelemetryResolution
+  retryCountBucket?: TelemetryRetryCountBucket
+  recoveredAfterRetry?: boolean
+  dataAgeBucket?: TelemetryDataAgeBucket
+  upstreamStatusClass?: TelemetryHttpStatusClass
+  initialFailureClass?: TelemetryFailureClass
   errorFingerprint?: string
 }>
 
@@ -191,6 +236,14 @@ const allowedKeys = new Set<AllowedKey>([
   'failureClass',
   'emptyReason',
   'qualityBucket',
+  'tdxOperation',
+  'credentialScope',
+  'resolution',
+  'retryCountBucket',
+  'recoveredAfterRetry',
+  'dataAgeBucket',
+  'upstreamStatusClass',
+  'initialFailureClass',
   'errorFingerprint',
 ])
 
@@ -228,6 +281,21 @@ const trafficClasses = new Set<string>(telemetryTrafficClasses)
 const httpStatusClasses = new Set<string>(telemetryHttpStatusClasses)
 const emptyReasons = new Set<string>(telemetryEmptyReasons)
 const qualityBuckets = new Set<string>(telemetryQualityBuckets)
+const tdxOperations = new Set<string>(telemetryTdxOperations)
+const credentialScopes = new Set<string>(telemetryCredentialScopes)
+const resolutions = new Set<string>(telemetryResolutions)
+const retryCountBuckets = new Set<string>(telemetryRetryCountBuckets)
+const dataAgeBuckets = new Set<string>(telemetryDataAgeBuckets)
+const tdxUpstreamStatusClasses = new Set<string>(['2xx', '4xx', '5xx', 'none'])
+const tdxOnlyKeys = [
+  'tdxOperation',
+  'credentialScope',
+  'resolution',
+  'retryCountBucket',
+  'recoveredAfterRetry',
+  'dataAgeBucket',
+  'upstreamStatusClass',
+] as const
 
 const safeIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const safeReleaseSha = /^[a-f0-9]{40}$/
@@ -274,6 +342,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
     if (value.result !== 'empty' && value.result !== 'degraded' && value.emptyReason !== 'not_applicable') return undefined
     if ((value.result === 'success' || value.result === 'empty') && value.failureClass !== 'none') return undefined
     if (value.result === 'error' && value.failureClass === 'none') return undefined
+    if (!validTdxFields(value)) return undefined
     if (value.errorFingerprint !== undefined && !identifier(value.errorFingerprint, safeErrorFingerprint)) return undefined
 
     return Object.freeze({
@@ -296,11 +365,73 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
       failureClass: value.failureClass as TelemetryFailureClass,
       emptyReason: value.emptyReason as TelemetryEmptyReason,
       qualityBucket: value.qualityBucket as TelemetryQualityBucket,
+      ...(value.tdxOperation === undefined ? {} : { tdxOperation: value.tdxOperation as TelemetryTdxOperation }),
+      ...(value.credentialScope === undefined ? {} : { credentialScope: value.credentialScope as TelemetryCredentialScope }),
+      ...(value.resolution === undefined ? {} : { resolution: value.resolution as TelemetryResolution }),
+      ...(value.retryCountBucket === undefined ? {} : { retryCountBucket: value.retryCountBucket as TelemetryRetryCountBucket }),
+      ...(value.recoveredAfterRetry === undefined ? {} : { recoveredAfterRetry: value.recoveredAfterRetry as boolean }),
+      ...(value.dataAgeBucket === undefined ? {} : { dataAgeBucket: value.dataAgeBucket as TelemetryDataAgeBucket }),
+      ...(value.upstreamStatusClass === undefined ? {} : { upstreamStatusClass: value.upstreamStatusClass as TelemetryHttpStatusClass }),
+      ...(value.initialFailureClass === undefined ? {} : { initialFailureClass: value.initialFailureClass as TelemetryFailureClass }),
       ...(value.errorFingerprint === undefined ? {} : { errorFingerprint: value.errorFingerprint as string }),
     })
   } catch {
     return undefined
   }
+}
+
+function validTdxFields(value: Record<string, unknown>): boolean {
+  const isResolutionEvent = value.event === 'tdx_resolution_completed'
+  if (!isResolutionEvent) {
+    return !tdxOnlyKeys.some((key) => Object.hasOwn(value, key))
+      && !Object.hasOwn(value, 'initialFailureClass')
+  }
+  if (!tdxOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
+  if (!enumValue(value.tdxOperation, tdxOperations)) return false
+  if (!enumValue(value.credentialScope, credentialScopes)) return false
+  if (!enumValue(value.resolution, resolutions)) return false
+  if (!enumValue(value.retryCountBucket, retryCountBuckets)) return false
+  if (typeof value.recoveredAfterRetry !== 'boolean') return false
+  if (!enumValue(value.dataAgeBucket, dataAgeBuckets)) return false
+  if (!enumValue(value.upstreamStatusClass, tdxUpstreamStatusClasses)) return false
+  if (value.initialFailureClass !== undefined && !enumValue(value.initialFailureClass, failureClasses)) return false
+
+  if ((value.resolution === 'memory' || value.resolution === 'edge')
+    && (value.retryCountBucket !== '0' || value.upstreamStatusClass !== 'none')) return false
+  if ((value.resolution === 'memory' || value.resolution === 'edge')
+    && value.result !== 'success' && value.result !== 'empty') return false
+  if (value.resolution === 'stale_replay'
+    && (value.result !== 'degraded' || value.failureClass === 'none')) return false
+  if (value.result === 'degraded' && value.resolution !== 'stale_replay') return false
+  if (value.resolution === 'circuit_open'
+    && !(value.result === 'error' && value.failureClass === 'circuit_open')) return false
+  if (value.resolution === 'none' && value.result !== 'error') return false
+  if ((value.resolution === 'circuit_open' || value.resolution === 'none')
+    && (value.retryCountBucket !== '0' || value.upstreamStatusClass !== 'none')) return false
+  const expectedCacheResult = value.resolution === 'memory' ? 'memory_hit'
+    : value.resolution === 'edge' ? 'edge_hit'
+      : value.resolution === 'upstream' ? 'miss'
+        : 'bypass'
+  if (value.cacheResult !== expectedCacheResult) return false
+  const expectedOperation = value.tdxOperation === 'route_catalog' ? 'map_routes'
+    : value.tdxOperation === 'place_arrivals' ? 'map_place_arrivals'
+      : value.tdxOperation === 'vehicle_positions' ? 'map_vehicles'
+        : value.tdxOperation === 'journey_eta' ? 'map_journey_eta'
+          : 'map_timetable'
+  if (value.operation !== expectedOperation) return false
+  const expectedSource = value.result === 'error' ? 'none'
+    : value.resolution === 'stale_replay' ? 'stale'
+      : value.tdxOperation === 'route_catalog' ? 'tdx_static'
+        : value.tdxOperation === 'tdx_schedule' ? 'schedule'
+          : 'realtime'
+  if (value.source !== expectedSource) return false
+  if (value.recoveredAfterRetry === true
+    && !(value.retryCountBucket !== '0' && (value.result === 'success' || value.result === 'empty'))) return false
+  if (value.retryCountBucket === '0'
+    && (value.recoveredAfterRetry !== false || value.initialFailureClass !== undefined)) return false
+  if (value.retryCountBucket !== '0'
+    && (value.initialFailureClass === undefined || value.initialFailureClass === 'none')) return false
+  return true
 }
 
 export function createTelemetryEnvelope(

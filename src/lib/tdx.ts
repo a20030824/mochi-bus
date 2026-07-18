@@ -1,4 +1,5 @@
 import type { BusQuery, Direction, ResolvedBusQuery } from '../domain/bus-query'
+import { supportedCityCodes } from '../config'
 import { classifyRouteName, type RouteCategory } from '../domain/route-category'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../domain/schedule'
 import { tdxWarningMessages, type TDXWarning } from '../domain/tdx-warning'
@@ -6,6 +7,23 @@ import { selectBestEta } from '../domain/map/eta'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { memoryCacheGet, memoryCacheSet } from './memory-cache'
 import { cacheMatchFailOpen, cachePutFailOpen, type BackgroundTaskScheduler } from './edge-cache'
+import { releaseIdentity } from '../observability/release-identity'
+import { beginTDXResolutionTelemetry } from '../observability/tdx-resolution'
+import type {
+  TelemetryCity,
+  TelemetryFailureClass,
+  TelemetrySink,
+  TelemetryTdxOperation,
+  TelemetryTrafficClass,
+} from '../observability/telemetry'
+
+type TDXTelemetryContext = {
+  trafficClass?: TelemetryTrafficClass
+  sampleProbability?: number
+  now?: () => number
+  random?: () => number
+  emitter?: TelemetrySink
+}
 
 export type TDXEnv = {
   TDX_CLIENT_ID: string
@@ -13,6 +31,22 @@ export type TDXEnv = {
   // 瀏覽器直接向 TDX 換取短效 token；Worker 永遠不接觸 Client Secret。
   TDX_USER_ACCESS_TOKEN?: string
   TDX_BACKGROUND_TASKS?: BackgroundTaskScheduler
+  CF_VERSION_METADATA?: CloudflareBindings['CF_VERSION_METADATA']
+  TDX_TELEMETRY?: TDXTelemetryContext
+}
+
+export type TDXResolutionOptions<T> = {
+  operation?: TelemetryTdxOperation
+  city?: TelemetryCity | null
+  validate?: (value: unknown) => value is T
+  staleFallback?: (error: TDXServiceError) => Promise<{ data: T; dataAgeMilliseconds?: number } | undefined>
+  blockedFailureClass?: TelemetryFailureClass
+}
+
+export type TDXResolvedData<T> = {
+  data: T
+  resolution: 'memory' | 'edge' | 'upstream' | 'stale_replay'
+  degraded: boolean
 }
 
 export function withTDXBackgroundTasks<E extends TDXEnv>(env: E, schedule?: BackgroundTaskScheduler): E {
@@ -148,10 +182,16 @@ export class QueryResolutionError extends Error {
 
 export class TDXServiceError extends Error {
   warning?: TDXWarning
+  failureKind?: TelemetryFailureClass
 
-  constructor(message: string, readonly status?: number, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    readonly status?: number,
+    options?: ErrorOptions & { failureKind?: TelemetryFailureClass },
+  ) {
     super(message, options)
     this.name = 'TDXServiceError'
+    this.failureKind = options?.failureKind
   }
 
   get rateLimited(): boolean {
@@ -203,7 +243,9 @@ async function tdxResponseError(context: string, response: Response, isShared: b
     context,
     status: response.status,
   }))
-  const error = new TDXServiceError(`${context} (${response.status})`, response.status)
+  const error = new TDXServiceError(`${context} (${response.status})`, response.status, {
+    failureKind: responseFailureClass(response.status, warning),
+  })
   error.warning = warning
   return error
 }
@@ -282,6 +324,20 @@ export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShare
   }
 }
 
+function responseFailureClass(status: number, warning?: TDXWarning): TelemetryFailureClass {
+  if (warning === 'tdx-quota') return 'quota'
+  if (status === 429 || warning === 'tdx-rate-limit') return 'rate_limited'
+  if (status === 401) return 'token_rejected'
+  if (status >= 400 && status <= 499) return 'upstream_4xx'
+  if (status >= 500 && status <= 599) return 'upstream_5xx'
+  return 'unknown'
+}
+
+function transportFailureClass(error: unknown): TelemetryFailureClass {
+  const name = error instanceof Error ? error.name : ''
+  return name === 'AbortError' || name === 'TimeoutError' ? 'timeout' : 'network_error'
+}
+
 async function accessTokenFingerprint(accessToken: string): Promise<string> {
   const input = new TextEncoder().encode(`user-token\0${accessToken}`)
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', input))
@@ -342,15 +398,16 @@ function cacheCircuit(key: string, state: CircuitState): void {
   }
 }
 
-function assertTDXCircuitClosed(key: string): void {
+function assertTDXCircuitClosed(key: string): boolean {
   const state = tdxCircuits.get(key)
-  if (!state) return
+  if (!state) return false
 
   const now = Date.now()
   if (state.openedUntil > now) {
     const error = new TDXServiceError(
       'TDX circuit breaker is open',
       state.warning === 'tdx-unavailable' ? 503 : 429,
+      { failureKind: 'circuit_open' },
     )
     error.warning = state.warning
     throw error
@@ -360,6 +417,7 @@ function assertTDXCircuitClosed(key: string): void {
     const error = new TDXServiceError(
       'TDX circuit breaker probe is in progress',
       state.warning === 'tdx-unavailable' ? 503 : 429,
+      { failureKind: 'circuit_open' },
     )
     error.warning = state.warning
     throw error
@@ -373,9 +431,10 @@ function assertTDXCircuitClosed(key: string): void {
       openedUntil: 0,
       halfOpen: true,
     })
-    return
+    return true
   }
   if (now - state.lastFailureAt >= CIRCUIT_FAILURE_WINDOW_MS) tdxCircuits.delete(key)
+  return false
 }
 
 function recordTDXCircuitFailure(key: string, error: TDXServiceError, retryAfter: string | null = null): void {
@@ -457,7 +516,10 @@ async function fetchTDXToken(
       },
     )
   } catch (error) {
-    const serviceError = new TDXServiceError('TDX token request failed', undefined, { cause: error })
+    const serviceError = new TDXServiceError('TDX token request failed', undefined, {
+      cause: error,
+      failureKind: transportFailureClass(error),
+    })
     recordTDXCircuitFailure(circuitKey, serviceError)
     throw serviceError
   }
@@ -472,12 +534,17 @@ async function fetchTDXToken(
   try {
     data = await response.json() as { access_token?: string; expires_in?: number }
   } catch (error) {
-    const serviceError = new TDXServiceError('TDX token response is invalid JSON', 502, { cause: error })
+    const serviceError = new TDXServiceError('TDX token response is invalid JSON', 502, {
+      cause: error,
+      failureKind: 'invalid_json',
+    })
     recordTDXCircuitFailure(circuitKey, serviceError)
     throw serviceError
   }
   if (!data.access_token) {
-    const error = new TDXServiceError('TDX token response is missing access_token', 502)
+    const error = new TDXServiceError('TDX token response is missing access_token', 502, {
+      failureKind: 'invalid_schema',
+    })
     recordTDXCircuitFailure(circuitKey, error)
     throw error
   }
@@ -600,7 +667,11 @@ export async function getBusSchedule(env: TDXEnv, city: string, routeName: strin
     `https://tdx.transportdata.tw/api/basic/v2/Bus/Schedule/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
   )
   url.searchParams.set('$format', 'JSON')
-  return fetchTDXJson<ScheduleItem[]>(env, url, 6 * 60 * 60)
+  return fetchTDXJson<ScheduleItem[]>(env, url, 6 * 60 * 60, {
+    operation: 'tdx_schedule',
+    city: telemetryCity(city),
+    validate: isRecordArrayPayload,
+  })
 }
 
 export async function getRouteStopGroups(
@@ -689,7 +760,11 @@ export async function getRouteCatalog(env: TDXEnv, city: string): Promise<RouteC
     `https://tdx.transportdata.tw/api/basic/v2/Bus/Route/City/${encodeURIComponent(city)}`,
   )
   url.searchParams.set('$format', 'JSON')
-  const data = await fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS)
+  const data = await fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS, {
+    operation: 'route_catalog',
+    city: telemetryCity(city),
+    validate: isRecordArrayPayload,
+  })
 
   const routes = data
     .filter((item): item is RouteItem & { RouteName: { Zh_tw: string } } => Boolean(item.RouteName?.Zh_tw))
@@ -715,7 +790,11 @@ async function getIntercityRouteCatalog(env: TDXEnv): Promise<RouteCatalogItem[]
   const url = new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Route/InterCity')
   url.searchParams.set('$select', 'RouteUID,RouteName,DepartureStopNameZh,DestinationStopNameZh')
   url.searchParams.set('$format', 'JSON')
-  const data = await fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS)
+  const data = await fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS, {
+    operation: 'route_catalog',
+    city: null,
+    validate: isRecordArrayPayload,
+  })
   return data
     .filter((item): item is RouteItem & { RouteName: { Zh_tw: string } } => Boolean(item.RouteName?.Zh_tw))
     .map((item) => ({
@@ -846,19 +925,117 @@ async function getBusETA(env: TDXEnv, query: BusQuery): Promise<BusETAItem[]> {
   return fetchTDXJson<BusETAItem[]>(env, url, ETA_CACHE_SECONDS)
 }
 
-export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number): Promise<T> {
+type TDXCacheEntry<T> = { data: T; cachedAt?: number }
+
+export async function fetchTDXJson<T>(
+  env: TDXEnv,
+  url: URL,
+  ttlSeconds: number,
+  options: TDXResolutionOptions<T> = {},
+): Promise<T> {
+  return (await resolveTDXJson(env, url, ttlSeconds, options)).data
+}
+
+export async function resolveTDXJson<T>(
+  env: TDXEnv,
+  url: URL,
+  ttlSeconds: number,
+  options: TDXResolutionOptions<T> = {},
+): Promise<TDXResolvedData<T>> {
+  const now = telemetryNow(env)
+  const credentialScope = env.TDX_USER_ACCESS_TOKEN ? 'byok' as const : 'shared' as const
+  const tracker = options.operation ? beginTDXResolutionTelemetry({
+    tdxOperation: options.operation,
+    credentialScope,
+    city: options.city ?? null,
+    trafficClass: env.TDX_TELEMETRY?.trafficClass ?? 'user',
+    releaseIdentity: releaseIdentity(env.CF_VERSION_METADATA),
+    sampleProbability: env.TDX_TELEMETRY?.sampleProbability,
+    now: env.TDX_TELEMETRY?.now,
+    random: env.TDX_TELEMETRY?.random,
+    emitter: env.TDX_TELEMETRY?.emitter,
+  }) : undefined
+  let retryCount = 0
+  let initialFailureClass: TelemetryFailureClass | undefined
+
+  const completeData = (
+    data: T,
+    resolution: TDXResolvedData<T>['resolution'],
+    dataAgeMilliseconds: number | undefined,
+    upstreamStatus?: number,
+  ): TDXResolvedData<T> => {
+    tracker?.complete({
+      resolution,
+      result: isEmptyPayload(data) ? 'empty' : resolution === 'stale_replay' ? 'degraded' : 'success',
+      failureClass: resolution === 'stale_replay' ? initialFailureClass ?? 'unknown' : 'none',
+      initialFailureClass,
+      retryCount,
+      dataAgeMilliseconds,
+      upstreamStatus,
+    })
+    return { data, resolution, degraded: resolution === 'stale_replay' }
+  }
+
+  const finishFailure = async (
+    error: TDXServiceError,
+    attemptedUpstream: boolean,
+  ): Promise<TDXResolvedData<T>> => {
+    const failureClass = error.failureKind ?? 'unknown'
+    if (options.staleFallback) {
+      try {
+        const stale = await options.staleFallback(error)
+        if (stale !== undefined && !isEmptyPayload(stale.data)) {
+          initialFailureClass ??= failureClass
+          return completeData(
+            stale.data,
+            'stale_replay',
+            stale.dataAgeMilliseconds,
+            attemptedUpstream ? error.status : undefined,
+          )
+        }
+      } catch {
+        // Stale fallback is fail-open for the original TDX failure; it never replaces the cause.
+      }
+    }
+    tracker?.complete({
+      resolution: failureClass === 'circuit_open' ? 'circuit_open' : attemptedUpstream ? 'upstream' : 'none',
+      result: 'error',
+      failureClass,
+      initialFailureClass,
+      retryCount,
+      dataAgeMilliseconds: null,
+      upstreamStatus: attemptedUpstream ? error.status : undefined,
+    })
+    throw error
+  }
+
   const memoryKey = `tdx/${url.toString()}`
-  const memoized = memoryCacheGet<T>(memoryKey)
-  if (memoized !== undefined) return memoized
+  const memoized = memoryCacheGet<TDXCacheEntry<T>>(memoryKey)
+  if (memoized !== undefined && validPayload(memoized.data, options.validate)) {
+    return completeData(
+      memoized.data,
+      'memory',
+      memoized.cachedAt === undefined ? undefined : Math.max(0, now() - memoized.cachedAt),
+    )
+  }
 
   const edgeCache = (caches as CacheStorage & { default: Cache }).default
   const cacheKey = new Request(`https://mochi-cache.invalid/tdx/${encodeURIComponent(url.toString())}`)
   const cached = await cacheMatchFailOpen(edgeCache, cacheKey, 'tdx')
   if (cached) {
     try {
-      const data = await cached.json() as T
-      memoryCacheSet(memoryKey, data, ttlSeconds)
-      return data
+      const data = await cached.json() as unknown
+      if (validPayload(data, options.validate)) {
+        const cachedAt = parsedCacheTimestamp(cached.headers.get('X-Mochi-Cached-At'))
+        const typed = data as T
+        memoryCacheSet(memoryKey, { data: typed, cachedAt }, ttlSeconds)
+        return completeData(
+          typed,
+          'edge',
+          cachedAt === undefined ? undefined : Math.max(0, now() - cachedAt),
+        )
+      }
+      console.error(JSON.stringify({ message: 'edge_cache_payload_invalid', context: 'tdx_schema' }))
     } catch (error) {
       console.error(JSON.stringify({
         message: 'edge_cache_payload_invalid',
@@ -868,44 +1045,156 @@ export async function fetchTDXJson<T>(env: TDXEnv, url: URL, ttlSeconds: number)
     }
   }
 
-  const { token, isShared, credentialKey } = await getTDXToken(env)
-  const circuitKey = dataCircuitKey(credentialKey)
-  assertTDXCircuitClosed(circuitKey)
-  let response: Response
-  try {
-    response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  if (options.blockedFailureClass) {
+    const error = new TDXServiceError('TDX resolution blocked by active cooldown', 429, {
+      failureKind: options.blockedFailureClass,
     })
-  } catch (error) {
-    const serviceError = new TDXServiceError('TDX request failed', undefined, { cause: error })
-    recordTDXCircuitFailure(circuitKey, serviceError)
-    throw serviceError
+    error.warning = options.blockedFailureClass === 'quota' ? 'tdx-quota' : 'tdx-rate-limit'
+    return finishFailure(error, false)
   }
-  if (!response.ok) {
-    const error = await tdxResponseError('TDX request failed', response, isShared)
-    recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
-    throw error
-  }
-  if (isShared) sharedRateLimitedSince = null
 
-  let data: T
+  let tokenInfo: Awaited<ReturnType<typeof getTDXToken>>
   try {
-    data = await response.json() as T
+    tokenInfo = await getTDXToken(env)
   } catch (error) {
-    const serviceError = new TDXServiceError('TDX response is invalid JSON', 502, { cause: error })
-    recordTDXCircuitFailure(circuitKey, serviceError)
-    throw serviceError
+    const serviceError = asTDXServiceError(error)
+    return finishFailure(
+      serviceError,
+      serviceError.failureKind !== 'circuit_open' && serviceError.failureKind !== 'unknown',
+    )
   }
-  recordTDXCircuitSuccess(circuitKey)
-  memoryCacheSet(memoryKey, data, ttlSeconds)
-  await cachePutFailOpen(edgeCache, cacheKey, new Response(JSON.stringify(data), {
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': `public, max-age=${ttlSeconds}`,
-    },
-  }), 'tdx', env.TDX_BACKGROUND_TASKS)
-  return data
+  const { token, isShared, credentialKey } = tokenInfo
+  const circuitKey = dataCircuitKey(credentialKey)
+  try {
+    assertTDXCircuitClosed(circuitKey)
+  } catch (error) {
+    return finishFailure(asTDXServiceError(error), false)
+  }
+
+  while (true) {
+    let response: Response
+    try {
+      response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
+    } catch (error) {
+      const serviceError = new TDXServiceError('TDX request failed', undefined, {
+        cause: error,
+        failureKind: transportFailureClass(error),
+      })
+      if (shouldRetryResolution(serviceError, options.operation, retryCount)) {
+        retryCount += 1
+        initialFailureClass = serviceError.failureKind
+        continue
+      }
+      recordTDXCircuitFailure(circuitKey, serviceError)
+      return finishFailure(serviceError, true)
+    }
+    if (!response.ok) {
+      const error = await tdxResponseError('TDX request failed', response, isShared)
+      if (shouldRetryResolution(error, options.operation, retryCount)) {
+        retryCount += 1
+        initialFailureClass = error.failureKind
+        continue
+      }
+      recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
+      return finishFailure(error, true)
+    }
+    if (isShared) sharedRateLimitedSince = null
+
+    let unvalidated: unknown
+    try {
+      unvalidated = await response.json()
+    } catch (error) {
+      const serviceError = new TDXServiceError('TDX response is invalid JSON', 502, {
+        cause: error,
+        failureKind: 'invalid_json',
+      })
+      recordTDXCircuitFailure(circuitKey, serviceError)
+      return finishFailure(serviceError, true)
+    }
+    if (!validPayload(unvalidated, options.validate)) {
+      const serviceError = new TDXServiceError('TDX response has an invalid schema', 502, {
+        failureKind: 'invalid_schema',
+      })
+      recordTDXCircuitFailure(circuitKey, serviceError)
+      return finishFailure(serviceError, true)
+    }
+
+    const data = unvalidated as T
+    recordTDXCircuitSuccess(circuitKey)
+    const cachedAt = now()
+    memoryCacheSet(memoryKey, { data, cachedAt }, ttlSeconds)
+    const resolved = completeData(data, 'upstream', 0, response.status)
+    await cachePutFailOpen(edgeCache, cacheKey, new Response(JSON.stringify(data), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': `public, max-age=${ttlSeconds}`,
+        'X-Mochi-Cached-At': String(cachedAt),
+      },
+    }), 'tdx', env.TDX_BACKGROUND_TASKS)
+    return resolved
+  }
+}
+
+function validPayload<T>(value: unknown, validate?: (value: unknown) => value is T): value is T {
+  return validate ? validate(value) : true
+}
+
+export function isTDXRecordArray<T extends object>(value: unknown): value is T[] {
+  return isRecordArrayPayload(value)
+}
+
+function isRecordArrayPayload<T extends object>(value: unknown): value is T[] {
+  return Array.isArray(value)
+    && value.every((item) => item !== null && typeof item === 'object' && !Array.isArray(item))
+}
+
+function telemetryCity(value: string): TelemetryCity | null {
+  return supportedCityCodes.has(value) ? value as TelemetryCity : null
+}
+
+function isEmptyPayload(value: unknown): boolean {
+  return Array.isArray(value) && value.length === 0
+}
+
+function parsedCacheTimestamp(value: string | null): number | undefined {
+  if (!value) return undefined
+  const timestamp = Number(value)
+  return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : undefined
+}
+
+function telemetryNow(env: TDXEnv): () => number {
+  const configured = env.TDX_TELEMETRY?.now
+  return () => {
+    try {
+      const value = configured ? configured() : Date.now()
+      return Number.isFinite(value) ? value : Date.now()
+    } catch {
+      return Date.now()
+    }
+  }
+}
+
+function shouldRetryResolution(
+  error: TDXServiceError,
+  operation: TelemetryTdxOperation | undefined,
+  retryCount: number,
+): boolean {
+  return Boolean(operation)
+    && retryCount === 0
+    && (error.failureKind === 'timeout'
+      || error.failureKind === 'network_error'
+      || error.failureKind === 'upstream_5xx')
+}
+
+function asTDXServiceError(error: unknown): TDXServiceError {
+  if (error instanceof TDXServiceError) return error
+  return new TDXServiceError('TDX resolution failed', undefined, {
+    cause: error,
+    failureKind: 'unknown',
+  })
 }
 
 function dedupeStops(stops: RouteStop[]): RouteStop[] {

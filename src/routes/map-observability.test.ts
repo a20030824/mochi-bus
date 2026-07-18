@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetMemoryCacheForTests } from '../lib/memory-cache'
 import { resetTDXTestState } from '../lib/tdx'
-import type { TelemetryEnvelope, TelemetryOperation } from '../observability/telemetry'
+import type { TelemetryEnvelope, TelemetryOperation, TelemetryTdxOperation } from '../observability/telemetry'
 import map from './map'
 
 const releaseSha = '0123456789abcdef0123456789abcdef01234567'
@@ -80,6 +80,19 @@ function capturedEvent(log: ReturnType<typeof vi.spyOn>, operation: TelemetryOpe
   return event as TelemetryEnvelope
 }
 
+function capturedResolutionEvents(
+  log: ReturnType<typeof vi.spyOn>,
+  operation: TelemetryTdxOperation,
+): TelemetryEnvelope[] {
+  return log.mock.calls
+    .map(([value]: unknown[]) => value)
+    .filter((value: unknown): value is TelemetryEnvelope => Boolean(
+      value && typeof value === 'object'
+      && 'event' in value && value.event === 'tdx_resolution_completed'
+      && 'tdxOperation' in value && value.tdxOperation === operation,
+    ))
+}
+
 describe('map API completion callsites', () => {
   let log: ReturnType<typeof vi.spyOn>
 
@@ -152,6 +165,12 @@ describe('map API completion callsites', () => {
     expect(fallbackResponse.status).toBe(200)
     expect(fallbackBody).toMatchObject({ source: 'tdx' })
     expect(fallbackEvent).toMatchObject({ result: 'degraded', source: 'fallback' })
+    expect(capturedResolutionEvents(log, 'route_catalog')).toHaveLength(1)
+    expect(capturedResolutionEvents(log, 'route_catalog')[0]).toMatchObject({
+      result: 'success',
+      resolution: 'upstream',
+      source: 'tdx_static',
+    })
   })
 
   it('records vehicles success, distinct empty reasons, upstream degradation, and coded error', async () => {
@@ -167,6 +186,11 @@ describe('map API completion callsites', () => {
     }, environment())
     expect(await successResponse.json()).toMatchObject({ vehicles: [{ plate: 'PRIVATE-PLATE' }] })
     expect(capturedEvent(log, 'map_vehicles')).toMatchObject({ result: 'success', source: 'realtime' })
+    expect(capturedResolutionEvents(log, 'vehicle_positions')).toHaveLength(1)
+    expect(capturedResolutionEvents(log, 'vehicle_positions')[0]).toMatchObject({
+      result: 'success',
+      resolution: 'upstream',
+    })
     expect(JSON.stringify(capturedEvent(log, 'map_vehicles'))).not.toContain('PRIVATE-PLATE')
 
     resetMemoryCacheForTests()
@@ -276,6 +300,11 @@ describe('map API completion callsites', () => {
       source: 'realtime',
       snapshotVersion: 'v1',
     })
+    expect(capturedResolutionEvents(log, 'place_arrivals')).toHaveLength(1)
+    expect(capturedResolutionEvents(log, 'place_arrivals')[0]).toMatchObject({
+      result: 'success',
+      resolution: 'upstream',
+    })
     expect(JSON.stringify(capturedEvent(log, 'map_place_arrivals'))).not.toMatch(
       /private-place-id|Private place name|variant-private|STOP1|Private stop|routeUid|placeId|stopUid|latitude|longitude|plate/i,
     )
@@ -359,6 +388,7 @@ describe('map API completion callsites', () => {
       qualityBucket: 'complete_realtime',
       city: 'Taipei',
     })
+    expect(capturedResolutionEvents(log, 'journey_eta')).toHaveLength(1)
 
     resetMemoryCacheForTests()
     resetTDXTestState()
@@ -375,6 +405,8 @@ describe('map API completion callsites', () => {
       emptyReason: 'all_estimates_unknown',
       qualityBucket: 'all_unknown',
     })
+    expect(capturedResolutionEvents(log, 'journey_eta')).toHaveLength(1)
+    expect(capturedResolutionEvents(log, 'tdx_schedule')).toHaveLength(1)
 
     resetMemoryCacheForTests()
     resetTDXTestState()

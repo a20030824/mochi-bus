@@ -34,6 +34,26 @@ function validEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryEnvelo
   }
 }
 
+function validResolutionEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryEnvelope {
+  return validEvent({
+    event: 'tdx_resolution_completed',
+    operation: 'map_vehicles',
+    result: 'success',
+    source: 'realtime',
+    snapshotVersion: null,
+    httpStatusClass: 'none',
+    cacheResult: 'miss',
+    tdxOperation: 'vehicle_positions',
+    credentialScope: 'shared',
+    resolution: 'upstream',
+    retryCountBucket: '0',
+    recoveredAfterRetry: false,
+    dataAgeBucket: 'fresh',
+    upstreamStatusClass: '2xx',
+    ...overrides,
+  })
+}
+
 describe('telemetry contract', () => {
   it('accepts and freezes an allowlisted common envelope', () => {
     const event = parseTelemetryEvent(validEvent())
@@ -83,6 +103,42 @@ describe('telemetry contract', () => {
   it('rejects sensitive markers smuggled through an otherwise allowed identifier', () => {
     expect(parseTelemetryEvent({ ...validEvent(), deploymentId: 'client-secret' })).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), snapshotVersion: 'access_token' })).toBeUndefined()
+  })
+
+  it('requires bounded TDX resolution fields only on resolution events', () => {
+    expect(parseTelemetryEvent(validResolutionEvent())).toEqual(validResolutionEvent())
+    expect(parseTelemetryEvent({ ...validResolutionEvent(), resolution: undefined })).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validResolutionEvent(), credentialScope: 'token-hash' })).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validResolutionEvent(), retryCountBucket: '1' })).toBeUndefined()
+    expect(parseTelemetryEvent(validResolutionEvent({
+      retryCountBucket: '1',
+      recoveredAfterRetry: true,
+      initialFailureClass: 'timeout',
+    }))).toBeDefined()
+    expect(parseTelemetryEvent(validResolutionEvent({
+      resolution: 'memory',
+      result: 'error',
+      failureClass: 'network_error',
+      cacheResult: 'memory_hit',
+      upstreamStatusClass: 'none',
+      dataAgeBucket: '1_5m',
+    }))).toBeUndefined()
+    expect(parseTelemetryEvent(validResolutionEvent({
+      resolution: 'stale_replay',
+      result: 'degraded',
+      failureClass: 'none',
+      cacheResult: 'bypass',
+      upstreamStatusClass: 'none',
+    }))).toBeUndefined()
+    expect(parseTelemetryEvent(validResolutionEvent({
+      retryCountBucket: '1',
+      recoveredAfterRetry: true,
+      initialFailureClass: 'none',
+    }))).toBeUndefined()
+    expect(parseTelemetryEvent(validResolutionEvent({ cacheResult: 'edge_hit' }))).toBeUndefined()
+    expect(parseTelemetryEvent(validResolutionEvent({ operation: 'map_routes' }))).toBeUndefined()
+    expect(parseTelemetryEvent(validResolutionEvent({ source: 'schedule' }))).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validEvent(), tdxOperation: 'vehicle_positions' })).toBeUndefined()
   })
 })
 
