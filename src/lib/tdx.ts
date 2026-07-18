@@ -1,6 +1,7 @@
 import type { BusQuery, Direction, ResolvedBusQuery } from '../domain/bus-query'
 import { classifyRouteName, type RouteCategory } from '../domain/route-category'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../domain/schedule'
+import { tdxWarningMessages, type TDXWarning } from '../domain/tdx-warning'
 import { selectBestEta } from '../domain/map/eta'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { memoryCacheGet, memoryCacheSet } from './memory-cache'
@@ -164,14 +165,8 @@ export function isRejectedUserTdxToken(error: unknown, authorization?: string): 
     && error.status === 401
 }
 
-export type TDXWarning = 'tdx-rate-limit' | 'tdx-quota' | 'tdx-unavailable'
-
-// 給使用者看的 TDX 異常說明,唯一的一份;SSR、API 錯誤與前端輪詢共用,改文案只改這裡。
-export const tdxWarningMessages: Record<TDXWarning, string> = {
-  'tdx-rate-limit': 'TDX 即時查詢暫時受限（額度或頻率），地圖與已同步路網仍可使用。',
-  'tdx-quota': '共用的 TDX 額度可能已用完，暫時查不到即時到站；地圖與已同步路網仍可使用，也可到「我的公車」的進階設定填自己的 TDX 憑證。',
-  'tdx-unavailable': 'TDX 暫時連不上，地圖與已同步路網仍可使用。',
-}
+export { tdxWarningMessages }
+export type { TDXWarning }
 
 // 額度用完與頻率超限 TDX 都只回 429,單看狀態碼分不出來;但頻率超限幾秒就恢復、
 // 額度用完會持續到月底。以「連續 429 撐了多久」區分該給使用者哪種說法:
@@ -537,6 +532,7 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
   try {
     items = await getBusETA(env, query)
   } catch (error) {
+    if (isRejectedUserTdxToken(error, env.TDX_USER_ACCESS_TOKEN)) throw error
     warning = tdxWarningFromError(error)
     console.error(JSON.stringify({
       message: 'commute_eta_realtime_failed',
@@ -592,6 +588,7 @@ export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, quer
       warning,
     }
   } catch (error) {
+    if (isRejectedUserTdxToken(error, env.TDX_USER_ACCESS_TOKEN)) throw error
     warning ??= tdxWarningFromError(error)
     console.error('eta_schedule_fallback_failed', error)
     return warning ? { ...result, warning } : result

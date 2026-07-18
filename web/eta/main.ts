@@ -7,7 +7,7 @@ import {
   type FavoriteBoard,
   type FavoriteBus,
 } from '../boards/store'
-import { requestMochiJson } from '../tdx/api-client'
+import { isTdxTokenRejectedError, requestMochiJson } from '../tdx/api-client'
 import type { EtaSource } from '../../src/domain/eta-presentation'
 import { createEtaRow, updateEtaRow, type EtaRowViewModel } from './eta-row-view'
 
@@ -52,6 +52,13 @@ type RefreshResponse = {
   bus: FavoriteBus
   data?: EtaData
   failed?: boolean
+  error?: unknown
+}
+
+type PlaceArrivalsLoad = {
+  routes: PlaceRoute[] | null
+  warning?: string
+  error?: unknown
 }
 
 function requiredElement<T extends globalThis.Element>(selector: string): T {
@@ -236,9 +243,9 @@ async function repairBusFromPlace(bus: FavoriteBus): Promise<boolean> {
   } catch { return false }
 }
 
-async function loadPlaceArrivals(): Promise<PlaceRoute[] | null> {
+async function loadPlaceArrivals(): Promise<PlaceArrivalsLoad> {
   const city = currentBoard.city || currentBoard.buses[0]?.city
-  if (!city || !currentBoard.placeId) return null
+  if (!city || !currentBoard.placeId) return { routes: null }
   try {
     const params = new URLSearchParams({ city })
     const focus = currentBoard.buses[0]
@@ -247,13 +254,28 @@ async function loadPlaceArrivals(): Promise<PlaceRoute[] | null> {
     if (focus && (focus.direction === 0 || focus.direction === 1 || focus.direction === 2)) {
       params.set('focusDirection', String(focus.direction))
     }
-    const body = await requestMochiJson<{ routes?: PlaceRoute[] }>(
+    const body = await requestMochiJson<{ routes?: PlaceRoute[]; warning?: string }>(
       '/api/v1/map/place/' + encodeURIComponent(currentBoard.placeId) + '/arrivals?' + params,
       { cache: 'no-store' },
       { authenticated: true },
     )
-    return Array.isArray(body.routes) ? body.routes : null
-  } catch { return null }
+    return {
+      routes: Array.isArray(body.routes) ? body.routes : null,
+      warning: typeof body.warning === 'string' ? body.warning : undefined,
+    }
+  } catch (error) {
+    return { routes: null, error }
+  }
+}
+
+function showRefreshNotice(message: string, includeSetup = false): void {
+  noticeNode.replaceChildren(document.createTextNode(message))
+  if (!includeSetup) return
+  noticeNode.appendChild(document.createTextNode(' '))
+  const setup = document.createElement('a')
+  setup.href = '/setup'
+  setup.textContent = '檢查 TDX 設定'
+  noticeNode.appendChild(setup)
 }
 
 async function refreshBoard(): Promise<void> {
@@ -261,9 +283,13 @@ async function refreshBoard(): Promise<void> {
   if (refreshButton.disabled) return
   refreshButton.disabled = true
   refreshButton.textContent = '更新中'
-  noticeNode.textContent = ''
-  const placeArrivals = await loadPlaceArrivals()
-  const responses: RefreshResponse[] = await Promise.all(currentBoard.buses.map(async (bus): Promise<RefreshResponse> => {
+  noticeNode.replaceChildren()
+  const placeLoad = await loadPlaceArrivals()
+  const placeArrivals = placeLoad.routes
+  const credentialError = isTdxTokenRejectedError(placeLoad.error) ? placeLoad.error : undefined
+  const responses: RefreshResponse[] = credentialError
+    ? currentBoard.buses.map((bus) => ({ bus, failed: true, error: credentialError }))
+    : await Promise.all(currentBoard.buses.map(async (bus): Promise<RefreshResponse> => {
     const repaired = await repairBusFromPlace(bus)
     // 沒有站牌識別就不打 ETA,避免必然的 400。
     if (!repaired || (!bus.stopUid && !bus.stopName)) return { bus, failed: true }
@@ -282,7 +308,8 @@ async function refreshBoard(): Promise<void> {
         source: arrival.source,
         fetchedAt: new Date().toISOString(),
         dataTime: null,
-        stale: false,
+        stale: arrival.source === 'stale-realtime',
+        warning: placeLoad.warning,
       }}
     }
     try {
@@ -292,7 +319,7 @@ async function refreshBoard(): Promise<void> {
         { authenticated: true },
       )
       return { bus, data: body }
-    } catch { return { bus, failed: true } }
+    } catch (error) { return { bus, failed: true, error } }
   }))
   responses.sort((a, b) => {
     const aEta = typeof a.data?.estimateSeconds === 'number' ? a.data.estimateSeconds : Number.POSITIVE_INFINITY
@@ -302,10 +329,13 @@ async function refreshBoard(): Promise<void> {
   reconcileRows(responses)
   if (useLocalBoard && !demoBoard) writeBoards(migrateBoards().map((board) => board.id === currentBoard.id ? currentBoard : board))
   const fresh = responses.filter((item) => item.data).map((item) => item.data as EtaData)
-  const tdxWarning = ['tdx-quota', 'tdx-rate-limit', 'tdx-unavailable'].find((kind) => fresh.some((item) => item.warning === kind))
-  if (tdxWarning) noticeNode.textContent = tdxWarningMessages[tdxWarning]
-  else if (fresh.some((item) => item.stale)) noticeNode.textContent = '部分資料有些延遲，以現場站牌為準'
-  else if (fresh.some((item) => item.source === 'schedule')) noticeNode.textContent = '部分依時刻表推估，實際到站可能略有出入'
+  const rejected = credentialError ?? responses.find((item) => isTdxTokenRejectedError(item.error))?.error
+  const tdxWarning = placeLoad.warning
+    ?? ['tdx-quota', 'tdx-rate-limit', 'tdx-unavailable'].find((kind) => fresh.some((item) => item.warning === kind))
+  if (isTdxTokenRejectedError(rejected)) showRefreshNotice(rejected.message, true)
+  else if (tdxWarning) showRefreshNotice(tdxWarningMessages[tdxWarning] ?? 'TDX 即時資料目前無法更新。', true)
+  else if (fresh.some((item) => item.stale)) showRefreshNotice('部分資料有些延遲，以現場站牌為準')
+  else if (fresh.some((item) => item.source === 'schedule')) showRefreshNotice('部分依時刻表推估，實際到站可能略有出入')
   updatedNode.textContent = fresh[0] ? '資料 ' + new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(fresh[0].dataTime || fresh[0].fetchedAt || Date.now())) : '暫時無法更新'
   refreshButton.disabled = false
   refreshButton.textContent = '重新整理'

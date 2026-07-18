@@ -69,4 +69,18 @@ describe('map API client', () => {
     await expect(mapApi.nearby('Taipei', 25, 121.5, 500)).resolves.toEqual([])
     expect(fetchMock).toHaveBeenCalledOnce()
   })
+
+  it('preserves degraded arrival metadata instead of returning only route rows', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      routes: [{ routeName: '307' }],
+      warning: 'tdx-rate-limit',
+      realtime: { candidates: 1, queries: 0, rateLimited: true },
+    }))))
+
+    await expect(mapApi.placeRoutes('Taipei', 'P1')).resolves.toMatchObject({
+      routes: [{ routeName: '307' }],
+      warning: 'tdx-rate-limit',
+      realtime: { rateLimited: true },
+    })
+  })
 })

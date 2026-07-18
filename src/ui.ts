@@ -224,6 +224,7 @@ const credentialStyles = `.credential-field{display:grid;gap:6px}.credential-fie
 
 const designRefinementStyles = `
 :root{--eta-transition-duration:180ms}
+.notice a{font-weight:850;text-underline-offset:3px}
 .brand span{color:var(--accent)}
 .onboard-sign-text{position:relative;z-index:1;overflow:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 32px,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(90deg,transparent,#000 32px,#000 calc(100% - 32px),transparent)}
 .onboard-sign::after{z-index:2}

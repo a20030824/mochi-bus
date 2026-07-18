@@ -31,6 +31,12 @@ async function mockSetupApi(page: Page, stopRoutesDelayMs = 0) {
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
+        place: {
+          placeId: 'NWT:jing-an',
+          name: '捷運景安站',
+          latitude: 24.993,
+          longitude: 121.505,
+        },
         buses: [{
           city: 'NewTaipei',
           routeName: '918',
@@ -93,14 +99,134 @@ test.describe('/setup page', () => {
 
     await page.click('#add-board-button')
     await page.waitForSelector('.route-choice')
+    await expect(page).toHaveURL(/step=routes/)
+    await page.getByLabel('快速篩選').fill('30')
 
     await page.locator('.route-choice').first().click()
     await page.waitForSelector('#direction-step .result-card')
+    await expect(page).toHaveURL(/step=stops/)
+
+    await page.goBack()
+    await expect(page).toHaveURL(/step=routes/)
+    await expect(page.getByLabel('快速篩選')).toHaveValue('30')
+    await page.goForward()
+    await expect(page.locator('#direction-step .result-card')).toBeVisible()
 
     await page.locator('#direction-step .result-card').first().locator('button.primary').click()
     await page.waitForSelector('#suggestion-step .sticky-save')
+    await expect(page).toHaveURL(/step=suggestions/)
 
     await expect(page.locator('#suggestion-step .check-row')).not.toHaveCount(0)
+    await page.getByRole('button', { name: '← 返回方向與站牌' }).click()
+    await expect(page).toHaveURL(/step=stops/)
+    await page.goForward()
+    await expect(page.locator('#suggestion-step .sticky-save')).toBeVisible()
+    await page.reload()
+    await expect(page.locator('#suggestion-step .sticky-save')).toBeVisible()
+    await page.goBack()
+    await page.goBack()
+    await expect(page).toHaveURL(/step=routes/)
+    await expect(page.getByLabel('快速篩選')).toHaveValue('30')
+  })
+
+  test('setup and map favorites for the same stop share one homepage map entry', async ({ page }) => {
+    await mockSetupApi(page)
+    await page.route('**/api/v1/map/place/**', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ routes: [] }),
+    }))
+
+    await page.goto('/setup')
+    await page.click('#add-board-button')
+    await page.waitForSelector('.route-choice')
+    await page.locator('#city').selectOption('NewTaipei')
+    await page.waitForSelector('.route-choice')
+    await page.locator('.route-choice').first().click()
+    await page.waitForSelector('#direction-step .result-card')
+    await page.locator('#direction-step .result-card').first().locator('button.primary').click()
+    await page.waitForSelector('#suggestion-step .sticky-save')
+    await page.locator('#suggestion-step .sticky-save').click()
+
+    await expect(page).toHaveURL('/')
+    await expect(page.locator('.top-actions a').first()).toHaveAttribute(
+      'href',
+      '/map?city=NewTaipei&place=NWT%3Ajing-an',
+    )
+    const setupMapHref = await page.locator('.top-actions a').first().getAttribute('href')
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('mochi.bus.boards.v2') || '[]'))
+    expect(stored).toHaveLength(1)
+    expect(stored[0]).toMatchObject({
+      city: 'NewTaipei',
+      placeId: 'NWT:jing-an',
+      latitude: 24.993,
+      longitude: 121.505,
+    })
+
+    const mapPlace = {
+      placeId: 'NWT:jing-an',
+      name: '捷運景安站',
+      latitude: 24.993,
+      longitude: 121.505,
+      distanceMeters: 0,
+    }
+    await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+    await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [{
+      code: 'NewTaipei', name: '新北', region: 'north', center: [24.993, 121.505],
+    }] } }))
+    await page.route(/\/api\/v1\/map\/routes(?:\?|$)/, (route) => route.fulfill({ json: { routes: [] } }))
+    await page.route(/\/api\/v1\/map\/place\/[^/]+\?city=NewTaipei$/, (route) => route.fulfill({
+      json: { place: mapPlace },
+    }))
+    await page.route(/\/api\/v1\/map\/place\/[^/]+\/arrivals\?city=NewTaipei$/, (route) => route.fulfill({ json: {
+      routes: [{
+        routeName: '307',
+        routeUid: 'NWT307',
+        variantKey: 'NWT307-0',
+        direction: 0,
+        label: '往板橋',
+        subRouteUid: 'NWT307-0',
+        subRouteName: '307',
+        stopUid: 'NWT1',
+        stopName: '捷運景安站',
+        stopSequence: 1,
+        estimateSeconds: 300,
+        etaLabel: '5 分',
+        stopStatus: 0,
+        source: 'realtime',
+      }],
+    } }))
+    await page.evaluate(() => {
+      localStorage.removeItem('mochi.bus.boards.v2')
+      localStorage.removeItem('mochi.bus.activeBoard.v2')
+    })
+
+    await page.goto(setupMapHref!)
+    await expect(page.locator('#map-drawer').getByRole('heading', { name: '捷運景安站' })).toBeVisible()
+    await page.getByRole('button', { name: '將這個方向加入首頁' }).click()
+    await page.goto('/')
+
+    await expect(page.locator('.top-actions a').first()).toHaveAttribute('href', setupMapHref!)
+    await page.locator('.top-actions a').first().click()
+    await expect(page).toHaveURL(setupMapHref!)
+    await expect(page.locator('#map-drawer').getByRole('heading', { name: '捷運景安站' })).toBeVisible()
+  })
+
+  test('duplicate route activation creates only one wizard history step', async ({ page }) => {
+    await mockSetupApi(page)
+
+    await page.goto('/setup')
+    await page.click('#add-board-button')
+    await page.waitForSelector('.route-choice')
+    await page.locator('.route-choice').first().dblclick()
+    await expect(page.locator('#direction-step .result-card')).toBeVisible()
+    await expect(page).toHaveURL(/step=stops/)
+
+    await page.goBack()
+    await expect(page).toHaveURL(/step=routes/)
+    await expect(page.locator('.route-choice')).toBeVisible()
+    await page.goBack()
+    await expect(page).toHaveURL('/setup')
+    await expect(page.locator('#picker-panel')).toBeHidden()
   })
 
   // 回歸測試:hidePicker/backToRoutes 曾經只清 selectedRoute、不搶新 epoch,

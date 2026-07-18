@@ -20,6 +20,9 @@ export type JourneyEstimate = {
   minutes: number | null
   stopStatus: number | null
   source: 'none' | 'realtime' | 'schedule'
+  departureBased: boolean
+  headwayMinutes: [number, number] | null
+  nextDay: boolean
 }
 
 export function realtimeJourneyEstimate(ref: JourneyLegRef, items: BusETAItem[]): JourneyEstimate {
@@ -38,6 +41,9 @@ export function realtimeJourneyEstimate(ref: JourneyLegRef, items: BusETAItem[])
     minutes: estimateSeconds === null ? null : Math.ceil(estimateSeconds / 60),
     stopStatus: item?.StopStatus ?? null,
     source: estimateSeconds === null ? 'none' : 'realtime',
+    departureBased: false,
+    headwayMinutes: null,
+    nextDay: false,
   }
 }
 
@@ -52,16 +58,17 @@ export function scheduledJourneyEstimates(
       direction: ref.direction,
       subRouteUid: ref.subRouteUid,
     }, now)
-    // 明天才有車的班次不適合拿來排序現在出發的行程。
-    const estimate = scheduled?.nextDay ? null : scheduled
     return [ref.key, {
       key: ref.key,
       routeName: ref.routeName,
       stopUid: ref.stopUid,
-      estimateSeconds: estimate === null ? null : estimate.minutes * 60,
-      minutes: estimate?.minutes ?? null,
+      estimateSeconds: scheduled === null ? null : scheduled.minutes * 60,
+      minutes: scheduled?.minutes ?? null,
       stopStatus: null,
-      source: estimate === null ? 'none' as const : 'schedule' as const,
+      source: scheduled === null ? 'none' as const : 'schedule' as const,
+      departureBased: scheduled?.departureBased ?? false,
+      headwayMinutes: scheduled?.headwayMinutes ?? null,
+      nextDay: scheduled?.nextDay ?? false,
     }] as const
   }))
 }

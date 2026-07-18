@@ -22,7 +22,7 @@ export type FavoriteBoard = {
   version: 2
   id: string
   title: string
-  // 由地圖頁建立的 board 才有 place 欄位;setup 頁建立的沒有。
+  // 新版地圖與 setup 都會保留穩定的站點身分；舊資料或快照缺站時可能沒有。
   city?: string
   placeId?: string
   latitude?: number
@@ -75,7 +75,7 @@ export function busKey(bus: Pick<FavoriteBus, 'routeUid' | 'subRouteUid' | 'patt
   return `${routePatternKey(bus, bus.routeName)}|stop:${bus.stopUid ?? ''}`
 }
 
-// 封面只留一個地圖站點:保留 setup 頁手動建立的 board(無 placeId)與目前站點,其餘地圖收藏移除。
+// 封面只留一個具 placeId 的站點；保留無法解析 placeId 的舊看板與目前站點。
 export function pruneOtherMapBoards(boards: FavoriteBoard[], city: string, placeId: string): FavoriteBoard[] {
   return boards.filter((board) => !board.placeId || (board.city === city && board.placeId === placeId))
 }

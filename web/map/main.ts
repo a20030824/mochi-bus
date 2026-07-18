@@ -1,6 +1,5 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
-import { createViewBackController } from '../../src/domain/map/view-back'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
@@ -13,7 +12,6 @@ import {
   type TransferEstimate,
 } from '../../src/domain/map/transfer-estimate'
 import {
-  getActiveCity,
   isFavoriteDirection,
   readBoards,
   setActiveCity,
@@ -25,6 +23,8 @@ import {
   splitEtaLabel,
   type EtaSource,
 } from '../../src/domain/eta-presentation'
+import { tdxWarningMessages } from '../../src/domain/tdx-warning'
+import { isTdxTokenRejectedError } from '../tdx/api-client'
 import { splitRouteDisplayName } from '../lib/route-display'
 import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
@@ -34,6 +34,7 @@ import { bindTextTooltip } from './leaflet-tooltip'
 import {
   mapApi,
   type DirectRoute,
+  type JourneyEtaEstimate,
   type MapCity,
   type NearbyPlace,
   type PlaceRoute,
@@ -72,10 +73,7 @@ type PendingTripSelection = {
   selected: NearbyPlace
 }
 
-type JourneyEtaValue = {
-  minutes: number | null
-  source: EtaSource
-}
+type JourneyEtaValue = Omit<JourneyEtaEstimate, 'key'> & { source: EtaSource }
 
 const regions: Array<{
   code: RegionCode
@@ -96,10 +94,25 @@ const TAIWAN_OVERVIEW_BOUNDS: L.LatLngBoundsExpression = [
 ]
 const desktopMapLayout = window.matchMedia('(min-width: 641px)')
 
+// 舊 renderer 的呼叫點暫留為 migration seam；history 不再建立或補推 sentinel。
+function setViewBack(_back?: () => void) {}
+
 function overviewMaxZoom(baseZoom: number): number {
   // 桌機抽屜在側邊，不會吃掉地圖高度；四分之三級能善用多出的工作區，
   // 手機底部抽屜仍維持原本的地理尺度。
   return baseZoom + (desktopMapLayout.matches ? .75 : 0)
+}
+
+type TripResultsHistorySnapshot = {
+  city: string
+  from: NearbyPlace
+  to: NearbyPlace
+  fromCoordinate?: [number, number]
+  toCoordinate?: [number, number]
+  directRoutes: DirectRoute[]
+  transferPlans: TransferPlan[]
+  selectedDirectIndex: number
+  selectedTransferIndex: number
 }
 
 const mapNode = requiredElement('map')
@@ -121,19 +134,11 @@ document.getElementById('map-app')?.appendChild(networkButton)
 // 滑鼠本身夠精準,放大命中範圍反而讓 hover 判定跟不上游標移動(看起來卡住不會變回原狀)。
 const hoverCapable = window.matchMedia('(hover: hover)').matches
 
-// 手機返回鍵的單一哨兵邏輯抽在 view-back.ts(有測試);這裡只注入 history 操作。
-const viewBack = createViewBackController({
-  push: () => history.pushState({ mochi: true }, '', location.href),
-  back: () => history.back(),
-  // 被吃掉的哨兵底下那筆網址可能還停在舊畫面(例如 deep link),校正回根層網址。
-  onRootReturn: () => history.replaceState(null, '', '/map'),
+window.addEventListener('popstate', (event) => {
+  if (['overview', 'region', 'catalogue', 'route', 'nearby', 'place', 'trip-select', 'trip-results'].includes(event.state?.mapView)) {
+    void hydrateMapLocation()
+  }
 })
-
-function setViewBack(back?: () => void) {
-  viewBack.set(back)
-}
-
-window.addEventListener('popstate', () => viewBack.handlePop())
 
 // 互動圖層一律用 SVG:canvas 會以整張地圖大小攔截點擊,
 // 疊在上層的 pane 會擋住下層線條的 click(候選路線點不到、誤觸地圖點擊)。
@@ -182,6 +187,8 @@ let routes: RouteItem[] = []
 // routes 屬於哪個縣市:深連結直接進路線不會經過 chooseCity,目錄是空的
 let routesCityCode: string | undefined
 let category = '全部'
+let routeSearchQuery = ''
+let routeScrollTop = 0
 let stopMarkers: L.CircleMarker[] = []
 let lastNearbyPlaces: NearbyPlace[] = []
 let lastNearbyOrigin: [number, number] | undefined
@@ -208,6 +215,9 @@ const navRequests = createNavRequestCoordinator()
 function beginNavRequest(): { requestId: number; signal: AbortSignal } {
   return navRequests.begin()
 }
+function cancelNavRequest(): void {
+  navRequests.cancel()
+}
 function isStaleNav(requestId: number): boolean {
   return navRequests.isStale(requestId)
 }
@@ -220,6 +230,8 @@ let routeBackAction: (() => void) | undefined
 let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
 let variantPickerUsed = false
 let vehicleRefreshTimer: number | undefined
+let vehicleRefreshEpoch = 0
+let vehicleRefreshController: AbortController | undefined
 
 const routePalette = ['#b85f49', '#4f685b', '#8a674f', '#b08a47', '#765b78', '#6f7561']
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
@@ -346,43 +358,119 @@ function addPreviewStopDots(
   }).addTo(layerGroup)
 }
 
+let initialising = false
 void initialise()
 
 async function initialise() {
+  if (initialising) return
+  initialising = true
   try {
     cities = await mapApi.cities()
-    const params = new URLSearchParams(location.search)
-    const cityCode = params.get('city') || getActiveCity()
-    const routeName = params.get('route')
-    if (cityCode) {
-      const city = cities.find((candidate) => candidate.code === cityCode)
-      if (city) {
-        activeCity = city
-        if (routeName) {
-          await loadRoute(routeName, params.get('variant'))
-        } else {
-          await chooseCity(city)
-          const placeId = params.get('place')
-          if (placeId) {
-            await openPlaceById(placeId)
-            return
-          }
-          const latitudeParam = params.get('lat')
-          const longitudeParam = params.get('lon')
-          const latitude = Number(latitudeParam)
-          const longitude = Number(longitudeParam)
-          if (latitudeParam !== null && longitudeParam !== null && Number.isFinite(latitude) && Number.isFinite(longitude)) {
-            camera.focusPoint([latitude, longitude], 15)
-            await findNearbyPlaces(latitude, longitude)
-          }
-        }
-        return
-      }
-    }
-    showTaiwan()
+    seedInitialMapHistory()
+    await hydrateMapLocation()
   } catch {
-    setStatus('地圖初始化失敗，請稍後再試。', true)
+    renderBootstrapError()
+  } finally {
+    initialising = false
   }
+}
+
+function seedInitialMapHistory() {
+  if (history.state?.mapView) return
+  const originalUrl = `${location.pathname}${location.search}`
+  const params = new URLSearchParams(location.search)
+  const cityCode = params.get('city')
+  const regionCode = params.get('region') as RegionCode | null
+  history.replaceState({ mapView: 'overview' }, '', '/map')
+  if (regionCode && regions.some((region) => region.code === regionCode)) {
+    history.pushState({ mapView: 'region', mapParent: 'overview' }, '', originalUrl)
+    return
+  }
+  if (!cityCode) return
+  const city = cities.find((candidate) => candidate.code === cityCode)
+  if (!city) return
+  history.pushState({ mapView: 'region', mapParent: 'overview' }, '', `/map?region=${city.region}`)
+  history.pushState({ mapView: 'catalogue', mapParent: 'region' }, '', `/map?city=${encodeURIComponent(city.code)}`)
+  const mapView = params.has('route')
+    ? 'route'
+    : params.has('place')
+      ? 'place'
+      : params.has('lat') && params.has('lon')
+        ? 'nearby'
+        : params.get('trip') === 'results'
+          ? 'trip-results'
+          : params.get('trip') === 'select' ? 'trip-select' : undefined
+  if (mapView) history.pushState({ mapView, mapParent: 'catalogue' }, '', originalUrl)
+}
+
+async function hydrateMapLocation() {
+  const params = new URLSearchParams(location.search)
+  const regionCode = params.get('region') as RegionCode | null
+  if (regionCode && regions.some((region) => region.code === regionCode)) {
+    showRegion(regionCode)
+    return
+  }
+  // `/map` 永遠代表全台總覽；恢復縣市必須由可分享、可重整的 city URL 明確表達。
+  const cityCode = params.get('city')
+  const routeName = params.get('route')
+  if (cityCode) {
+    const city = cities.find((candidate) => candidate.code === cityCode)
+    if (city) {
+      if (!history.state?.mapView) {
+        history.replaceState({ mapView: 'catalogue' }, '', location.href)
+      }
+      activeCity = city
+      if (routeName) {
+        const returnToTrip = history.state?.mapParent === 'trip-results' && restoreTripResultsState()
+        await loadRoute(routeName, params.get('variant'), returnToTrip)
+      } else {
+        if (params.get('trip') === 'results' && restoreTripResultsState()) {
+          returnToTripResults()
+          return
+        }
+        if (params.get('trip') === 'results' && await restoreSharedTripResults(params)) return
+        if (params.get('trip') === 'select') {
+          clearTripState()
+          renderTripSelectionStep('from')
+          return
+        }
+        await chooseCity(city)
+        const placeId = params.get('place')
+        if (placeId) {
+          await openPlaceById(placeId)
+          return
+        }
+        const latitudeParam = params.get('lat')
+        const longitudeParam = params.get('lon')
+        const latitude = Number(latitudeParam)
+        const longitude = Number(longitudeParam)
+        if (latitudeParam !== null && longitudeParam !== null && Number.isFinite(latitude) && Number.isFinite(longitude)) {
+          camera.focusPoint([latitude, longitude], 15)
+          await findNearbyPlaces(latitude, longitude)
+        }
+      }
+      return
+    }
+  }
+  showTaiwan()
+}
+
+function renderBootstrapError() {
+  const message = '目前無法載入縣市資料，請檢查網路後再試一次。'
+  setStatus('地圖初始化失敗，請稍後再試。', true)
+  const retry = retryButton(() => {
+    retry.disabled = true
+    retry.textContent = '重試中…'
+    void initialise()
+  })
+  renderDrawer({
+    mode: 'map-list',
+    header: [heading('地圖初始化失敗', message)],
+    content: [paragraph(message)],
+    footer: [retry],
+  })
+  setDocumentTitle('地圖初始化失敗')
+  setViewBack(undefined)
 }
 
 networkButton.addEventListener('click', () => {
@@ -393,7 +481,6 @@ networkButton.addEventListener('click', () => {
 document.getElementById('map-brand')?.addEventListener('click', (event) => {
   event.preventDefault()
   showTaiwan()
-  history.replaceState(null, '', '/map')
 })
 map.on('zoomend', updateStopMarkerSize)
 map.on('click', (event) => {
@@ -424,7 +511,7 @@ map.on('click', (event) => {
 
 function showTaiwan() {
   stopVehicleRefresh()
-  beginNavRequest()
+  cancelNavRequest()
   clearPendingTripSelections()
   clearTripResultsCamera()
   activeCity = undefined
@@ -450,13 +537,13 @@ function showTaiwan() {
       heading('先從哪裡開始？', '公車不是清單，是城市的骨架。'),
       buttonGrid(regions.map((region) => ({
         label: region.name,
-        onClick: () => showRegion(region.code),
+        onClick: () => openRegion(region.code),
       })), 'map-fallback-grid'),
       locateCityButton(),
     ],
   })
   camera.focusBounds(TAIWAN_OVERVIEW_BOUNDS, { maxZoom: () => overviewMaxZoom(7.5) })
-  history.replaceState(null, '', '/map')
+  history.replaceState({ mapView: 'overview' }, '', '/map')
   setDocumentTitle()
   setViewBack(undefined)
 }
@@ -482,7 +569,7 @@ async function jumpToNearestCity(button: HTMLButtonElement) {
       coarseKilometers(city.center, origin) < coarseKilometers(best.center, origin) ? city : best)
     // 離最近縣市中心太遠,代表人大概不在台灣(或 IP 出口在國外),硬跳只會誤導。
     if (coarseKilometers(nearest.center, origin) > 150) throw new Error('看起來你不在台灣附近，直接手動選吧')
-    await chooseCity(nearest)
+    openCity(nearest)
     setStatus(`猜你在${nearest.name}，猜錯按「返回縣市」重選。`)
   } catch (error) {
     setStatus(error instanceof Error && error.message ? error.message : '定位失敗，直接手動選吧', true)
@@ -518,17 +605,38 @@ function renderRegionMarkers() {
         iconAnchor: [37, 20],
       }),
       title: region.name,
-    }).on('click', () => showRegion(region.code)).addTo(selectionLayer)
+    }).on('click', () => openRegion(region.code)).addTo(selectionLayer)
   }
+}
+
+function openRegion(regionCode: RegionCode) {
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  history.pushState({ ...currentState, mapView: 'region', mapParent: 'overview' }, '', `/map?region=${regionCode}`)
+  showRegion(regionCode)
+}
+
+function returnToOverview() {
+  if (history.state?.mapView === 'region' && history.state?.mapParent === 'overview') {
+    history.back()
+    return
+  }
+  showTaiwan()
 }
 
 function showRegion(regionCode: RegionCode) {
   stopVehicleRefresh()
+  cancelNavRequest()
   clearPendingTripSelections()
   clearTripResultsCamera()
   networkButton.hidden = true
   cityNetwork.hide()
   const region = regions.find((candidate) => candidate.code === regionCode)!
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  history.replaceState({
+    ...currentState,
+    mapView: 'region',
+    mapParent: currentState.mapView === 'region' ? currentState.mapParent : 'overview',
+  }, '', `/map?region=${regionCode}`)
   routeLayer.clearLayers()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
@@ -544,21 +652,42 @@ function showRegion(regionCode: RegionCode) {
         iconAnchor: cityIconAnchor(city),
       }),
       title: city.name,
-    }).on('click', () => void chooseCity(city)).addTo(selectionLayer)
+    }).on('click', () => openCity(city)).addTo(selectionLayer)
   }
   renderDrawer({
     mode: 'compact',
     content: [
-      drawerBack('返回區域', showTaiwan),
+      drawerBack('返回區域', returnToOverview),
       heading(region.name, '直接點地圖上的縣市，或從這裡選。'),
       buttonGrid(regionCities.map((city) => ({
         label: city.name,
-        onClick: () => void chooseCity(city),
+        onClick: () => openCity(city),
       })), 'map-fallback-grid'),
     ],
   })
   fitRegionCities(region, regionCities)
-  setViewBack(showTaiwan)
+  setViewBack(returnToOverview)
+}
+
+function openCity(city: MapCity) {
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  if (currentState.mapView !== 'region') {
+    history.pushState({ ...currentState, mapView: 'region', mapParent: 'overview' }, '', `/map?region=${city.region}`)
+  }
+  history.pushState({
+    ...history.state,
+    mapView: 'catalogue',
+    mapParent: 'region',
+  }, '', `/map?city=${encodeURIComponent(city.code)}`)
+  void chooseCity(city)
+}
+
+function returnToRegion() {
+  if (history.state?.mapView === 'catalogue' && history.state?.mapParent === 'region') {
+    history.back()
+    return
+  }
+  if (activeCity) showRegion(activeCity.region)
 }
 
 async function chooseCity(city: MapCity) {
@@ -567,6 +696,9 @@ async function chooseCity(city: MapCity) {
   clearTripResultsCamera()
   activeCity = city
   setActiveCity(city.code)
+  category = '全部'
+  routeSearchQuery = ''
+  routeScrollTop = 0
   const { requestId, signal } = beginNavRequest()
   networkButton.hidden = false
   cityNetwork.hide()
@@ -586,10 +718,10 @@ async function chooseCity(city: MapCity) {
   setStatus(`${city.name} · 正在整理路線…`)
   renderDrawer({
     mode: 'compact',
-    content: [drawerBack('返回區域', () => showRegion(city.region)), heading(city.name, '正在載入路線…')],
+    content: [drawerBack('返回區域', returnToRegion), heading(city.name, '正在載入路線…')],
   })
   camera.focusPoint(city.center, 11)
-  setViewBack(() => showRegion(city.region))
+  setViewBack(returnToRegion)
 
   try {
     const loadedRoutes = await mapApi.routes(city.code, signal)
@@ -605,7 +737,7 @@ async function chooseCity(city: MapCity) {
     renderDrawer({
       mode: 'compact',
       content: [
-        drawerBack('返回區域', () => showRegion(city.region)),
+        drawerBack('返回區域', returnToRegion),
         heading(city.name, '目前無法載入這個縣市的路線。'),
         retryButton(() => void chooseCity(city)),
       ],
@@ -617,6 +749,7 @@ async function chooseCity(city: MapCity) {
 function renderRoutePicker() {
   if (!activeCity) return
   stopVehicleRefresh()
+  cancelNavRequest()
   interactionMode = 'browse'
   routeReturnsToTrip = false
   routeBackAction = undefined
@@ -631,11 +764,11 @@ function renderRoutePicker() {
     renderDrawer({
       mode: 'compact',
       content: [
-        drawerBack('返回縣市', () => showRegion(activeCity!.region)),
+        drawerBack('返回縣市', returnToRegion),
         heading(activeCity.name, '正在載入路線…'),
       ],
     })
-    setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
+    setViewBack(returnToRegion)
     const cityCode = activeCity.code
     void (async () => {
       try {
@@ -651,7 +784,7 @@ function renderRoutePicker() {
         renderDrawer({
           mode: 'compact',
           content: [
-            drawerBack('返回縣市', () => showRegion(activeCity!.region)),
+            drawerBack('返回縣市', returnToRegion),
             heading(activeCity!.name, '目前無法載入這個縣市的路線。'),
             retryButton(() => renderRoutePicker()),
           ],
@@ -660,7 +793,7 @@ function renderRoutePicker() {
     })()
     return
   }
-  const back = drawerBack('返回縣市', () => showRegion(activeCity!.region))
+  const back = drawerBack('返回縣市', returnToRegion)
   const title = heading(activeCity.name, `${routes.length} 條路線，不用設定起終點，直接看一條公車。`)
   const search = document.createElement('input')
   search.className = 'map-search map-route-search'
@@ -679,6 +812,19 @@ function renderRoutePicker() {
   })
   const listRegion = drawerSession.scrollRegion!
 
+  const savedCatalogue = history.state?.routeCatalogue as {
+    city?: unknown
+    query?: unknown
+    category?: unknown
+    scrollTop?: unknown
+  } | undefined
+  if (savedCatalogue?.city === activeCity.code) {
+    if (typeof savedCatalogue.query === 'string') routeSearchQuery = savedCatalogue.query
+    if (typeof savedCatalogue.category === 'string') category = savedCatalogue.category
+    if (typeof savedCatalogue.scrollTop === 'number') routeScrollTop = Math.max(0, savedCatalogue.scrollTop)
+  }
+  search.value = routeSearchQuery
+
   const counts = new Map<string, number>()
   routes.forEach((route) => counts.set(route.category, (counts.get(route.category) ?? 0) + 1))
   const names = ['全部', ...['數字', '幹線', '接駁', '幸福／社區', '觀光', '小黃', '公路客運', '其他'].filter((name) => counts.has(name))]
@@ -692,6 +838,7 @@ function renderRoutePicker() {
       button.setAttribute('aria-pressed', String(category === name))
       button.addEventListener('click', () => {
         category = name
+        routeScrollTop = 0
         listRegion.scrollTop = 0
         render()
       })
@@ -714,7 +861,7 @@ function renderRoutePicker() {
         note.textContent = display.note
         button.appendChild(note)
       }
-      button.addEventListener('click', () => void loadRoute(route.routeName))
+      button.addEventListener('click', () => openCatalogueRoute(route.routeName))
       return button
     }))
   }
@@ -738,13 +885,44 @@ function renderRoutePicker() {
   }
   drawerSession.onDispose(() => window.clearTimeout(stopSearchTimer))
   search.addEventListener('input', () => {
+    routeSearchQuery = search.value
+    routeScrollTop = 0
     listRegion.scrollTop = 0
     render()
     queueStopSearch()
   })
+  listRegion.addEventListener('scroll', () => { routeScrollTop = listRegion.scrollTop }, { passive: true })
   render()
+  listRegion.scrollTop = routeScrollTop
+  saveRouteCatalogueState('/map?city=' + encodeURIComponent(activeCity.code))
   clearStatus()
-  setViewBack(() => { if (activeCity) showRegion(activeCity.region) })
+  setViewBack(returnToRegion)
+}
+
+function saveRouteCatalogueState(url = location.href) {
+  if (!activeCity) return
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  history.replaceState({
+    ...currentState,
+    mapView: 'catalogue',
+    routeCatalogue: {
+      city: activeCity.code,
+      query: routeSearchQuery,
+      category,
+      scrollTop: routeScrollTop,
+    },
+  }, '', url)
+}
+
+function openCatalogueRoute(routeName: string) {
+  if (!activeCity) return
+  saveRouteCatalogueState()
+  history.pushState({
+    ...history.state,
+    mapView: 'route',
+    mapParent: 'catalogue',
+  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}`)
+  void loadRoute(routeName)
 }
 
 async function searchPlaces(query: string, signal?: AbortSignal): Promise<SearchPlace[]> {
@@ -938,6 +1116,13 @@ function tripModeButton(): HTMLButtonElement {
   decorateMapFeatureButton(button, 'trip', '↗', '規劃')
   button.addEventListener('click', () => {
     markMapFeatureUsed(button, 'trip')
+    if (activeCity) {
+      const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+      const nextState = { ...currentState, mapView: 'trip-select', mapParent: currentState.mapView }
+      const url = `/map?city=${encodeURIComponent(activeCity.code)}&trip=select`
+      if (currentState.mapView === 'trip-results') history.replaceState(nextState, '', url)
+      else history.pushState(nextState, '', url)
+    }
     clearTripResultsCamera()
     clearPendingTripSelections()
     selectedFrom = undefined
@@ -964,6 +1149,10 @@ function cancelTripMode() {
   routeBackAction = undefined
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
+  if (history.state?.mapView === 'trip-select' && history.state?.mapParent) {
+    history.back()
+    return
+  }
   renderRoutePicker()
 }
 
@@ -1013,6 +1202,11 @@ function hasTripResults(): boolean {
 // 行程結果只在明確出口丟棄(路線列表、取消規劃、換城市),
 // 中途點站牌、開路線都保留狀態,靠這裡回得來。
 function returnToTripResults() {
+  if (history.state?.mapView === 'route' && history.state?.mapParent === 'trip-results') {
+    history.back()
+    return
+  }
+  cancelNavRequest()
   if (!hasTripResults()) {
     renderRoutePicker()
     return
@@ -1059,7 +1253,15 @@ function backActionFor(target: RouteBackTarget): () => void {
     }
   }
   if (target === 'stop-view') return () => (routeBackAction ?? renderRoutePicker)()
-  return renderRoutePicker
+  return returnToRoutePicker
+}
+
+function returnToRoutePicker() {
+  if (history.state?.mapView === 'route' && history.state?.mapParent === 'catalogue') {
+    history.back()
+    return
+  }
+  renderRoutePicker()
 }
 
 function unifiedStopMarker(
@@ -1094,6 +1296,14 @@ function openTripRoute(
   backAction?: () => void,
 ) {
   captureTripResultsCamera()
+  writeTripResultsUrl()
+  if (activeCity) {
+    history.pushState({
+      ...history.state,
+      mapView: 'route',
+      mapParent: 'trip-results',
+    }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}`)
+  }
   void loadRoute(routeName, preferredVariant, true, color, backAction)
 }
 
@@ -1227,6 +1437,7 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
   if (bounds.isValid()) camera.focusBounds(bounds)
   clearStatus()
   setViewBack(variantBack)
+  history.replaceState(history.state, '', `/map?city=${encodeURIComponent(activeCity!.code)}&route=${encodeURIComponent(routeName)}`)
 }
 
 
@@ -1411,7 +1622,7 @@ function drawVariant(variant: RouteMapVariant) {
     direction: String(variant.direction),
     variant: variant.variantKey,
   })
-  history.replaceState(null, '', `/map?${params}`)
+  history.replaceState(history.state, '', `/map?${params}`)
   setDocumentTitle(`${variant.routeName} 公車路線圖`)
   startVehicleRefresh(variant)
 }
@@ -1439,10 +1650,22 @@ function updateStopMarkerSize() {
 
 function startVehicleRefresh(variant: RouteMapVariant) {
   stopVehicleRefresh()
+  if (!activeCity) return
+  const cityCode = activeCity.code
+  const sessionEpoch = ++vehicleRefreshEpoch
   const refresh = async () => {
-    if (!activeCity || interactionMode !== 'route') return
+    if (vehicleRefreshEpoch !== sessionEpoch || activeCity?.code !== cityCode || interactionMode !== 'route') return
+    vehicleRefreshController?.abort()
+    const controller = new AbortController()
+    vehicleRefreshController = controller
     try {
-      const vehicles = await mapApi.vehicles(activeCity.code, variant)
+      const vehicles = await mapApi.vehicles(cityCode, variant, controller.signal)
+      if (
+        controller.signal.aborted
+        || vehicleRefreshEpoch !== sessionEpoch
+        || activeCity?.code !== cityCode
+        || interactionMode !== 'route'
+      ) return
       vehicleLayer.clearLayers()
       vehicles.forEach((vehicle) => {
         const azimuth = Number.isFinite(vehicle.azimuth) ? vehicle.azimuth as number : 0
@@ -1459,6 +1682,8 @@ function startVehicleRefresh(variant: RouteMapVariant) {
       })
     } catch {
       // 車輛定位是輔助資訊，失敗時保留主路線而不打斷操作。
+    } finally {
+      if (vehicleRefreshController === controller) vehicleRefreshController = undefined
     }
   }
   void refresh()
@@ -1466,6 +1691,9 @@ function startVehicleRefresh(variant: RouteMapVariant) {
 }
 
 function stopVehicleRefresh() {
+  vehicleRefreshEpoch += 1
+  vehicleRefreshController?.abort()
+  vehicleRefreshController = undefined
   if (vehicleRefreshTimer !== undefined) window.clearInterval(vehicleRefreshTimer)
   vehicleRefreshTimer = undefined
   vehicleLayer.clearLayers()
@@ -1513,7 +1741,7 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
     if (isStaleNav(requestId)) return
     lastNearbyPlaces = places.slice(0, 12)
     renderNearbyPlaces()
-    if (autoPreview && lastNearbyPlaces[0]) await showPlaceRoutes(lastNearbyPlaces[0])
+    if (autoPreview && lastNearbyPlaces[0]) await openNearbyPlace(lastNearbyPlaces[0])
   } catch (error) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '附近站牌讀取失敗'
@@ -1531,6 +1759,7 @@ async function findNearbyPlaces(latitude: number, longitude: number, autoPreview
 
 function renderNearbyPlaces() {
   if (!activeCity || !lastNearbyOrigin) return
+  cancelNavRequest()
   nearbyLayer.clearLayers()
   const origin = unifiedStopMarker(lastNearbyOrigin, true, '#b85f49').addTo(nearbyLayer)
   bindHoverTooltip(origin, '你點的位置')
@@ -1539,7 +1768,7 @@ function renderNearbyPlaces() {
     bindHoverTooltip(unifiedStopMarker([place.latitude, place.longitude], true), `${place.name} · ${Math.round(place.distanceMeters)} m`)
       .on('click', (event) => {
         L.DomEvent.stopPropagation(event)
-        void showPlaceRoutes(place)
+        void openNearbyPlace(place)
       })
       .addTo(nearbyLayer)
   }
@@ -1557,14 +1786,20 @@ function renderNearbyPlaces() {
     distance.textContent = `${Math.round(place.distanceMeters)} m`
     button.appendChild(name)
     button.appendChild(distance)
-    button.addEventListener('click', () => void showPlaceRoutes(place))
+    button.addEventListener('click', () => void openNearbyPlace(place))
     list.appendChild(button)
   }
-  const nearbyBack = hasTripResults() ? returnToTripResults : renderRoutePicker
+  const managedNearbyParent = history.state?.mapView === 'nearby' && history.state?.mapParent
+  const nearbyBack = managedNearbyParent
+    ? () => history.back()
+    : hasTripResults() ? returnToTripResults : renderRoutePicker
+  const nearbyBackLabel = history.state?.mapParent === 'route'
+    ? '返回路線'
+    : hasTripResults() ? '返回行程候選' : '路線列表'
   renderDrawer({
     mode: 'map-list',
     header: [
-      drawerBack(hasTripResults() ? '返回行程候選' : '路線列表', nearbyBack),
+      drawerBack(nearbyBackLabel, nearbyBack),
       heading(
         '附近站牌',
         lastNearbyPlaces.length
@@ -1577,7 +1812,8 @@ function renderNearbyPlaces() {
   })
   clearStatus()
   const [latitude, longitude] = lastNearbyOrigin
-  history.replaceState(null, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  history.replaceState({ ...currentState, mapView: 'nearby' }, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
   setDocumentTitle(`${activeCity.name}公車地圖`)
   setViewBack(nearbyBack)
 }
@@ -1589,18 +1825,22 @@ async function selectTripCoordinate(latitude: number, longitude: number) {
   if (tripSelecting) return
   const kind = tripStage
   if (kind === 'idle') return
+  const cityCode = activeCity.code
+  const { requestId, signal } = beginNavRequest()
   tripSelecting = true
   clearPendingTripSelection(kind)
   const radius = map.getZoom() >= 15 ? 300 : 500
   setStatus('正在尋找附近站牌…')
   try {
-    const places = await mapApi.nearby(activeCity.code, latitude, longitude, radius)
+    const places = await mapApi.nearby(cityCode, latitude, longitude, radius, signal)
+    if (signal.aborted || isStaleNav(requestId) || activeCity?.code !== cityCode || tripStage !== kind) return
     const candidates = places.slice(0, TRIP_NEARBY_CANDIDATE_LIMIT)
     const nearest = candidates[0]
     if (!nearest) throw new Error('這附近沒有站牌')
     setPendingTripSelection({ kind, coordinate: [latitude, longitude], candidates, selected: nearest })
     await applyTripSelection(kind, nearest, [latitude, longitude])
   } catch (error) {
+    if (signal.aborted || isStaleNav(requestId)) return
     setStatus(error instanceof Error ? error.message : '附近站牌讀取失敗', true)
   } finally {
     tripSelecting = false
@@ -1661,7 +1901,13 @@ async function fetchJourneyEta(legs: Array<{ key: string; patternId: string; seq
     const estimates = await mapApi.journeyEta(activeCity.code, legs)
     return new Map(estimates.map((estimate) => [
       estimate.key,
-      { minutes: estimate.minutes, source: estimate.source ?? 'none' },
+      {
+        minutes: estimate.minutes,
+        source: estimate.source ?? 'none',
+        departureBased: estimate.departureBased ?? false,
+        headwayMinutes: estimate.headwayMinutes ?? null,
+        nextDay: estimate.nextDay ?? false,
+      },
     ]))
   } catch {
     return new Map<string, JourneyEtaValue>()
@@ -1680,11 +1926,27 @@ async function rankDirectRoutesByEta(routesToRank: DirectRoute[]): Promise<Direc
       ...route,
       etaMinutes: estimate?.minutes ?? null,
       etaSource: estimate?.source ?? 'none',
+      etaDepartureBased: estimate?.departureBased ?? false,
+      etaHeadwayMinutes: estimate?.headwayMinutes ?? null,
+      etaNextDay: estimate?.nextDay ?? false,
     }
   }).sort((a, b) =>
-    (a.etaMinutes ?? Number.POSITIVE_INFINITY) - (b.etaMinutes ?? Number.POSITIVE_INFINITY)
+    sortableJourneyMinutes(a) - sortableJourneyMinutes(b)
     || a.stopCount - b.stopCount,
   )
+}
+
+function sortableJourneyMinutes(route: DirectRoute): number {
+  if (route.etaDepartureBased || route.etaHeadwayMinutes || route.etaNextDay) return Number.POSITIVE_INFINITY
+  return route.etaMinutes ?? Number.POSITIVE_INFINITY
+}
+
+function isReliableJourneyArrival(estimate: JourneyEtaValue | undefined): boolean {
+  return estimate?.source === 'realtime'
+    && estimate.minutes !== null
+    && !estimate.departureBased
+    && !estimate.headwayMinutes
+    && !estimate.nextDay
 }
 
 async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPlan[]> {
@@ -1703,6 +1965,8 @@ async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPl
       walkMeters: plan.transferWalkMeters ?? 0,
       firstEtaMinutes: firstEta,
       secondEtaMinutes: secondEta,
+      firstEtaReliable: isReliableJourneyArrival(firstEstimate),
+      secondEtaReliable: isReliableJourneyArrival(secondEstimate),
     })
     return {
       ...plan,
@@ -1710,6 +1974,12 @@ async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPl
       secondEtaMinutes: secondEta,
       firstEtaSource: firstEstimate?.source ?? 'none',
       secondEtaSource: secondEstimate?.source ?? 'none',
+      firstEtaDepartureBased: firstEstimate?.departureBased ?? false,
+      secondEtaDepartureBased: secondEstimate?.departureBased ?? false,
+      firstEtaHeadwayMinutes: firstEstimate?.headwayMinutes ?? null,
+      secondEtaHeadwayMinutes: secondEstimate?.headwayMinutes ?? null,
+      firstEtaNextDay: firstEstimate?.nextDay ?? false,
+      secondEtaNextDay: secondEstimate?.nextDay ?? false,
       transferEstimate: estimate,
     }
   }).sort((a, b) =>
@@ -1721,6 +1991,7 @@ async function rankTransferPlansByEta(plans: TransferPlan[]): Promise<TransferPl
 function renderDirectRoutes(directRoutes: DirectRoute[]) {
   if (!selectedFrom || !selectedTo) return
   interactionMode = 'trip-results'
+  writeTripResultsUrl()
   const selectedIndex = normalizeDirectIndex(directRoutes)
   selectedDirectIndex = selectedIndex
   const list = document.createElement('div')
@@ -1742,7 +2013,11 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     const name = document.createElement('strong')
     name.textContent = route.routeName
     const count = document.createElement('span')
-    const wait = formatJourneyWait(route.etaMinutes, route.etaSource)
+    const wait = formatJourneyWait(route.etaMinutes, route.etaSource, new Date(), {
+      departureBased: route.etaDepartureBased,
+      headwayMinutes: route.etaHeadwayMinutes,
+      nextDay: route.etaNextDay,
+    })
     count.textContent = wait ? `${wait} · ${route.stopCount} 站` : `${route.stopCount} 站`
     top.appendChild(name)
     top.appendChild(count)
@@ -1788,6 +2063,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
 function renderTransferPlans(plans: TransferPlan[]) {
   if (!selectedFrom || !selectedTo) return
   interactionMode = 'trip-results'
+  writeTripResultsUrl()
   const list = document.createElement('div')
   list.className = 'transfer-plan-list'
   if (!plans.length) list.appendChild(paragraph('目前沒有找到合理的一次轉乘方案。'))
@@ -1840,7 +2116,11 @@ function renderTransferPlans(plans: TransferPlan[]) {
       const stops = document.createElement('small')
       const eta = legIndex === 0 ? plan.firstEtaMinutes : plan.secondEtaMinutes
       const etaSource = legIndex === 0 ? plan.firstEtaSource : plan.secondEtaSource
-      const wait = formatJourneyWait(eta, etaSource)
+      const wait = formatJourneyWait(eta, etaSource, new Date(), {
+        departureBased: legIndex === 0 ? plan.firstEtaDepartureBased : plan.secondEtaDepartureBased,
+        headwayMinutes: legIndex === 0 ? plan.firstEtaHeadwayMinutes : plan.secondEtaHeadwayMinutes,
+        nextDay: legIndex === 0 ? plan.firstEtaNextDay : plan.secondEtaNextDay,
+      })
       stops.textContent = `${wait ? `${wait} · ` : ''}${leg.stopCount} 站 · ${leg.label}`
       button.appendChild(order)
       button.appendChild(routeName)
@@ -2117,6 +2397,93 @@ async function openPlaceById(placeId: string) {
   await showPlaceRoutes(place)
 }
 
+function writeTripResultsUrl() {
+  if (!activeCity || !selectedFrom || !selectedTo) return
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  const snapshot: TripResultsHistorySnapshot = {
+    city: activeCity.code,
+    from: selectedFrom,
+    to: selectedTo,
+    fromCoordinate,
+    toCoordinate,
+    directRoutes: lastDirectRoutes,
+    transferPlans: lastTransferPlans,
+    selectedDirectIndex,
+    selectedTransferIndex,
+  }
+  history.replaceState({
+    ...currentState,
+    mapView: 'trip-results',
+    tripResults: snapshot,
+  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&trip=results&from=${encodeURIComponent(selectedFrom.placeId)}&to=${encodeURIComponent(selectedTo.placeId)}`)
+  setDocumentTitle(`${selectedFrom?.name ?? '出發地'} → ${selectedTo?.name ?? '目的地'}`)
+}
+
+function restoreTripResultsState(): boolean {
+  if (!activeCity) return false
+  const snapshot = history.state?.tripResults as TripResultsHistorySnapshot | undefined
+  if (!snapshot || snapshot.city !== activeCity.code || !snapshot.from || !snapshot.to) return false
+  selectedFrom = snapshot.from
+  selectedTo = snapshot.to
+  fromCoordinate = snapshot.fromCoordinate
+  toCoordinate = snapshot.toCoordinate
+  lastDirectRoutes = Array.isArray(snapshot.directRoutes) ? snapshot.directRoutes : []
+  lastTransferPlans = Array.isArray(snapshot.transferPlans) ? snapshot.transferPlans : []
+  selectedDirectIndex = Number.isInteger(snapshot.selectedDirectIndex) ? snapshot.selectedDirectIndex : 0
+  selectedTransferIndex = Number.isInteger(snapshot.selectedTransferIndex) ? snapshot.selectedTransferIndex : 0
+  tripStage = 'idle'
+  interactionMode = 'trip-results'
+  return Boolean(lastDirectRoutes.length || lastTransferPlans.length)
+}
+
+async function restoreSharedTripResults(params: URLSearchParams): Promise<boolean> {
+  if (!activeCity) return false
+  const fromPlaceId = params.get('from')
+  const toPlaceId = params.get('to')
+  if (!fromPlaceId || !toPlaceId || fromPlaceId === toPlaceId) return false
+  const [from, to] = await Promise.all([
+    mapApi.place(activeCity.code, fromPlaceId),
+    mapApi.place(activeCity.code, toPlaceId),
+  ])
+  selectedFrom = from
+  selectedTo = to
+  fromCoordinate = [from.latitude, from.longitude]
+  toCoordinate = [to.latitude, to.longitude]
+  lastDirectRoutes = []
+  lastTransferPlans = []
+  selectedDirectIndex = 0
+  selectedTransferIndex = 0
+  tripStage = 'idle'
+  interactionMode = 'trip-results'
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  history.replaceState({ ...currentState, mapView: 'trip-results', mapParent: 'catalogue' }, '', location.href)
+  await loadDirectRoutes()
+  return true
+}
+
+async function openNearbyPlace(place: NearbyPlace) {
+  if (!activeCity) return
+  const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+  history.pushState({
+    ...currentState,
+    mapView: 'place',
+    mapParent: 'nearby',
+  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&place=${encodeURIComponent(place.placeId)}`)
+  await showPlaceRoutes(place)
+}
+
+function returnToNearbyPlaces() {
+  if (history.state?.mapView === 'place' && history.state?.mapParent) {
+    history.back()
+    return
+  }
+  renderNearbyPlaces()
+}
+
+function placeBackLabel(): string {
+  return history.state?.mapParent === 'catalogue' ? '返回路線列表' : '附近站牌'
+}
+
 function placeRouteRank(route: PlaceRoute, frequency: Map<string, number>): number {
   const eta = route.estimateSeconds === null ? 1_000_000 : route.estimateSeconds
   return eta - Math.min(frequency.get(route.routeUid) ?? 0, 5) * 15
@@ -2182,17 +2549,18 @@ async function showPlaceRoutes(place: NearbyPlace) {
   renderDrawer({
     mode: 'map-list',
     header: [
-      drawerBack('附近站牌', renderNearbyPlaces),
+      drawerBack(placeBackLabel(), returnToNearbyPlaces),
       heading(place.name, '正在取得路線與到站時間'),
     ],
     content: [loadingList],
   })
-  setViewBack(renderNearbyPlaces)
+  setViewBack(returnToNearbyPlaces)
   setStatus(`正在讀取 ${place.name} 的路線…`)
   const { requestId, signal } = beginNavRequest()
   try {
-    const placeRoutes = await mapApi.placeRoutes(activeCity.code, place.placeId, signal)
+    const arrivals = await mapApi.placeRoutes(activeCity.code, place.placeId, signal)
     if (placeRequest !== previewRequest || isStaleNav(requestId)) return
+    const placeRoutes = arrivals.routes
     const frequency = new Map<string, number>()
     readBoards().flatMap((board) => board.buses).forEach((bus) => {
       const routeUid = typeof bus.routeUid === 'string' ? bus.routeUid : ''
@@ -2253,31 +2621,56 @@ async function showPlaceRoutes(place: NearbyPlace) {
     renderDrawer({
       mode: 'map-list',
       header: [
-        drawerBack('附近站牌', renderNearbyPlaces),
+        drawerBack(placeBackLabel(), returnToNearbyPlaces),
         heading(place.name, `${place.distanceMeters > 0 ? `${Math.round(place.distanceMeters)} 公尺 · ` : ''}${placeRoutes.length} 個行車方向`),
       ],
-      content: [list],
+      content: [
+        ...(arrivals.warning
+          ? [degradedNotice(tdxWarningMessages[arrivals.warning], () => void showPlaceRoutes(place))]
+          : []),
+        list,
+      ],
     })
     await previewPlaceRoutes(sortedRoutes, place)
     if (!activeCity || isStaleNav(requestId)) return
     drawTripEndpoints()
     camera.focusPoint([place.latitude, place.longitude], map.getZoom())
-    history.replaceState(null, '', `/map?city=${activeCity.code}&place=${encodeURIComponent(place.placeId)}`)
+    const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+    history.replaceState({ ...currentState, mapView: 'place' }, '', `/map?city=${activeCity.code}&place=${encodeURIComponent(place.placeId)}`)
     setDocumentTitle(`${place.name} 到站時間`)
     clearStatus()
   } catch (error) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '站牌路線讀取失敗'
+    const credentialRejected = isTdxTokenRejectedError(error)
     setStatus(message, true)
     renderDrawer({
       mode: 'map-list',
       header: [
-        drawerBack('附近站牌', renderNearbyPlaces),
+        drawerBack(placeBackLabel(), returnToNearbyPlaces),
         heading(place.name, message),
       ],
-      content: [retryButton(() => void showPlaceRoutes(place))],
+      content: [degradedNotice(message, () => void showPlaceRoutes(place), credentialRejected)],
     })
   }
+}
+
+function degradedNotice(message: string, onRetry: () => void, credentialRecovery = false): HTMLElement {
+  const notice = document.createElement('section')
+  notice.className = 'degraded-notice'
+  if (credentialRecovery) notice.classList.add('credential-recovery')
+  notice.setAttribute('role', 'status')
+  notice.appendChild(paragraph(message))
+  const actions = document.createElement('div')
+  actions.className = 'degraded-actions'
+  actions.appendChild(retryButton(onRetry))
+  const setup = document.createElement('a')
+  setup.className = 'quiet-link'
+  setup.href = '/setup'
+  setup.textContent = '檢查 TDX 設定'
+  actions.appendChild(setup)
+  notice.appendChild(actions)
+  return notice
 }
 
 function heading(title: string, description: string): HTMLElement {

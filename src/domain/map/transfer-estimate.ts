@@ -17,6 +17,8 @@ type TransferEstimateInput = {
   walkMeters: number
   firstEtaMinutes: number | null
   secondEtaMinutes: number | null
+  firstEtaReliable: boolean
+  secondEtaReliable: boolean
 }
 
 const MIN_RIDE_MINUTES_PER_STOP = 1.5
@@ -31,8 +33,8 @@ export function estimateTransfer(input: TransferEstimateInput): TransferEstimate
   const secondRide = rideRange(input.secondStopCount)
   const walk = walkRange(input.walkMeters)
   const travelMinutes = addRanges(firstRide, secondRide, walk)
-  const firstEta = validEta(input.firstEtaMinutes)
-  const secondEta = validEta(input.secondEtaMinutes)
+  const firstEta = input.firstEtaReliable ? validEta(input.firstEtaMinutes) : null
+  const secondEta = input.secondEtaReliable ? validEta(input.secondEtaMinutes) : null
 
   if (firstEta === null || secondEta === null) {
     return { travelMinutes, totalMinutes: null, connectionStatus: 'unknown' }

@@ -30,7 +30,7 @@ import {
   searchStopPlaces,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, TDXServiceError, tdxCredentialScope, tdxRouteScope, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'
 import {
   ApiInputError,
   apiInputErrorBody,
@@ -64,6 +64,16 @@ const tdxEnv = (c: Context<Env>) => {
 
 const REALTIME_COOLDOWN_SECONDS = 60
 const LAST_REALTIME_SECONDS = 120
+
+function strongerTDXWarning(current: TDXWarning | undefined, next: TDXWarning | undefined): TDXWarning | undefined {
+  const priority: Record<TDXWarning, number> = {
+    'tdx-unavailable': 1,
+    'tdx-rate-limit': 2,
+    'tdx-quota': 3,
+  }
+  if (!next || (current && priority[current] >= priority[next])) return current
+  return next
+}
 
 function arrivalCacheKey(kind: 'cooldown' | 'last', city: string, suffix = ''): Request {
   return new Request(`https://mochi-cache.invalid/arrivals/${kind}/${encodeURIComponent(city)}/${encodeURIComponent(suffix)}`)
@@ -296,6 +306,7 @@ map.get('/api/v1/map/vehicles', async (c) => {
     try {
       items = await fetchTDXJson<VehicleItem[]>(tdxEnv(c), url, 15)
     } catch (error) {
+      if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
       console.error(JSON.stringify({
         message: 'vehicle_position_upstream_failed', city, routeName,
         error: error instanceof Error ? error.message : String(error),
@@ -421,6 +432,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
     const etaItems: BusETAItem[] = []
     const staleRouteIdentities = new Set<string>()
     let rateLimited = await hasRealtimeCooldown(env, city, scope)
+    let warning: TDXWarning | undefined = rateLimited ? 'tdx-rate-limit' : undefined
     let realtimeQueries = 0
     for (const { routeName, routeUid } of candidateRouteRefs) {
       const identity = routeIdentity(routeName, routeUid)
@@ -438,7 +450,9 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         await writeLastRealtime(env, city, identity, items)
         realtimeQueries += 1
       } catch (error) {
-        rateLimited = error instanceof TDXServiceError && error.rateLimited
+        if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
+        rateLimited ||= error instanceof TDXServiceError && error.rateLimited
+        warning = strongerTDXWarning(warning, tdxWarningFromError(error))
         console.error(JSON.stringify({
           message: 'place_arrival_realtime_failed', city, routeName,
           error: error instanceof Error ? error.message : String(error),
@@ -484,8 +498,9 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       city,
       routes: arrivals,
       scheduleSource: bundle ? 'place-bundle' : 'route-objects',
+      warning,
       realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
-    }, 200, { 'Cache-Control': 'public, max-age=15' })
+    }, 200, { 'Cache-Control': warning || c.req.header('Authorization') ? 'no-store' : 'public, max-age=15' })
   } catch (error) {
     return mapJsonError(c, error, '到站時間讀取失敗')
   }
@@ -557,6 +572,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
           15,
         )] as const
       } catch (error) {
+        if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
         console.error(JSON.stringify({
           message: 'journey_eta_upstream_failed',
           city,
@@ -582,6 +598,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
                 ?? await getBusSchedule(env, city, ref.routeName, ref.routeUid),
             ] as const
           } catch (error) {
+            if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
             console.error(JSON.stringify({
               message: 'journey_schedule_route_failed',
               city,
@@ -594,6 +611,7 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
         const scheduled = scheduledJourneyEstimates(missingRefs, schedulesByRouteUid, new Date())
         scheduled.forEach((estimate, key) => realtimeEstimates.set(key, estimate))
       } catch (error) {
+        if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
         console.error(JSON.stringify({
           message: 'journey_schedule_fallback_failed',
           city,

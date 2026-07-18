@@ -9,6 +9,8 @@ describe('estimateTransfer', () => {
       walkMeters: 120,
       firstEtaMinutes: 2,
       secondEtaMinutes: 20,
+      firstEtaReliable: true,
+      secondEtaReliable: true,
     })
 
     expect(estimate.connectionStatus).toBe('likely')
@@ -23,6 +25,8 @@ describe('estimateTransfer', () => {
       walkMeters: 120,
       firstEtaMinutes: 2,
       secondEtaMinutes: 12,
+      firstEtaReliable: true,
+      secondEtaReliable: true,
     })
 
     expect(estimate.connectionStatus).toBe('tight')
@@ -36,6 +40,8 @@ describe('estimateTransfer', () => {
       walkMeters: 300,
       firstEtaMinutes: 8,
       secondEtaMinutes: 4,
+      firstEtaReliable: true,
+      secondEtaReliable: true,
     })
 
     expect(estimate.connectionStatus).toBe('missed')
@@ -49,6 +55,8 @@ describe('estimateTransfer', () => {
       walkMeters: 0,
       firstEtaMinutes: null,
       secondEtaMinutes: 10,
+      firstEtaReliable: false,
+      secondEtaReliable: true,
     })
     const withWalk = estimateTransfer({
       firstStopCount: 2,
@@ -56,6 +64,8 @@ describe('estimateTransfer', () => {
       walkMeters: 300,
       firstEtaMinutes: null,
       secondEtaMinutes: 10,
+      firstEtaReliable: false,
+      secondEtaReliable: true,
     })
 
     expect(withWalk.connectionStatus).toBe('unknown')
@@ -65,7 +75,13 @@ describe('estimateTransfer', () => {
   })
 
   it('sorts likely connections before unknown, tight, and missed plans', () => {
-    const input = { firstStopCount: 2, secondStopCount: 2, walkMeters: 0 }
+    const input = {
+      firstStopCount: 2,
+      secondStopCount: 2,
+      walkMeters: 0,
+      firstEtaReliable: true,
+      secondEtaReliable: true,
+    }
     const likely = estimateTransfer({ ...input, firstEtaMinutes: 1, secondEtaMinutes: 15 })
     const unknown = estimateTransfer({ ...input, firstEtaMinutes: null, secondEtaMinutes: 15 })
     const tight = estimateTransfer({ ...input, firstEtaMinutes: 1, secondEtaMinutes: 7 })
@@ -83,11 +99,29 @@ describe('estimateTransfer', () => {
       walkMeters: 180,
       firstEtaMinutes: null,
       secondEtaMinutes: null,
+      firstEtaReliable: false,
+      secondEtaReliable: false,
     })
     const presentation = describeTransferEstimate(unknown)
 
     expect(presentation.label).toMatch(/^車程＋步行 \d+–\d+ 分$/)
     expect(presentation.note).toContain('未含候車與路況')
     expect(`${presentation.label}${presentation.note}`).not.toContain('20 分')
+  })
+
+  it('keeps connection status unknown when schedule data is not a reliable stop arrival', () => {
+    const estimate = estimateTransfer({
+      firstStopCount: 3,
+      secondStopCount: 4,
+      walkMeters: 120,
+      firstEtaMinutes: 5,
+      secondEtaMinutes: 20,
+      firstEtaReliable: false,
+      secondEtaReliable: false,
+    })
+
+    expect(estimate.connectionStatus).toBe('unknown')
+    expect(estimate.totalMinutes).toBeNull()
+    expect(describeTransferEstimate(estimate).note).toContain('未含候車與路況')
   })
 })

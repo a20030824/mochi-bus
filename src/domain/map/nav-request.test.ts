@@ -43,4 +43,25 @@ describe('createNavRequestCoordinator', () => {
     expect(only.signal.aborted).toBe(false)
     expect(nav.isStale(only.requestId)).toBe(false)
   })
+
+  it('離開目前畫面時 cancel 會 abort 並使本輪 request 失效', () => {
+    const nav = createNavRequestCoordinator()
+    const current = nav.begin()
+
+    nav.cancel()
+
+    expect(current.signal.aborted).toBe(true)
+    expect(nav.isStale(current.requestId)).toBe(true)
+  })
+
+  it('cancel 後可以開始一輪全新的 request', () => {
+    const nav = createNavRequestCoordinator()
+    const cancelled = nav.begin()
+    nav.cancel()
+    const next = nav.begin()
+
+    expect(nav.isStale(cancelled.requestId)).toBe(true)
+    expect(nav.isStale(next.requestId)).toBe(false)
+    expect(next.signal.aborted).toBe(false)
+  })
 })

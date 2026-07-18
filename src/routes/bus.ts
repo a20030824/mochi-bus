@@ -26,7 +26,12 @@ import {
   type TDXWarning,
 } from '../lib/tdx'
 import { appIcon, renderAmbiguousPage, renderErrorPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
-import { getSnapshotRouteCatalog, getSnapshotRouteVariants, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
+import {
+  getSnapshotRouteCatalog,
+  getSnapshotRouteVariants,
+  getStopPlaceByStopUid,
+  type TransitBindings,
+} from '../infrastructure/transit/snapshot-repository'
 import { mapCities } from '../config/map-cities'
 import { siteSearchDescription } from '../seo'
 import {
@@ -195,8 +200,11 @@ bus.get('/api/v1/stop-routes', async (c) => {
     const stopName = requiredQueryString(c.req.query('stop'), '站牌名稱', 80)
     const stopUid = optionalQueryString(c.req.query('stopUid'), 'StopUID', 100)
     if (!supportedCityCodes.has(city)) throw new QueryValidationError(`不支援的縣市：${city}`)
-    const buses = await getStopRouteSuggestions(tdxEnv(c), city, stopName, stopUid)
-    return c.json({ city, stopName, buses }, 200, noStoreHeaders)
+    const [buses, place] = await Promise.all([
+      getStopRouteSuggestions(tdxEnv(c), city, stopName, stopUid),
+      stopUid ? getStopPlaceByStopUid(c.env, city, stopUid) : Promise.resolve(null),
+    ])
+    return c.json({ city, stopName, place, buses }, 200, noStoreHeaders)
   } catch (error) {
     return jsonError(c, error)
   }

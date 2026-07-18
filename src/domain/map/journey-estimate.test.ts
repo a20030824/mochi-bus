@@ -75,4 +75,80 @@ describe('journey estimates', () => {
     expect(estimate?.minutes).toBeNull()
     expect(estimate?.source).toBe('none')
   })
+
+  it('preserves that a downstream wait came from the route origin departure', () => {
+    const schedules: ScheduleItem[] = [{
+      SubRouteUID: 'SUB-A',
+      Direction: 0,
+      Timetables: [{
+        ServiceDay: { Monday: 1 },
+        StopTimes: [{ StopUID: 'ORIGIN', StopSequence: 1, DepartureTime: '08:15' }],
+      }],
+    }]
+
+    const estimate = scheduledJourneyEstimates(
+      [ref],
+      new Map([['ROUTE-A', schedules]]),
+      new Date('2026-07-13T00:00:00.000Z'),
+    ).get('leg-a')
+
+    expect(estimate).toMatchObject({
+      minutes: 15,
+      source: 'schedule',
+      departureBased: true,
+      nextDay: false,
+    })
+  })
+
+  it('preserves an active frequency as a range instead of a single exact arrival', () => {
+    const schedules: ScheduleItem[] = [{
+      SubRouteUID: 'SUB-A',
+      Direction: 0,
+      Frequencys: [{
+        ServiceDay: { Monday: 1 },
+        StartTime: '08:00',
+        EndTime: '09:00',
+        MinHeadwayMins: 8,
+        MaxHeadwayMins: 15,
+      }],
+    }]
+
+    const estimate = scheduledJourneyEstimates(
+      [ref],
+      new Map([['ROUTE-A', schedules]]),
+      new Date('2026-07-13T00:00:00.000Z'),
+    ).get('leg-a')
+
+    expect(estimate).toMatchObject({
+      minutes: 15,
+      source: 'schedule',
+      departureBased: true,
+      headwayMinutes: [8, 15],
+      nextDay: false,
+    })
+  })
+
+  it('preserves tomorrow service so the client can label it without treating it as a current ETA', () => {
+    const schedules: ScheduleItem[] = [{
+      SubRouteUID: 'SUB-A',
+      Direction: 0,
+      Timetables: [{
+        ServiceDay: { Tuesday: 1 },
+        StopTimes: [{ StopUID: 'STOP-1', StopSequence: 2, ArrivalTime: '06:00' }],
+      }],
+    }]
+
+    const estimate = scheduledJourneyEstimates(
+      [ref],
+      new Map([['ROUTE-A', schedules]]),
+      new Date('2026-07-13T15:00:00.000Z'),
+    ).get('leg-a')
+
+    expect(estimate).toMatchObject({
+      minutes: 420,
+      source: 'schedule',
+      departureBased: false,
+      nextDay: true,
+    })
+  })
 })

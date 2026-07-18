@@ -25,4 +25,17 @@ describe('ETA presentation', () => {
     expect(formatJourneyWait(61, 'realtime', now)).toBe('09:01 到站')
     expect(formatJourneyWait(120, 'realtime', new Date('2026-07-17T15:30:00.000Z'))).toBe('明日 01:30 到站')
   })
+
+  it('labels origin departures, frequency ranges, and next-day service without calling them arrivals', () => {
+    const now = new Date('2026-07-17T00:00:00.000Z')
+    expect(formatJourneyWait(75, 'schedule', now, { departureBased: true })).toBe('09:15 發車')
+    expect(formatJourneyWait(15, 'schedule', now, {
+      departureBased: true,
+      headwayMinutes: [8, 15],
+    })).toBe('8–15 分一班')
+    expect(formatJourneyWait(40, 'schedule', new Date('2026-07-17T15:30:00.000Z'), {
+      departureBased: true,
+      nextDay: true,
+    })).toBe('明日 00:10 發車')
+  })
 })

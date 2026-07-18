@@ -78,10 +78,18 @@ export function formatJourneyWait(
   minutes: number | null | undefined,
   source: EtaSource = 'none',
   now = new Date(),
+  schedule: {
+    departureBased?: boolean
+    headwayMinutes?: [number, number] | null
+    nextDay?: boolean
+  } = {},
 ): string | null {
   if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) return null
   const rounded = Math.max(0, Math.ceil(minutes))
-  if (rounded > 60) {
+  if (schedule.headwayMinutes) {
+    return `${schedule.headwayMinutes[0]}–${schedule.headwayMinutes[1]} 分一班`
+  }
+  if (rounded > 60 || schedule.nextDay) {
     const arrival = new Date(now.getTime() + rounded * 60_000)
     const clock = new Intl.DateTimeFormat('zh-TW', {
       timeZone: 'Asia/Taipei',
@@ -89,8 +97,9 @@ export function formatJourneyWait(
       minute: '2-digit',
       hourCycle: 'h23',
     }).format(arrival)
-    const dayPrefix = taipeiDateKey(arrival) === taipeiDateKey(now) ? '' : '明日 '
-    return `${dayPrefix}${clock} 到站`
+    const dayPrefix = schedule.nextDay || taipeiDateKey(arrival) !== taipeiDateKey(now) ? '明日 ' : ''
+    return `${dayPrefix}${clock} ${schedule.departureBased ? '發車' : '到站'}`
   }
+  if (schedule.departureBased) return `約 ${Math.max(1, rounded)} 分後發車`
   return source === 'schedule' ? `約 ${Math.max(1, rounded)} 分` : `${rounded} 分到站`
 }

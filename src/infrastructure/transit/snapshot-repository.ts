@@ -465,6 +465,30 @@ export async function getStopPlace(env: TransitBindings, city: string, placeId: 
   } : null
 }
 
+export async function getStopPlaceByStopUid(env: TransitBindings, city: string, stopUid: string) {
+  const version = await getActiveVersion(env, city)
+  if (!version) return null
+  const place = await env.TRANSIT_DB.prepare(`
+    SELECT p.place_id, p.place_name, p.latitude, p.longitude
+    FROM stops s
+    JOIN stop_places p ON p.version = s.version AND p.place_id = s.place_id
+    WHERE s.version = ? AND s.city_code = ? AND s.stop_uid = ?
+    LIMIT 1
+  `).bind(version, city, stopUid).first<{
+    place_id: string
+    place_name: string
+    latitude: number
+    longitude: number
+  }>()
+  return place ? {
+    placeId: place.place_id,
+    name: place.place_name,
+    latitude: place.latitude,
+    longitude: place.longitude,
+    distanceMeters: 0,
+  } : null
+}
+
 export async function getStopPlaceRoutes(env: TransitBindings, city: string, placeId: string) {
   const version = await getActiveVersion(env, city)
   if (!version) return []

@@ -6,6 +6,17 @@ type ErrorPayload = {
   error?: unknown
 }
 
+export class MochiApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message)
+    this.name = 'MochiApiError'
+  }
+}
+
+export function isTdxTokenRejectedError(error: unknown): error is MochiApiError {
+  return error instanceof MochiApiError && error.code === TDX_ACCESS_TOKEN_REJECTED_CODE
+}
+
 type RequestOptions = {
   authenticated?: boolean
   fallback?: string
@@ -66,7 +77,11 @@ function unwrapJsonResponse<T>(
 ): T {
   if (!response.ok) {
     const message = typeof data?.error === 'string' && data.error.trim() ? data.error : fallback
-    throw new Error(message)
+    throw new MochiApiError(
+      message,
+      response.status,
+      typeof data?.code === 'string' ? data.code : undefined,
+    )
   }
   if (!data) throw new Error(fallback)
   return data

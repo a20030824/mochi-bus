@@ -1,5 +1,6 @@
 import type { TransferEstimate } from '../../src/domain/map/transfer-estimate'
 import type { EtaSource } from '../../src/domain/eta-presentation'
+import type { TDXWarning } from '../../src/domain/tdx-warning'
 import { requestMochiJson } from '../tdx/api-client'
 
 export type RegionCode = 'north' | 'central' | 'south' | 'east' | 'islands'
@@ -106,12 +107,25 @@ export type PlaceRoute = {
   source?: 'realtime' | 'stale-realtime' | 'schedule' | 'none'
 }
 
+export type PlaceArrivalsResponse = {
+  routes: PlaceRoute[]
+  warning?: TDXWarning
+  realtime?: {
+    candidates: number
+    queries: number
+    rateLimited: boolean
+  }
+}
+
 export type DirectRoute = PlaceRoute & {
   boardSequence: number
   alightSequence: number
   stopCount: number
   etaMinutes?: number | null
   etaSource?: EtaSource
+  etaDepartureBased?: boolean
+  etaHeadwayMinutes?: [number, number] | null
+  etaNextDay?: boolean
 }
 
 export type TransferLeg = {
@@ -135,6 +149,12 @@ export type TransferPlan = {
   secondEtaMinutes?: number | null
   firstEtaSource?: EtaSource
   secondEtaSource?: EtaSource
+  firstEtaDepartureBased?: boolean
+  secondEtaDepartureBased?: boolean
+  firstEtaHeadwayMinutes?: [number, number] | null
+  secondEtaHeadwayMinutes?: [number, number] | null
+  firstEtaNextDay?: boolean
+  secondEtaNextDay?: boolean
   transferEstimate?: TransferEstimate
 }
 
@@ -162,6 +182,9 @@ export type JourneyEtaEstimate = {
   key: string
   minutes: number | null
   source?: EtaSource
+  departureBased?: boolean
+  headwayMinutes?: [number, number] | null
+  nextDay?: boolean
 }
 
 export const mapApi = {
@@ -239,7 +262,7 @@ export const mapApi = {
     )
   },
 
-  async vehicles(city: string, variant: RouteMapVariant): Promise<VehiclePosition[]> {
+  async vehicles(city: string, variant: RouteMapVariant, signal?: AbortSignal): Promise<VehiclePosition[]> {
     const params = new URLSearchParams({
       city,
       route: variant.routeName,
@@ -248,7 +271,7 @@ export const mapApi = {
     })
     const data = await requestJson<{ vehicles?: VehiclePosition[] }>(
       `/api/v1/map/vehicles?${params}`,
-      { cache: 'no-store' },
+      { cache: 'no-store', signal },
       true,
     )
     return data.vehicles ?? []
@@ -305,15 +328,15 @@ export const mapApi = {
     return data.place
   },
 
-  async placeRoutes(city: string, placeId: string, signal?: AbortSignal): Promise<PlaceRoute[]> {
-    const data = await requestJson<{ routes?: PlaceRoute[] }>(
+  async placeRoutes(city: string, placeId: string, signal?: AbortSignal): Promise<PlaceArrivalsResponse> {
+    const data = await requestJson<Partial<PlaceArrivalsResponse>>(
       `/api/v1/map/place/${encodeURIComponent(placeId)}/arrivals?city=${encodeURIComponent(city)}`,
       { signal },
       true,
       '站牌路線讀取失敗',
     )
     if (!data.routes) throw new Error('站牌路線讀取失敗')
-    return data.routes
+    return { ...data, routes: data.routes }
   },
 }
 

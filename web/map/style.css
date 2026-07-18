@@ -245,6 +245,11 @@ button { cursor: pointer; }
 
 .drawer-heading h1 { margin: 4px 0 8px; font-size: 30px; font-weight: var(--weight-display); line-height: 1; letter-spacing: -.045em; }
 .drawer-heading p, .drawer-copy { margin: 0 0 16px; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.degraded-notice { margin: 0 0 14px; padding: 12px; border: 1px solid var(--accent); border-radius: var(--radius-control); background: var(--surface); }
+.degraded-notice .drawer-copy { margin-bottom: 10px; color: var(--ink); }
+.degraded-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.degraded-actions .quiet-button { min-height: 38px; }
+.quiet-link { color: var(--accent-deep); font-size: 13px; font-weight: var(--weight-body); text-underline-offset: 3px; }
 .drawer-back {
   align-self: flex-start;
   max-width: 100%;
@@ -758,6 +763,7 @@ button { cursor: pointer; }
   .drawer-back { margin-bottom: 4px; padding: 2px 0; }
   .drawer-heading h1 { margin: 0 0 3px; font-size: 22px; }
   .drawer-heading p, .drawer-copy { display: none; }
+  .degraded-notice .drawer-copy { display: block; }
   .map-search { margin-bottom: 6px; padding: 8px 10px 8px 36px; background-position-x: 12px; }
   .map-categories { margin-bottom: 6px; }
 }

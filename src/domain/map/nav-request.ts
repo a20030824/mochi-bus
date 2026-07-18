@@ -5,6 +5,7 @@
 // isStale() 比對,不同就是舊回應,安靜丟棄,不更新 store/DOM/URL,也不彈錯誤。
 export type NavRequestCoordinator = {
   begin(): { requestId: number; signal: AbortSignal }
+  cancel(): void
   isStale(requestId: number): boolean
 }
 
@@ -17,6 +18,11 @@ export function createNavRequestCoordinator(): NavRequestCoordinator {
       controller?.abort()
       controller = new AbortController()
       return { requestId: ++requestId, signal: controller.signal }
+    },
+    cancel() {
+      controller?.abort()
+      controller = undefined
+      requestId += 1
     },
     isStale(id: number) {
       return id !== requestId

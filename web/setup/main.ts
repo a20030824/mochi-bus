@@ -37,6 +37,34 @@ type DirectionGroup = {
 
 type SuggestionBus = FavoriteBus & { label?: string }
 
+type StopPlaceIdentity = {
+  placeId: string
+  name: string
+  latitude: number
+  longitude: number
+}
+
+type SuggestionSnapshot = {
+  stopName: string
+  items: SuggestionBus[]
+  selectedKey: string
+  frequency: Record<string, number>
+  place?: StopPlaceIdentity
+}
+
+type SetupHistoryState = {
+  setupStep: 'closed' | 'routes' | 'stops' | 'suggestions'
+  setupDepth: number
+  city?: string
+  filter?: string
+  category?: string
+  scrollTop?: number
+  routes?: RouteItem[]
+  selectedRoute?: RouteItem
+  groups?: DirectionGroup[]
+  suggestion?: SuggestionSnapshot
+}
+
 // Cloudflare Workers 的 HTMLRewriter 型別也叫 Element,兩者的全域宣告會合併,
 // 汙染 DOM 的 Element 介面;query 一律用 cast 而不是 querySelector<T> 泛型,
 // 跟既有的 web/map/main.ts 同一個做法,避開這個環境層級的型別衝突。
@@ -57,6 +85,8 @@ const closePicker = document.querySelector('#close-picker') as HTMLButtonElement
 let routes: RouteItem[] = []
 let category = '全部'
 let selectedRoute: RouteItem | null = null
+let directionGroups: DirectionGroup[] = []
+let suggestionSnapshot: SuggestionSnapshot | undefined
 // 快速連續操作(換城市、連點路線)時,慢的舊回應不能蓋掉快的新結果;
 // 三段(路線/站牌/建議)共用一個 epoch,跟 web/map/main.ts 的 nav-request 同一套想法。
 let requestId = 0
@@ -149,6 +179,13 @@ function renderBoards() {
 }
 
 function openPicker() {
+  if (setupHistoryState().setupStep === 'closed') {
+    history.pushState(routeHistoryState(1), '', setupUrl('routes'))
+  }
+  showRoutePicker()
+}
+
+function showRoutePicker() {
   pickerPanel.hidden = false
   routePicker.hidden = false
   directionStep.hidden = true
@@ -161,9 +198,18 @@ function openPicker() {
 }
 
 function hidePicker() {
+  const state = setupHistoryState()
+  if (state.setupDepth > 0) {
+    history.go(-state.setupDepth)
+    return
+  }
+  hidePickerView()
+}
+
+function hidePickerView(focusTrigger = true) {
   pickerPanel.hidden = true
   selectedRoute = null
-  addBoardButton.focus()
+  if (focusTrigger) addBoardButton.focus()
   // 清掉 selectedRoute 的同時要搶新 epoch:不這樣做,還在等 fetch 的
   // chooseRoute/loadSuggestions 回來後會通過「沒有更新」的檢查,
   // 卻讀到剛被清空的 selectedRoute 而炸掉。
@@ -171,6 +217,10 @@ function hidePicker() {
 }
 
 function backToRoutes() {
+  if (setupHistoryState().setupStep === 'stops') {
+    history.back()
+    return
+  }
   directionStep.hidden = true
   suggestionStep.hidden = true
   routePicker.hidden = false
@@ -180,6 +230,10 @@ function backToRoutes() {
 }
 
 function backToStops() {
+  if (setupHistoryState().setupStep === 'suggestions') {
+    history.back()
+    return
+  }
   suggestionStep.hidden = true
   directionStep.hidden = false
   directionStep.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -216,6 +270,7 @@ function renderCategories() {
       category = name
       renderCategories()
       renderRoutes()
+      saveRouteHistoryState()
     }
     return button
   }))
@@ -263,6 +318,7 @@ async function loadRoutes() {
     message.textContent = '共 ' + routes.length + ' 條路線'
     renderCategories()
     renderRoutes()
+    saveRouteHistoryState()
   } catch (error) {
     if (id !== requestId) return
     message.textContent = error instanceof Error && error.message ? error.message : '路線載入失敗'
@@ -270,6 +326,7 @@ async function loadRoutes() {
 }
 
 async function chooseRoute(route: RouteItem) {
+  saveRouteHistoryState()
   selectedRoute = route
   message.textContent = '正在載入 ' + route.routeName + ' 的站牌…'
   directionStep.hidden = true
@@ -286,6 +343,13 @@ async function chooseRoute(route: RouteItem) {
     if (id !== requestId) return
     routePicker.hidden = true
     renderDirections(body.groups ?? [])
+    history.pushState({
+      ...routeHistoryState(2),
+      setupStep: 'stops',
+      setupDepth: 2,
+      selectedRoute: route,
+      groups: body.groups ?? [],
+    } satisfies SetupHistoryState, '', setupUrl('stops', route))
   } catch (error) {
     if (id !== requestId) return
     message.textContent = error instanceof Error && error.message ? error.message : '站牌載入失敗'
@@ -293,6 +357,7 @@ async function chooseRoute(route: RouteItem) {
 }
 
 function renderDirections(groups: DirectionGroup[]) {
+  directionGroups = groups
   directionStep.replaceChildren()
   const head = document.createElement('div')
   head.className = 'step-head'
@@ -345,14 +410,16 @@ async function loadSuggestions(group: DirectionGroup, stop: DirectionGroup['stop
   suggestionStep.innerHTML = '<p>正在找同站其他公車…</p>'
   const id = ++requestId
   let suggestions: SuggestionBus[] = []
+  let place: StopPlaceIdentity | undefined
   try {
     const params = new URLSearchParams({ city: city.value, stop: stop.stopName, stopUid: stop.stopUid })
-    const body = await requestMochiJson<{ buses?: SuggestionBus[] }>(
+    const body = await requestMochiJson<{ buses?: SuggestionBus[]; place?: StopPlaceIdentity | null }>(
       '/api/v1/stop-routes?' + params,
       {},
       { authenticated: true },
     )
     suggestions = body.buses ?? []
+    place = body.place ?? undefined
   } catch {
     // 同站其他公車只是加分項,失敗就只留目前選擇的那一班。
   }
@@ -384,10 +451,25 @@ async function loadSuggestions(group: DirectionGroup, stop: DirectionGroup['stop
       return etaDiff || a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true })
     })
     .slice(0, 12)
-  renderSuggestions(stop.stopName, all, selectedKey, frequency)
+  renderSuggestions(stop.stopName, all, selectedKey, frequency, place)
+  suggestionSnapshot = { stopName: stop.stopName, items: all, selectedKey, frequency, place }
+  history.pushState({
+    ...routeHistoryState(3),
+    setupStep: 'suggestions',
+    setupDepth: 3,
+    selectedRoute: selectedRoute ?? undefined,
+    groups: directionGroups,
+    suggestion: suggestionSnapshot,
+  } satisfies SetupHistoryState, '', setupUrl('suggestions', selectedRoute ?? undefined, stop))
 }
 
-function renderSuggestions(stopName: string, items: SuggestionBus[], selectedKey: string, frequency: Record<string, number>) {
+function renderSuggestions(
+  stopName: string,
+  items: SuggestionBus[],
+  selectedKey: string,
+  frequency: Record<string, number>,
+  place?: StopPlaceIdentity,
+) {
   suggestionStep.replaceChildren()
   const head = document.createElement('div')
   head.className = 'step-head'
@@ -442,6 +524,10 @@ function renderSuggestions(stopName: string, items: SuggestionBus[], selectedKey
       version: 2,
       id: newBoardId(),
       title: stopName,
+      city: city.value,
+      placeId: place?.placeId,
+      latitude: place?.latitude,
+      longitude: place?.longitude,
       buses: chosen.map(({ label: _label, directionLabel: _directionLabel, ...bus }) => bus),
       createdAt: now,
       updatedAt: now,
@@ -552,5 +638,104 @@ pickerPanel.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') hidePicker()
 })
 filter.addEventListener('input', renderRoutes)
-city.addEventListener('change', () => void loadRoutes())
+filter.addEventListener('input', saveRouteHistoryState)
+grid.addEventListener('scroll', saveRouteHistoryState, { passive: true })
+city.addEventListener('change', () => {
+  selectedRoute = null
+  directionGroups = []
+  suggestionSnapshot = undefined
+  void loadRoutes()
+})
 renderBoards()
+
+function setupHistoryState(): SetupHistoryState {
+  const state = history.state as Partial<SetupHistoryState> | null
+  return state?.setupStep
+    ? { setupStep: state.setupStep, setupDepth: state.setupDepth ?? 0, ...state }
+    : { setupStep: 'closed', setupDepth: 0 }
+}
+
+function routeHistoryState(depth: number): SetupHistoryState {
+  return {
+    setupStep: 'routes',
+    setupDepth: depth,
+    city: city.value,
+    filter: filter.value,
+    category,
+    scrollTop: grid.scrollTop,
+    routes,
+  }
+}
+
+function saveRouteHistoryState() {
+  const state = setupHistoryState()
+  if (state.setupStep !== 'routes') return
+  history.replaceState(routeHistoryState(state.setupDepth), '', setupUrl('routes'))
+}
+
+function setupUrl(
+  step: SetupHistoryState['setupStep'],
+  route?: RouteItem,
+  stop?: DirectionGroup['stops'][number],
+): string {
+  if (step === 'closed') return '/setup'
+  const params = new URLSearchParams({ step, city: city.value })
+  if (route) {
+    params.set('route', route.routeName)
+    if (route.routeUid) params.set('routeUid', route.routeUid)
+  }
+  if (stop) {
+    params.set('stopUid', stop.stopUid)
+    params.set('stop', stop.stopName)
+  }
+  return `/setup?${params}`
+}
+
+function hydrateSetupHistory(focusClosed = false) {
+  requestId += 1
+  const state = setupHistoryState()
+  if (state.setupStep === 'closed') {
+    hidePickerView(focusClosed)
+    return
+  }
+  pickerPanel.hidden = false
+  if (state.city && Array.from(city.options).some((option) => option.value === state.city)) city.value = state.city
+  filter.value = state.filter ?? ''
+  category = state.category ?? '全部'
+  routes = state.routes ?? []
+  selectedRoute = state.selectedRoute ?? null
+  directionGroups = state.groups ?? []
+  suggestionSnapshot = state.suggestion
+  if (state.setupStep === 'routes') {
+    showRoutePicker()
+    renderCategories()
+    renderRoutes()
+    queueMicrotask(() => { grid.scrollTop = state.scrollTop ?? 0 })
+    return
+  }
+  routePicker.hidden = true
+  suggestionStep.hidden = true
+  if (state.setupStep === 'stops' && selectedRoute) {
+    renderDirections(directionGroups)
+    return
+  }
+  if (state.setupStep === 'suggestions' && selectedRoute && suggestionSnapshot) {
+    directionStep.hidden = true
+    renderSuggestions(
+      suggestionSnapshot.stopName,
+      suggestionSnapshot.items,
+      suggestionSnapshot.selectedKey,
+      suggestionSnapshot.frequency,
+      suggestionSnapshot.place,
+    )
+    return
+  }
+  history.replaceState(routeHistoryState(1), '', setupUrl('routes'))
+  showRoutePicker()
+}
+
+if (!(history.state as Partial<SetupHistoryState> | null)?.setupStep) {
+  history.replaceState({ setupStep: 'closed', setupDepth: 0 } satisfies SetupHistoryState, '', '/setup')
+}
+window.addEventListener('popstate', () => hydrateSetupHistory(true))
+hydrateSetupHistory()

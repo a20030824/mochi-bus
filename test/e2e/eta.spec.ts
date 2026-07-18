@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { TDX_ACCESS_TOKEN_REJECTED_CODE } from '../../src/domain/tdx-api-error'
 
 const board = {
   version: 2,
@@ -69,6 +70,47 @@ test.describe('ETA page', () => {
     await expect(page.locator('.top-actions a').first()).toHaveAttribute('href', '/map?city=Chiayi&place=chiayi-station')
     await expect.poll(() => refreshCalls).toBeGreaterThan(0)
     await expect.poll(async () => page.evaluate(async () => Boolean(await navigator.serviceWorker.getRegistration()))).toBe(true)
+  })
+
+  test('keeps schedule data and exposes retry plus setup when place realtime is rate limited', async ({ page }) => {
+    await page.addInitScript((storedBoard) => {
+      localStorage.setItem('mochi.bus.boards.v2', JSON.stringify([storedBoard]))
+      localStorage.setItem('mochi.bus.activeBoard.v2', storedBoard.id)
+    }, board)
+    await page.route('**/api/v1/map/place/**', (route) => route.fulfill({ json: {
+      routes: [{
+        routeName: '7322', routeUid: 'CYI7322', variantKey: 'CYI7322-0', direction: 0,
+        label: '嘉義火車站 → 阿里山', subRouteName: '7322', stopUid: 'CYI001',
+        stopName: '嘉義火車站', stopSequence: 1, estimateSeconds: 600,
+        etaLabel: '約 10 分', stopStatus: 0, source: 'schedule',
+      }],
+      warning: 'tdx-rate-limit',
+      realtime: { candidates: 1, queries: 0, rateLimited: true },
+    } }))
+
+    await page.goto('/')
+
+    await expect(page.locator('.eta-copy:not(.eta-copy-exit)')).toContainText('約10分')
+    await expect(page.locator('#notice')).toContainText('即時查詢暫時受限')
+    await expect(page.locator('#notice').getByRole('link', { name: '檢查 TDX 設定' })).toHaveAttribute('href', '/setup')
+    await expect(page.getByRole('button', { name: '重新整理' })).toBeEnabled()
+  })
+
+  test('offers credential recovery on the homepage when the replacement token is rejected', async ({ page }) => {
+    await page.addInitScript((storedBoard) => {
+      localStorage.setItem('mochi.bus.boards.v2', JSON.stringify([storedBoard]))
+      localStorage.setItem('mochi.bus.activeBoard.v2', storedBoard.id)
+    }, board)
+    await page.route('**/api/v1/map/place/**', (route) => route.fulfill({
+      status: 401,
+      json: { code: TDX_ACCESS_TOKEN_REJECTED_CODE, error: 'TDX 授權已失效' },
+    }))
+
+    await page.goto('/')
+
+    await expect(page.locator('#notice')).toContainText('TDX 授權已失效')
+    await expect(page.locator('#notice').getByRole('link', { name: '檢查 TDX 設定' })).toHaveAttribute('href', '/setup')
+    await expect(page.getByRole('button', { name: '重新整理' })).toBeEnabled()
   })
 
   test('keeps rows keyed while ETA value, trust tone, and freshness update', async ({ page }) => {

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { resetMemoryCacheForTests } from '../../lib/memory-cache'
-import { findNearbyStopPlaces, getCityNetwork, getDirectRoutes, getOneTransferRoutes, type TransitBindings } from './snapshot-repository'
+import {
+  findNearbyStopPlaces,
+  getCityNetwork,
+  getDirectRoutes,
+  getOneTransferRoutes,
+  getStopPlaceByStopUid,
+  type TransitBindings,
+} from './snapshot-repository'
 
 type StopPlaceRow = {
   place_id: string
@@ -8,6 +15,50 @@ type StopPlaceRow = {
   latitude: number
   longitude: number
 }
+
+describe('getStopPlaceByStopUid', () => {
+  beforeEach(() => resetMemoryCacheForTests())
+
+  it('resolves a setup stop UID to the stable map place identity', async () => {
+    const queries: string[] = []
+    const bindings: unknown[][] = []
+    const database = {
+      prepare(query: string) {
+        queries.push(query)
+        const statement = {
+          bind: (...values: unknown[]) => {
+            bindings.push(values)
+            return statement
+          },
+          first: async <T>() => (query.includes('dataset_versions')
+            ? { active_version: 'v1' }
+            : {
+              place_id: 'NWT:jing-an',
+              place_name: '捷運景安站',
+              latitude: 24.993,
+              longitude: 121.505,
+            }) as T,
+        } as D1PreparedStatement
+        return statement
+      },
+    } as D1Database
+
+    const place = await getStopPlaceByStopUid({
+      TRANSIT_DB: database,
+      TRANSIT_SHAPES: {} as R2Bucket,
+    }, 'NewTaipei', 'NWT1')
+
+    expect(place).toEqual({
+      placeId: 'NWT:jing-an',
+      name: '捷運景安站',
+      latitude: 24.993,
+      longitude: 121.505,
+      distanceMeters: 0,
+    })
+    expect(queries.at(-1)).toContain('JOIN stop_places')
+    expect(bindings.at(-1)).toEqual(['v1', 'NewTaipei', 'NWT1'])
+  })
+})
 
 describe('findNearbyStopPlaces', () => {
   beforeEach(() => resetMemoryCacheForTests())

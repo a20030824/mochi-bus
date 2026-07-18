@@ -71,6 +71,11 @@ test.describe('direct journey candidate selection', () => {
       const place = latitude < 25.005 ? places.from : places.to
       await route.fulfill({ json: { places: [{ ...place, distanceMeters: 0 }] } })
     })
+    await page.route(/\/api\/v1\/map\/place\/([^/?]+)\?city=Taipei$/, async (route) => {
+      const placeId = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1) ?? '')
+      const place = placeId === places.from.placeId ? places.from : placeId === places.to.placeId ? places.to : undefined
+      await route.fulfill(place ? { json: { place } } : { status: 404, json: { error: '找不到站牌' } })
+    })
     await page.route('**/api/v1/map/direct*', async (route) => {
       const routes = directResponseMode === 'one'
         ? [{ routeName: 'B', variantKey: 'B:0', direction: 0, label: 'B 起點 → 終點', subRouteName: 'B', boardSequence: 1, alightSequence: 3, stopCount: 3 }]
@@ -104,6 +109,7 @@ test.describe('direct journey candidate selection', () => {
 
     const cards = page.locator('.direct-route-card')
     await expect(cards).toHaveCount(2)
+    await expect(page).toHaveURL('/map?city=Taipei&trip=results&from=Taipei%3Afrom&to=Taipei%3Ato')
     await expect(cards.filter({ has: page.locator('[aria-pressed="true"]') })).toHaveCount(1)
     await expect(cards.nth(0).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
     await expect(cards.nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'false')
@@ -171,9 +177,23 @@ test.describe('direct journey candidate selection', () => {
     const backToTrip = page.getByRole('button', { name: '返回行程候選', exact: false })
     await expect(backToTrip).toHaveCount(1)
     await backToTrip.click()
+    await expect(page).toHaveURL('/map?city=Taipei&trip=results&from=Taipei%3Afrom&to=Taipei%3Ato')
     await expect(page.locator('.direct-route-card')).toHaveCount(2)
     await expect(page.locator('.direct-route-card').nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
     await expect.poll(readJourneyCamera).toBe(cameraBeforeDetail)
+
+    await page.goForward()
+    await expect(page).toHaveURL(/route=B/)
+    await expect(page.getByRole('heading', { name: 'B', exact: true })).toBeVisible()
+    await page.goBack()
+    await expect(page).toHaveURL('/map?city=Taipei&trip=results&from=Taipei%3Afrom&to=Taipei%3Ato')
+    await expect(page.locator('.direct-route-card')).toHaveCount(2)
+    await page.reload()
+    await expect(page.locator('.direct-route-card')).toHaveCount(2)
+    await expect(page.locator('.direct-route-card').nth(1).locator('.direct-route-select')).toHaveAttribute('aria-pressed', 'true')
+    await page.evaluate(() => history.replaceState(null, '', location.href))
+    await page.reload()
+    await expect(page.locator('.direct-route-card')).toHaveCount(2)
 
     directResponseMode = 'one'
     var chooseDestinationAgain = page.getByRole('button', { name: '重新選目的地', exact: false })

@@ -44,22 +44,11 @@ jobs:
       - run: npm ci --silent
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
-      - name: Test map and ETA UI
+      - name: Test all desktop and touch interaction flows
         run: >-
           npx playwright test
-          test/e2e/eta.spec.ts
-          test/e2e/map-camera-padding.spec.ts
-          test/e2e/map-camera.spec.ts
-          test/e2e/map-chrome-layout.spec.ts
-          test/e2e/map-direct.spec.ts
-          test/e2e/map-drawer-modes.spec.ts
-          test/e2e/map-mobile-entry-spacing.spec.ts
-          test/e2e/map-timetable.spec.ts
-          test/e2e/map-trip-selection-layout.spec.ts
-          test/e2e/map-trip-stop-matching.spec.ts
-          test/e2e/map-variant-back-layout.spec.ts
-          test/e2e/security-csp.spec.ts
-          test/e2e/setup.spec.ts
+          --project=desktop-chromium
+          --project=mobile-touch
           --reporter=line,html
       - name: Upload Playwright diagnostics
         if: always()
