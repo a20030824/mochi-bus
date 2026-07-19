@@ -23,6 +23,20 @@ describe('snapshot manifest remote read limit', () => {
     expect(getJson).toHaveBeenCalledWith('manifest.json', 1_100_000 + 64 * 1024)
   })
 
+  it.each([
+    ['zero', { size: 0 }],
+    ['null', { size: null }],
+    ['missing', {}],
+  ])('uses the absolute bounded fallback when HEAD size is %s', async (_label, metadata) => {
+    const getJson = vi.fn(async () => ({ schemaVersion: 2 }))
+    await expect(readManifestJson({
+      key: 'manifest.json',
+      head: vi.fn(async () => metadata),
+      getJson,
+    })).resolves.toEqual({ schemaVersion: 2 })
+    expect(getJson).toHaveBeenCalledWith('manifest.json', MAX_MANIFEST_READ_LIMIT)
+  })
+
   it('returns null only for a missing object', async () => {
     const getJson = vi.fn()
     await expect(readManifestJson({
@@ -33,7 +47,7 @@ describe('snapshot manifest remote read limit', () => {
     expect(getJson).not.toHaveBeenCalled()
   })
 
-  it('fails closed for unavailable or oversized metadata', () => {
+  it('fails closed for unavailable or oversized explicit sizes', () => {
     expect(() => manifestReadLimitFromBytes(Number.NaN)).toThrow('Snapshot manifest size is unavailable')
     expect(manifestReadLimitFromBytes(MAX_MANIFEST_READ_LIMIT)).toBe(MAX_MANIFEST_READ_LIMIT)
     expect(() => manifestReadLimitFromBytes(MAX_MANIFEST_READ_LIMIT + 1))
