@@ -21,6 +21,9 @@ export const LEGACY_APPEARANCE_STORAGE_KEYS = [
   'mochi.bus.appearance.v2',
   'mochi.bus.appearance.v1',
 ] as const
+// Compatibility for the shared local-data store while v3 removes both legacy keys
+// through the appearance bootstrap's canonical clear handler.
+export const LEGACY_APPEARANCE_STORAGE_KEY = LEGACY_APPEARANCE_STORAGE_KEYS[0]
 export const LOCAL_DATA_CLEARED_EVENT = 'mochi:local-data-cleared'
 
 export const DEFAULT_APPEARANCE: AppearancePreferences = {
