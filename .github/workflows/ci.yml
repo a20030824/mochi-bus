@@ -27,7 +27,18 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run check
+      - name: Run quality checks
+        run: |
+          set -o pipefail
+          npm run check 2>&1 | tee quality.log
+      - name: Upload quality diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-log
+          path: quality.log
+          if-no-files-found: error
+          retention-days: 1
 
   map-ui:
     name: Map UI regression
