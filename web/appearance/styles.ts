@@ -120,7 +120,7 @@ html[data-appearance-page="map"][data-map-tiles-theme="light"] .vehicle-marker::
 html[data-appearance-page="map"][data-map-tiles-theme="light"] .vehicle-marker::after { background: #b85f49; }
 
 html[data-appearance-page="map"][data-map-tiles-theme="dark"] #map { background: #232120; }
-html[data-appearance-page="map"][data-map-tiles-theme="dark"] .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) grayscale(.6) brightness(.82) contrast(.88); }
+html[data-appearance-page="map"][data-map-tiles-theme="dark"] .leaflet-tile-pane { filter: invert(1) grayscale(1) brightness(.8) contrast(.92); }
 html[data-appearance-page="map"][data-map-tiles-theme="dark"] .nearby-map-marker { box-shadow: 0 0 0 5px rgba(29, 28, 25, .78), var(--shadow-marker); }
 html[data-appearance-page="map"][data-map-tiles-theme="dark"] .vehicle-marker { border-color: #f3ebde; background: #28251f; box-shadow: var(--shadow-marker), 0 0 0 1.5px #28251f; }
 html[data-appearance-page="map"][data-map-tiles-theme="dark"] .vehicle-marker::before { background: #81a08f; }

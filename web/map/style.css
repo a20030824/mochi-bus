@@ -888,8 +888,9 @@ button { cursor: pointer; }
   }
 
   #map { background: #232120; }
-  /* 反轉+轉回色相:OSM 底圖變成低彩度深色製圖,灰階與亮度沿用亮色版的靜音策略。 */
-  .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) grayscale(.6) brightness(.82) contrast(.88); }
+  /* 反轉後完全去彩:hue-rotate 轉回的色相必偏濁,乾脆讓底圖成為中性深灰,
+     路線色成為畫面上唯一的色相(夜間製圖慣例)。 */
+  .leaflet-tile-pane { filter: invert(1) grayscale(1) brightness(.8) contrast(.92); }
   .leaflet-control-attribution { background: rgba(40, 37, 31, .85) !important; }
   .leaflet-control-attribution a { color: var(--green-deep); }
   .leaflet-control-zoom a { background: rgba(40, 37, 31, .96) !important; }
