@@ -6,6 +6,7 @@ import { validateSnapshot } from './transit-snapshot/validate.mjs'
 import { createStopPlaceRegistry } from './transit-snapshot/stop-place-registry.mjs'
 import { patternStopPlaceMismatchQuery } from './transit-snapshot/snapshot-invariants.mjs'
 import { manifestReadLimit, readManifestJson } from './transit-snapshot/manifest-read-limit.mjs'
+import { parseContentLength } from './transit-snapshot/r2-metadata.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
 import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
@@ -553,7 +554,6 @@ function sqlValue(value) {
 // 必須跟 src/infrastructure/transit/snapshot-repository.ts 的 normalizeStopName 完全一致。
 // 「臺→台」與「火車站/車站→站、去結尾站」是為了讓公路客運與市區公車的同站異名收斂:
 // 雙冬站⇄雙冬、新竹火車站⇄新竹站、高鐵臺中站⇄高鐵台中站(實測南投漏接 -30%)。
-// 轉運站不受影響(不含「車站」子字串,只去結尾一個「站」),不會跟火車站誤併。
 function normalizeName(value) {
   return value.normalize('NFKC').replace(/[\s()（）]/g, '').toLowerCase()
     .replaceAll('臺', '台')
@@ -797,7 +797,6 @@ async function fetchPublicJson(url) {
   }
   return await readBoundedResponseJson(response, 2 * 1024 * 1024)
 }
-
 async function fetchProbePublicJson(path) {
   const baseUrl = process.env.SNAPSHOT_SMOKE_BASE_URL ?? 'https://bus.moc96336.com'
   const response = await fetch(new URL(path, baseUrl), {
@@ -866,8 +865,8 @@ async function s3HeadObject(key) {
   await response.body?.cancel().catch(() => undefined)
   if (response.status === 404) return null
   if (!response.ok) throw new Error('R2 snapshot probe HEAD failed')
-  const size = Number(response.headers.get('Content-Length'))
-  return { size: Number.isFinite(size) && size >= 0 ? size : null, etag: response.headers.get('ETag') }
+  const size = parseContentLength(response.headers.get('Content-Length'))
+  return { size, etag: response.headers.get('ETag') }
 }
 async function s3ReadPrefix(key, maximumBytes) {
   const response = await r2.client.fetch(objectUrl(key), {
