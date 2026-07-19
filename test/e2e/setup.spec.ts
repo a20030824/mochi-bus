@@ -132,6 +132,12 @@ test.describe('/setup page', () => {
       },
     ]
     await page.addInitScript((savedBoards) => {
+      localStorage.setItem('mochi.bus.appearance.v2', JSON.stringify({
+        version: 2,
+        general: 'light',
+        mapUi: 'light',
+        mapTiles: 'light',
+      }))
       localStorage.setItem('mochi.bus.boards.v2', JSON.stringify(savedBoards))
       localStorage.setItem('mochi.bus.activeBoard.v2', savedBoards[0].id)
     }, boards)
