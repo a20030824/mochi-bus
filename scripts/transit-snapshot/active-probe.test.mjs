@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  artifactHeadMatches,
   deterministicSampleCaseId,
   deterministicSampleIndex,
   networkPrefixMatches,
@@ -111,6 +112,60 @@ describe('unchanged active snapshot probe', () => {
       65_536,
     )
     expect(options.r2.getManifest).not.toHaveBeenCalledWith(expect.stringContaining('network.json'))
+  })
+
+  it('accepts an active network HEAD without optional Content-Length', async () => {
+    const options = fixture()
+    const original = options.r2.head
+    options.r2.head = vi.fn(async (key) => key.endsWith('network.json') && key.includes(activeVersion)
+      ? { size: null }
+      : original(key))
+
+    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
+      activeProbeResult: 'success',
+      probeFailureClass: 'none',
+      rollbackAvailable: true,
+      hardChecksPassed: 11,
+    })
+  })
+
+  it('keeps rollback available when the previous network HEAD omits Content-Length', async () => {
+    const options = fixture()
+    const original = options.r2.head
+    options.r2.head = vi.fn(async (key) => key.endsWith('network.json') && key.includes(previousVersion)
+      ? { size: null }
+      : original(key))
+
+    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
+      activeProbeResult: 'success',
+      rollbackAvailable: true,
+      hardChecksPassed: 11,
+    })
+  })
+
+  it('still reports network_missing when HEAD provides a mismatched size', async () => {
+    const options = fixture()
+    const original = options.r2.head
+    options.r2.head = vi.fn(async (key) => key.endsWith('network.json') && key.includes(activeVersion)
+      ? { size: 7_999_999 }
+      : original(key))
+
+    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
+      activeProbeResult: 'error',
+      probeFailureClass: 'network_missing',
+      rollbackAvailable: false,
+    })
+  })
+
+  it('matches optional HEAD metadata without treating a real zero as unknown', () => {
+    expect(artifactHeadMatches({ size: null }, { bytes: 100 })).toBe(true)
+    expect(artifactHeadMatches({}, { bytes: 100 })).toBe(true)
+    expect(artifactHeadMatches({ size: 100 }, { bytes: 100 })).toBe(true)
+    expect(artifactHeadMatches({ size: 99 }, { bytes: 100 })).toBe(false)
+    expect(artifactHeadMatches({ size: 0 }, { bytes: 100 })).toBe(false)
+    expect(artifactHeadMatches(null, { bytes: 100 })).toBe(false)
+    expect(artifactHeadMatches({ size: 100 }, { bytes: 0 })).toBe(false)
+    expect(artifactHeadMatches({ size: 100 }, { bytes: 'invalid' })).toBe(false)
   })
 
   it('uses a stable sample for a rerun and rotates across windows', () => {
