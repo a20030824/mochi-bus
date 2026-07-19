@@ -55,4 +55,4 @@ npx wrangler d1 execute mochi-transit --remote --command "SELECT * FROM snapshot
 
 Telemetry `window_watchdog_completed` 每城市恰好一筆、100% synthetic sampling。只包含 city/window、固定 enum、版本、age bucket 與 rollback boolean；不保存 workflow URL、route/place identity、artifact key、credential、raw error或 response body。
 
-A6b 才會每日從公網獨立驗證 22 城 routes／network／route／place／journey；A6a 的成功只代表同步 window evidence完整，不宣稱每日 public path健康。
+每日公網 22 城 routes／network／route／place／journey 的獨立驗證由 A6b public network probe 負責(`docs/operations/public-network-probe.md`);A6a 的成功只代表同步 window evidence完整，不宣稱每日 public path健康。

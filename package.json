@@ -25,6 +25,7 @@
     "snapshot:city": "node scripts/sync-transit-snapshot.mjs",
     "snapshot:window": "node scripts/transit-snapshot/run-snapshot-window.mjs",
     "snapshot:watchdog": "node scripts/transit-snapshot/run-window-watchdog.mjs",
+    "snapshot:public-probe": "node scripts/transit-snapshot/run-public-probe.mjs",
     "snapshot:rollback": "node scripts/transit-snapshot/rollback.mjs"
   },
   "dependencies": {

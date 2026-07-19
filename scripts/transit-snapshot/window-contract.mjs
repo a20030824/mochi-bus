@@ -14,7 +14,7 @@ import {
 } from './snapshot-schedule.mjs'
 
 export const SNAPSHOT_WINDOW_SCHEMA_VERSION = 1
-export const SNAPSHOT_WINDOW_EVENT_SCHEMA = 6
+export const SNAPSHOT_WINDOW_EVENT_SCHEMA = 7
 export const SNAPSHOT_WINDOW_RESULTS = Object.freeze(['published', 'unchanged', 'failed'])
 export const SNAPSHOT_WINDOW_FAILURE_CLASSES = Object.freeze([
   'none',

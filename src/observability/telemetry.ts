@@ -1,7 +1,7 @@
 import { supportedCities } from '../config'
 import type { ReleaseIdentity } from './release-identity'
 
-export const TELEMETRY_EVENT_SCHEMA = 6 as const
+export const TELEMETRY_EVENT_SCHEMA = 7 as const
 
 export const telemetryEvents = [
   'api_operation_completed',
@@ -9,6 +9,7 @@ export const telemetryEvents = [
   'snapshot_window_completed',
   'snapshot_probe_completed',
   'window_watchdog_completed',
+  'public_probe_completed',
   'snapshot_fallback_selected',
   'rate_limit_decision',
   'circuit_state_changed',
@@ -43,6 +44,7 @@ export const telemetryOperations = [
   'snapshot_validate',
   'snapshot_probe',
   'window_watchdog',
+  'public_probe',
   'snapshot_rollback',
   'release_smoke',
   'frontend_boot',
@@ -137,6 +139,14 @@ export const telemetryFailureClasses = [
   'watchdog_query_failed',
   'window_failed_active_healthy',
   'active_probe_failed',
+  'public_source_not_snapshot',
+  'reference_unavailable',
+  'probe_rate_limited',
+  'realtime_upstream_degraded',
+  'realtime_schedule_only',
+  'realtime_stale_replay',
+  'journey_estimate_unknown',
+  'vehicles_upstream_degraded',
   'unknown',
 ] as const
 
@@ -402,10 +412,11 @@ const tdxOnlyKeys = [
   'upstreamStatusClass',
 ] as const
 const windowTerminalOnlyKeys = ['activeVersion', 'previousVersion', 'workflowRunId'] as const
-const probeOnlyKeys = [
-  'versionRole', 'probeGroup', 'probeCaseVersion',
-  'sampleCaseId', 'hardChecksPassed', 'diagnosticWarningCount',
+const probeIdentityKeys = ['versionRole', 'probeGroup'] as const
+const probeSampleKeys = [
+  'probeCaseVersion', 'sampleCaseId', 'hardChecksPassed', 'diagnosticWarningCount',
 ] as const
+const probeOnlyKeys = [...probeIdentityKeys, ...probeSampleKeys] as const
 const watchdogOnlyKeys = ['watchdogStatus', 'probeResult', 'signalAgeBucket', 'probeWindowDistance'] as const
 
 const safeIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
@@ -457,6 +468,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
     if (!validWindowFields(value)) return undefined
     if (!validProbeFields(value)) return undefined
     if (!validWatchdogFields(value)) return undefined
+    if (!validPublicProbeFields(value)) return undefined
     if (value.errorFingerprint !== undefined && !identifier(value.errorFingerprint, safeErrorFingerprint)) return undefined
 
     return Object.freeze({
@@ -596,7 +608,8 @@ function validWindowFields(value: Record<string, unknown>): boolean {
 function validProbeFields(value: Record<string, unknown>): boolean {
   const isProbeEvent = value.event === 'snapshot_probe_completed'
   if (!isProbeEvent) {
-    return !probeOnlyKeys.some((key) => Object.hasOwn(value, key))
+    return !probeIdentityKeys.some((key) => Object.hasOwn(value, key))
+      && (value.event === 'public_probe_completed' || !probeSampleKeys.some((key) => Object.hasOwn(value, key)))
       && (value.event === 'window_watchdog_completed' || !Object.hasOwn(value, 'rollbackAvailable'))
   }
   if (!Object.hasOwn(value, 'windowId') || !probeOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
@@ -665,6 +678,37 @@ function validWatchdogFields(value: Record<string, unknown>): boolean {
   if (status === 'missing' && value.windowResult !== 'none') return false
   if (value.source !== (value.windowResult === 'none' ? 'none' : 'snapshot')) return false
   return true
+}
+
+function validPublicProbeFields(value: Record<string, unknown>): boolean {
+  if (value.event !== 'public_probe_completed') return true
+  if (!probeSampleKeys.every((key) => Object.hasOwn(value, key))) return false
+  if (!boundedInteger(value.probeCaseVersion, 1, 1000)) return false
+  if (!identifier(value.sampleCaseId, safeIdentifier)) return false
+  if (!boundedInteger(value.hardChecksPassed, 0, 10)) return false
+  if (!boundedInteger(value.diagnosticWarningCount, 0, 16)) return false
+  if (value.operation !== 'public_probe'
+    || value.trafficClass !== 'synthetic'
+    || value.sampleProbability !== 1
+    || value.httpStatusClass !== 'none'
+    || value.cacheResult !== 'not_applicable'
+    || value.emptyReason !== 'not_applicable'
+    || value.qualityBucket !== 'not_applicable') return false
+  // Snapshot hard health and realtime health are separate planes: degraded
+  // events keep source 'snapshot' because the snapshot plane stayed green.
+  if (value.result === 'success') {
+    return value.failureClass === 'none'
+      && value.diagnosticWarningCount === 0
+      && value.source === 'snapshot'
+      && value.hardChecksPassed === 10
+  }
+  if (value.result === 'degraded') {
+    return value.failureClass !== 'none'
+      && Number(value.diagnosticWarningCount) > 0
+      && value.source === 'snapshot'
+      && value.hardChecksPassed === 10
+  }
+  return value.result === 'error' && value.failureClass !== 'none' && value.source === 'none'
 }
 
 export function createTelemetryEnvelope(

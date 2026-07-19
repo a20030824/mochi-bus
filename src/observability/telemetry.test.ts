@@ -97,6 +97,25 @@ function validProbeEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryE
   })
 }
 
+function validPublicProbeEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryEnvelope {
+  return validEvent({
+    event: 'public_probe_completed',
+    operation: 'public_probe',
+    result: 'success',
+    source: 'snapshot',
+    snapshotVersion: '20260719T031700000Z',
+    httpStatusClass: 'none',
+    cacheResult: 'not_applicable',
+    trafficClass: 'synthetic',
+    sampleProbability: 1,
+    probeCaseVersion: 1,
+    sampleCaseId: 'pub_0123456789ab',
+    hardChecksPassed: 10,
+    diagnosticWarningCount: 0,
+    ...overrides,
+  })
+}
+
 describe('telemetry contract', () => {
   it('accepts and freezes an allowlisted common envelope', () => {
     const event = parseTelemetryEvent(validEvent())
@@ -212,6 +231,26 @@ describe('telemetry contract', () => {
     expect(parseTelemetryEvent(validProbeEvent({ result: 'success', failureClass: 'network_missing' }))).toBeUndefined()
     expect(parseTelemetryEvent(validProbeEvent({ versionRole: 'previous' }))).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), sampleCaseId: 'case_0123456789ab' })).toBeUndefined()
+  })
+
+  it('separates public probe hard health from realtime degradation', () => {
+    expect(parseTelemetryEvent(validPublicProbeEvent())).toEqual(validPublicProbeEvent())
+    expect(parseTelemetryEvent(validPublicProbeEvent({
+      result: 'degraded', failureClass: 'realtime_schedule_only', diagnosticWarningCount: 2,
+    }))).toBeDefined()
+    expect(parseTelemetryEvent(validPublicProbeEvent({
+      result: 'error', source: 'none', failureClass: 'public_version_mismatch', hardChecksPassed: 5,
+    }))).toBeDefined()
+    // A degraded realtime plane never claims the snapshot plane failed.
+    expect(parseTelemetryEvent(validPublicProbeEvent({
+      result: 'degraded', failureClass: 'realtime_schedule_only', diagnosticWarningCount: 2, source: 'none',
+    }))).toBeUndefined()
+    expect(parseTelemetryEvent(validPublicProbeEvent({
+      result: 'degraded', failureClass: 'realtime_schedule_only', diagnosticWarningCount: 2, hardChecksPassed: 9,
+    }))).toBeUndefined()
+    expect(parseTelemetryEvent(validPublicProbeEvent({ hardChecksPassed: 11 }))).toBeUndefined()
+    expect(parseTelemetryEvent(validPublicProbeEvent({ versionRole: 'active' }))).toBeUndefined()
+    expect(parseTelemetryEvent(validPublicProbeEvent({ trafficClass: 'user' }))).toBeUndefined()
   })
 })
 

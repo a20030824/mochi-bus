@@ -1,7 +1,7 @@
 import { assertScheduledCity, scheduledSnapshotWindow, validDateOnly } from './snapshot-schedule.mjs'
 
 export const WATCHDOG_SCHEMA_VERSION = 1
-export const WATCHDOG_EVENT_SCHEMA_VERSION = 6
+export const WATCHDOG_EVENT_SCHEMA_VERSION = 7
 export const WATCHDOG_MAX_PROBE_AGE_MS = 8 * 24 * 60 * 60 * 1000
 export const WATCHDOG_MAX_PROBE_WINDOW_DISTANCE = 1
 
