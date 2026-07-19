@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { APPEARANCE_STORAGE_KEY } from '../../src/domain/appearance'
 import {
   clearLocalData,
   clearTdxAuth,
@@ -123,9 +124,10 @@ describe('TDX browser credential lifecycle', () => {
     expect(lockedLocal.getItem(DEVICE_KEY)).not.toBeNull()
   })
 
-  it('clears legacy, session, and device copies together', () => {
+  it('clears legacy, session, device, and appearance data together', () => {
     local.setItem(LEGACY_KEY, JSON.stringify(auth))
     local.setItem(DEVICE_KEY, JSON.stringify(auth))
+    local.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify({ version: 2, general: 'light', mapUi: 'dark', mapTiles: 'dark' }))
     session.setItem(SESSION_KEY, JSON.stringify(auth))
 
     clearTdxAuth()
@@ -136,6 +138,7 @@ describe('TDX browser credential lifecycle', () => {
 
     setTdxAuth(auth, 'device')
     clearLocalData()
+    expect(local.getItem(APPEARANCE_STORAGE_KEY)).toBeNull()
     expect(getTdxAuthState()).toEqual({ auth: null, persistence: null })
   })
 })
