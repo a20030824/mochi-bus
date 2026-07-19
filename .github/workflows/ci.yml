@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   apply-network-head-fix:
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/network-head-size-optional'
+    if: github.event_name == 'pull_request' && github.head_ref == 'fix/network-head-size-ci'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
