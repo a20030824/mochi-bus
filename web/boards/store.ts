@@ -2,7 +2,7 @@
 // 由 Vite 建成 /assets/boards.js:地圖、ETA 與 setup 頁共用同一份 store。
 import {
   APPEARANCE_STORAGE_KEY,
-  LEGACY_APPEARANCE_STORAGE_KEY,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
   LOCAL_DATA_CLEARED_EVENT,
 } from '../../src/domain/appearance'
 import {
@@ -234,7 +234,7 @@ export function clearLocalData(): void {
     LEGACY_PRESETS_KEY,
     LEGACY_ACTIVE_KEY,
     APPEARANCE_STORAGE_KEY,
-    LEGACY_APPEARANCE_STORAGE_KEY,
+    ...LEGACY_APPEARANCE_STORAGE_KEYS,
   ]) {
     localStorage.removeItem(key)
   }
