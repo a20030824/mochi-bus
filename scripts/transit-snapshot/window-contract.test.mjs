@@ -2,15 +2,35 @@ import { describe, expect, it } from 'vitest'
 import { parseTelemetryEvent } from '../../src/observability/telemetry.ts'
 import {
   createSnapshotWindowEvent,
+  createSnapshotProbeEvent,
   parsePublisherMarker,
   safeWindowSummary,
   snapshotAttemptId,
   snapshotFailureClass,
   snapshotProgressMarker,
+  snapshotProbeMarker,
   snapshotTerminalMarker,
   snapshotWindowIdentity,
   validateWindowOutcome,
 } from './window-contract.mjs'
+
+const healthyProbe = (overrides = {}) => ({
+  probeSchemaVersion: 1,
+  city: 'Taipei',
+  windowId: 'v1:Taipei:2026-07-20:0317',
+  activeVersion: '20260719T192700000Z',
+  previousVersion: '20260712T192700000Z',
+  activeProbeAt: '2026-07-19T19:26:00.000Z',
+  activeProbeResult: 'success',
+  probeFailureClass: 'none',
+  rollbackAvailable: true,
+  probeCaseVersion: 1,
+  sampleCaseId: 'case_0123456789ab',
+  hardChecksPassed: 11,
+  diagnosticWarnings: [],
+  latencyBucket: '1_3s',
+  ...overrides,
+})
 
 const publishedOutcome = (overrides = {}) => validateWindowOutcome({
   city: 'Taipei',
@@ -84,6 +104,8 @@ describe('snapshot window contract', () => {
     })).toMatchObject({ result: 'unchanged', activeVersion: 'v1' })
     expect(parsePublisherMarker({ ...progress, url: 'https://private.example/query' }, 'Taipei')).toEqual(progress)
     expect(parsePublisherMarker({ ...progress, phase: 'arbitrary' }, 'Taipei')).toBeUndefined()
+    const probe = snapshotProbeMarker(healthyProbe())
+    expect(parsePublisherMarker(probe, 'Taipei')).toEqual(probe)
   })
 
   it('maps fixed failure classes without preserving raw errors', () => {
@@ -111,10 +133,50 @@ describe('snapshot window contract', () => {
       completedAt: '2026-07-26T19:22:00.000Z',
       lastSourceCheckAt: '2026-07-26T19:21:00.000Z',
       lastPublishedAt: '2026-07-19T19:27:00.000Z',
+      probe: healthyProbe(),
     })
     expect(outcome.lastSourceCheckAt).toBe('2026-07-26T19:21:00.000Z')
     expect(outcome.lastPublishedAt).toBe('2026-07-19T19:27:00.000Z')
     expect(safeWindowSummary(outcome, 'success')).toMatchObject({ result: 'unchanged' })
+  })
+
+  it('does not accept unchanged without matching non-error probe evidence', () => {
+    expect(() => publishedOutcome({ result: 'unchanged', probe: null })).toThrow()
+    expect(() => publishedOutcome({
+      result: 'unchanged',
+      probe: healthyProbe({ activeProbeResult: 'error', probeFailureClass: 'network_missing', rollbackAvailable: false }),
+    })).toThrow()
+    expect(() => publishedOutcome({
+      result: 'unchanged',
+      probe: healthyProbe({ windowId: 'v1:Taipei:2026-07-27:0317' }),
+    })).toThrow()
+    expect(() => publishedOutcome({
+      result: 'unchanged',
+      probe: healthyProbe({ activeVersion: 'different-version' }),
+    })).toThrow()
+  })
+
+  it('keeps a hard probe failure attached to the matching failed window', () => {
+    const outcome = publishedOutcome({
+      result: 'failed',
+      failureClass: 'network_missing',
+      probe: healthyProbe({
+        activeProbeResult: 'error', probeFailureClass: 'network_missing', rollbackAvailable: false,
+        hardChecksPassed: 5,
+      }),
+    })
+    expect(outcome).toMatchObject({ result: 'failed', failureClass: 'network_missing' })
+    expect(outcome.probe).toMatchObject({ activeProbeResult: 'error', probeFailureClass: 'network_missing' })
+  })
+
+  it('creates one authoritative probe event without artifact identity', () => {
+    const event = createSnapshotProbeEvent(healthyProbe(), '0123456789abcdef0123456789abcdef01234567')
+    expect(parseTelemetryEvent(event)).toEqual(event)
+    expect(event).toMatchObject({
+      event: 'snapshot_probe_completed', result: 'success', operation: 'snapshot_probe',
+      trafficClass: 'publish_smoke', versionRole: 'active', hardChecksPassed: 11,
+    })
+    expect(JSON.stringify(event)).not.toMatch(/routeUid|placeId|stopUid|artifact|https?:|stack|message/i)
   })
 
   it('requires a failure class only for failed terminal outcomes', () => {

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
+import { resolveRollbackAuthority } from './rollback-authority.mjs'
 
 const city = process.argv[2]
 if (!city) throw new Error('Usage: npm run snapshot:rollback -- <city> [version]')
@@ -22,7 +23,12 @@ const client = new AwsClient({ accessKeyId, secretAccessKey, service: 's3', regi
 const baseUrl = `https://${accountId}.r2.cloudflarestorage.com/mochi-transit-shapes`
 const stateKey = `snapshots/state/${city}.json`
 const state = await getJson(stateKey)
-if (!state?.version) throw new Error(`No published snapshot state found for ${city}`)
+const activeRows = queryD1(`SELECT active_version FROM dataset_versions WHERE city_code=${sql(city)} LIMIT 1`)
+const authoritativeActiveVersion = resolveRollbackAuthority({
+  city,
+  state,
+  d1ActiveVersion: activeRows[0]?.results?.[0]?.active_version,
+})
 const targetVersion = process.argv[3] ?? state.previousVersion
 if (!targetVersion) throw new Error(`No previous snapshot version recorded for ${city}`)
 if (targetVersion === state.version) throw new Error(`${targetVersion} is already the recorded active version`)
@@ -43,7 +49,7 @@ if (!counts || Number(counts.routes) <= 0 || Number(counts.patterns) <= 0 || Num
   throw new Error(`Target snapshot ${targetVersion} is incomplete in D1`)
 }
 
-const currentVersion = state.version
+const currentVersion = authoritativeActiveVersion
 activate(targetVersion)
 try {
   await smoke(targetVersion)

@@ -6,7 +6,13 @@ import { validateSnapshot } from './transit-snapshot/validate.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
 import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
-import { snapshotProgressMarker, snapshotTerminalMarker } from './transit-snapshot/window-contract.mjs'
+import { snapshotProbeMarker, snapshotProgressMarker, snapshotTerminalMarker } from './transit-snapshot/window-contract.mjs'
+import {
+  probeActiveSnapshot,
+  readBoundedResponseJson,
+  readBoundedResponseText,
+} from './transit-snapshot/active-probe.mjs'
+import { queryD1 as queryD1Rest, TRANSIT_D1_DATABASE_ID } from './transit-snapshot/window-d1.mjs'
 
 const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
@@ -155,11 +161,27 @@ console.log(JSON.stringify(snapshotProgressMarker(CITY, 'source_compare', {
 })))
 if (previousState && process.env.SNAPSHOT_FORCE !== '1') {
   if (previousState?.contentHash === contentHash) {
+    const probe = await probeActiveSnapshot({
+      city: CITY,
+      windowId: process.env.SNAPSHOT_WINDOW_ID ?? `local:${CITY}:${lastSourceCheckAt.slice(0, 10)}`,
+      state: previousState,
+      query: queryActiveProbeD1,
+      r2: {
+        getJson: s3GetJson,
+        head: s3HeadObject,
+        readPrefix: s3ReadPrefix,
+      },
+      publicApi: { getJson: fetchProbePublicJson },
+    })
+    console.log(JSON.stringify(snapshotProbeMarker(probe)))
+    if (probe.activeProbeResult === 'error') {
+      throw new Error('Unchanged active snapshot probe failed')
+    }
     console.log(JSON.stringify(snapshotTerminalMarker(CITY, 'unchanged', {
       lastSourceCheckAt,
       lastPublishedAt: previousPublishedAt,
-      activeVersion: previousState.version,
-      previousVersion: previousState.previousVersion,
+      activeVersion: probe.activeVersion,
+      previousVersion: probe.previousVersion,
     })))
     console.log(JSON.stringify({ city: CITY, skipped: true, reason: 'unchanged', version: previousState.version }))
     process.exit(0)
@@ -775,7 +797,20 @@ async function fetchPublicJson(url) {
     await response.arrayBuffer()
     throw new Error(`HTTP ${response.status} for ${new URL(url).pathname}`)
   }
-  return await response.json()
+  return await readBoundedResponseJson(response, 2 * 1024 * 1024)
+}
+
+async function fetchProbePublicJson(path) {
+  const baseUrl = process.env.SNAPSHOT_SMOKE_BASE_URL ?? 'https://bus.moc96336.com'
+  const response = await fetch(new URL(path, baseUrl), {
+    signal: AbortSignal.timeout(15_000),
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error('Public snapshot probe request failed')
+  }
+  return readBoundedResponseJson(response, 2 * 1024 * 1024)
 }
 
 async function assertPublicNetworkVersion(url, targetVersion) {
@@ -823,7 +858,25 @@ async function s3GetJson(key) {
     await response.arrayBuffer()
     throw new Error(`R2 GET ${key} failed (${response.status})`)
   }
-  return await response.json()
+  return await readBoundedResponseJson(response, 1024 * 1024)
+}
+async function s3HeadObject(key) {
+  const response = await r2.client.fetch(objectUrl(key), { method: 'HEAD' })
+  await response.body?.cancel().catch(() => undefined)
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error('R2 snapshot probe HEAD failed')
+  const size = Number(response.headers.get('Content-Length'))
+  return { size: Number.isFinite(size) && size >= 0 ? size : null, etag: response.headers.get('ETag') }
+}
+async function s3ReadPrefix(key, maximumBytes) {
+  const response = await r2.client.fetch(objectUrl(key), {
+    headers: { Range: `bytes=0-${maximumBytes - 1}` },
+  })
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error('R2 snapshot probe range read failed')
+  }
+  return readBoundedResponseText(response, maximumBytes)
 }
 function objectUrl(key) {
   // key 內含 ':' 等字元,SigV4 的 canonical URI 要求 percent-encoding,
@@ -905,4 +958,31 @@ function queryRemoteD1(sql) {
   ], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(`Unable to query remote D1: ${result.stderr}`)
   return JSON.parse(result.stdout)
+}
+async function queryActiveProbeD1(sql, params) {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? snapshotVars.CLOUDFLARE_ACCOUNT_ID ?? workerVars.CLOUDFLARE_ACCOUNT_ID
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN ?? snapshotVars.CLOUDFLARE_API_TOKEN ?? workerVars.CLOUDFLARE_API_TOKEN
+  if (accountId && apiToken) {
+    return queryD1Rest({
+      accountId,
+      apiToken,
+      databaseId: TRANSIT_D1_DATABASE_ID,
+      fetchImpl: fetch,
+      sql,
+      params,
+    })
+  }
+  // Local publishing may authenticate Wrangler interactively instead of carrying an API token.
+  // Inputs are already strict city/version/sample values; use the existing remote CLI as fallback.
+  const bound = bindSqlParameters(sql, params)
+  return queryRemoteD1(bound)[0]?.results ?? []
+}
+function bindSqlParameters(sql, params) {
+  let index = 0
+  const bound = sql.replaceAll('?', () => {
+    if (index >= params.length) throw new Error('Snapshot probe SQL parameter mismatch')
+    return sqlValue(params[index++])
+  })
+  if (index !== params.length) throw new Error('Snapshot probe SQL parameter mismatch')
+  return bound
 }

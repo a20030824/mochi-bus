@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto'
+import {
+  SNAPSHOT_PROBE_DIAGNOSTIC_WARNINGS,
+  SNAPSHOT_PROBE_FAILURE_CLASSES,
+  validateProbeResult,
+} from './active-probe.mjs'
 
 export const SNAPSHOT_WINDOW_SCHEMA_VERSION = 1
-export const SNAPSHOT_WINDOW_EVENT_SCHEMA = 4
+export const SNAPSHOT_WINDOW_EVENT_SCHEMA = 5
 export const SNAPSHOT_WINDOW_RESULTS = Object.freeze(['published', 'unchanged', 'failed'])
 export const SNAPSHOT_WINDOW_FAILURE_CLASSES = Object.freeze([
   'none',
@@ -16,6 +21,7 @@ export const SNAPSHOT_WINDOW_FAILURE_CLASSES = Object.freeze([
   'snapshot_rollback',
   'snapshot_finalize',
   'snapshot_window_record_write',
+  ...SNAPSHOT_PROBE_FAILURE_CLASSES.filter((value) => value !== 'none' && value !== 'unknown'),
   'unknown',
 ])
 
@@ -106,6 +112,11 @@ export function snapshotTerminalMarker(city, result, fields = {}, now = new Date
   })
 }
 
+export function snapshotProbeMarker(probe) {
+  const safe = validateProbeResult(probe)
+  return Object.freeze({ event: 'snapshot_active_probe', ...safe })
+}
+
 export function parsePublisherMarker(value, city) {
   if (!value || typeof value !== 'object' || value.city !== city) return undefined
   try {
@@ -114,6 +125,10 @@ export function parsePublisherMarker(value, city) {
     }
     if (value.event === 'snapshot_window_terminal') {
       return snapshotTerminalMarker(city, value.result, value, new Date(validIso(value.at)))
+    }
+    if (value.event === 'snapshot_active_probe') {
+      const probe = validateProbeResult(value)
+      return probe.city === city ? Object.freeze({ event: 'snapshot_active_probe', ...probe }) : undefined
     }
   } catch {
     return undefined
@@ -152,6 +167,39 @@ export function createSnapshotWindowEvent(outcome, releaseSha = null) {
   })
 }
 
+export function createSnapshotProbeEvent(probe, releaseSha = null) {
+  const safe = validateProbeResult(probe)
+  return Object.freeze({
+    eventSchema: SNAPSHOT_WINDOW_EVENT_SCHEMA,
+    event: 'snapshot_probe_completed',
+    releaseSha: releaseSha && SAFE_SHA.test(releaseSha) ? releaseSha : null,
+    workerVersionId: null,
+    workerCreatedAt: null,
+    deploymentId: null,
+    city: safe.city,
+    operation: 'snapshot_probe',
+    result: safe.activeProbeResult,
+    source: 'snapshot',
+    snapshotVersion: safe.activeVersion,
+    httpStatusClass: 'none',
+    latencyBucket: safe.latencyBucket,
+    cacheResult: 'not_applicable',
+    trafficClass: 'publish_smoke',
+    sampleProbability: 1,
+    failureClass: safe.probeFailureClass,
+    emptyReason: 'not_applicable',
+    qualityBucket: 'not_applicable',
+    windowId: safe.windowId,
+    versionRole: 'active',
+    probeGroup: 'active_snapshot',
+    rollbackAvailable: safe.rollbackAvailable,
+    probeCaseVersion: safe.probeCaseVersion,
+    sampleCaseId: safe.sampleCaseId,
+    hardChecksPassed: safe.hardChecksPassed,
+    diagnosticWarningCount: safe.diagnosticWarnings.length,
+  })
+}
+
 export function validateWindowOutcome(value) {
   if (!value || typeof value !== 'object') throw new Error('Invalid snapshot window outcome')
   assertCity(value.city)
@@ -161,6 +209,21 @@ export function validateWindowOutcome(value) {
     throw new Error('Snapshot result and failure class conflict')
   }
   if (value.runKind !== 'scheduled' && value.runKind !== 'manual') throw new Error('Invalid snapshot run kind')
+  const probe = value.probe === null || value.probe === undefined ? null : validateProbeResult(value.probe)
+  if (value.result === 'unchanged' && (!probe || probe.activeProbeResult === 'error')) {
+    throw new Error('Unchanged snapshot requires a healthy active probe')
+  }
+  if (value.result === 'published' && probe) throw new Error('Published snapshot cannot include unchanged probe')
+  if (probe && (probe.city !== value.city || probe.windowId !== value.windowId)) {
+    throw new Error('Snapshot probe and terminal window identity conflict')
+  }
+  if (probe && probe.activeVersion !== nullableIdentifier(value.activeVersion)) {
+    throw new Error('Snapshot probe and terminal active version conflict')
+  }
+  if (probe?.activeProbeResult === 'error'
+    && (value.result !== 'failed' || value.failureClass !== probe.probeFailureClass)) {
+    throw new Error('Failed active probe must fail the window')
+  }
   return Object.freeze({
     schemaVersion: SNAPSHOT_WINDOW_SCHEMA_VERSION,
     city: value.city,
@@ -180,13 +243,14 @@ export function validateWindowOutcome(value) {
     failureClass: value.failureClass,
     runKind: value.runKind,
     forcePublish: value.forcePublish === true,
+    probe,
   })
 }
 
 export function safeWindowSummary(outcome, durableRecordWrite) {
   const safe = validateWindowOutcome(outcome)
   return parseWindowSummary({
-    schemaVersion: 1,
+    schemaVersion: 2,
     city: safe.city,
     windowId: safe.windowId,
     result: safe.result,
@@ -196,19 +260,45 @@ export function safeWindowSummary(outcome, durableRecordWrite) {
     lastPublishedAt: safe.lastPublishedAt,
     failureClass: safe.failureClass,
     durableRecordWrite: durableRecordWrite === 'success' ? 'success' : 'failed',
+    activeProbeResult: safe.probe?.activeProbeResult ?? null,
+    rollbackAvailable: safe.probe?.rollbackAvailable ?? null,
+    probeFailureClass: safe.probe?.probeFailureClass ?? null,
+    diagnosticWarnings: safe.probe?.diagnosticWarnings ?? [],
   })
 }
 
 export function parseWindowSummary(value) {
-  if (!value || typeof value !== 'object' || value.schemaVersion !== 1) throw new Error('Invalid window summary')
+  if (!value || typeof value !== 'object' || value.schemaVersion !== 2) throw new Error('Invalid window summary')
   assertCity(value.city)
   if (!SNAPSHOT_WINDOW_RESULTS.includes(value.result)) throw new Error('Invalid window summary result')
   if (!SNAPSHOT_WINDOW_FAILURE_CLASSES.includes(value.failureClass)) throw new Error('Invalid window summary failure class')
   if (value.durableRecordWrite !== 'success' && value.durableRecordWrite !== 'failed') {
     throw new Error('Invalid durable record status')
   }
+  if (!(value.activeProbeResult === null || ['success', 'degraded', 'error'].includes(value.activeProbeResult))) {
+    throw new Error('Invalid summary probe result')
+  }
+  if (!(value.rollbackAvailable === null || typeof value.rollbackAvailable === 'boolean')) {
+    throw new Error('Invalid summary rollback status')
+  }
+  if (!(value.probeFailureClass === null || SNAPSHOT_PROBE_FAILURE_CLASSES.includes(value.probeFailureClass))) {
+    throw new Error('Invalid summary probe failure')
+  }
+  if (!Array.isArray(value.diagnosticWarnings)
+    || value.diagnosticWarnings.some((warning) => !SNAPSHOT_PROBE_DIAGNOSTIC_WARNINGS.includes(warning))) {
+    throw new Error('Invalid summary diagnostics')
+  }
+  if (value.result === 'unchanged' && value.activeProbeResult !== 'success' && value.activeProbeResult !== 'degraded') {
+    throw new Error('Unchanged summary requires active probe evidence')
+  }
+  if (value.activeProbeResult === 'error' && value.result !== 'failed') {
+    throw new Error('Failed probe summary must fail the window')
+  }
+  if (value.activeProbeResult === 'success' && value.probeFailureClass !== 'none') {
+    throw new Error('Successful probe summary has a failure class')
+  }
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     city: value.city,
     windowId: safeIdentifier(value.windowId),
     result: value.result,
@@ -218,6 +308,10 @@ export function parseWindowSummary(value) {
     lastPublishedAt: nullableIso(value.lastPublishedAt),
     failureClass: value.failureClass,
     durableRecordWrite: value.durableRecordWrite,
+    activeProbeResult: value.activeProbeResult,
+    rollbackAvailable: value.rollbackAvailable,
+    probeFailureClass: value.probeFailureClass,
+    diagnosticWarnings: Object.freeze([...value.diagnosticWarnings]),
   })
 }
 

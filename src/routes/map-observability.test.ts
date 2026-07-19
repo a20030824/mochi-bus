@@ -294,7 +294,10 @@ describe('map API completion callsites', () => {
     const realtimeResponse = await map.request(url, {
       headers: { Authorization: 'Bearer personal-token' },
     }, environment({ placeBundle: bundle }))
-    expect(await realtimeResponse.json()).toMatchObject({ scheduleSource: 'place-bundle' })
+    expect(await realtimeResponse.json()).toMatchObject({
+      scheduleSource: 'place-bundle',
+      snapshotVersion: 'v1',
+    })
     expect(capturedEvent(log, 'map_place_arrivals')).toMatchObject({
       result: 'success',
       source: 'realtime',
@@ -333,7 +336,11 @@ describe('map API completion callsites', () => {
     const degradedResponse = await map.request(url, {
       headers: { Authorization: 'Bearer personal-token' },
     }, environment({ placeBundle: bundle }))
-    expect(await degradedResponse.json()).toMatchObject({ warning: 'tdx-rate-limit' })
+    expect(await degradedResponse.json()).toMatchObject({
+      scheduleSource: 'place-bundle',
+      snapshotVersion: 'v1',
+      warning: 'tdx-rate-limit',
+    })
     expect(capturedEvent(log, 'map_place_arrivals')).toMatchObject({
       result: 'degraded',
       source: 'fallback',

@@ -3,6 +3,26 @@ import { runSnapshotWindow } from './run-snapshot-window.mjs'
 
 const sourceCheckedAt = '2026-07-19T19:20:00.000Z'
 
+function healthyProbe(overrides = {}) {
+  return {
+    probeSchemaVersion: 1,
+    city: 'Taipei',
+    windowId: 'v1:Taipei:2026-07-20:0317',
+    activeVersion: 'v1',
+    previousVersion: 'v0',
+    activeProbeAt: '2026-07-19T19:26:00.000Z',
+    activeProbeResult: 'success',
+    probeFailureClass: 'none',
+    rollbackAvailable: true,
+    probeCaseVersion: 1,
+    sampleCaseId: 'case_0123456789ab',
+    hardChecksPassed: 11,
+    diagnosticWarnings: [],
+    latencyBucket: '1_3s',
+    ...overrides,
+  }
+}
+
 function environment(overrides = {}) {
   return {
     GITHUB_RUN_ID: '29500000000',
@@ -46,6 +66,7 @@ function terminal(result, overrides = {}) {
       activeVersion: result === 'published' ? 'v2' : 'v1',
       previousVersion: 'v0',
     },
+    probe: result === 'unchanged' ? healthyProbe() : null,
     ...overrides,
   }
 }
@@ -152,6 +173,60 @@ describe('snapshot window runner', () => {
     })
   })
 
+  it('fails an unchanged window when the active probe fails without changing publication time', async () => {
+    const store = fakeStore()
+    const result = await runSnapshotWindow({
+      city: 'Taipei', env: environment(), now: clock(), store,
+      publisher: async () => ({
+        exitCode: 1,
+        lastPhase: 'source_compare',
+        lastSourceCheckAt: sourceCheckedAt,
+        lastPublishedAt: '2026-07-12T19:27:00.000Z',
+        previousVersion: 'v0',
+        terminal: null,
+        probe: healthyProbe({
+          activeProbeResult: 'error', probeFailureClass: 'network_missing',
+          rollbackAvailable: false, hardChecksPassed: 5,
+        }),
+      }),
+      emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
+    })
+    expect(result.outcome).toMatchObject({
+      result: 'failed', failureClass: 'network_missing', activeVersion: 'v1',
+      lastSourceCheckAt: sourceCheckedAt, lastPublishedAt: '2026-07-12T19:27:00.000Z',
+    })
+    expect(result.outcome.probe).toMatchObject({ activeProbeResult: 'error', hardChecksPassed: 5 })
+    expect(store.complete).toHaveBeenCalledWith(result.outcome)
+  })
+
+  it('fails closed when an unchanged terminal marker has no probe evidence', async () => {
+    const result = await runSnapshotWindow({
+      city: 'Taipei', env: environment(), now: clock(), store: fakeStore(),
+      publisher: async () => terminal('unchanged', { probe: null }),
+      emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.outcome).toMatchObject({
+      result: 'failed', failureClass: 'snapshot_source_compare', activeVersion: 'v1', probe: null,
+    })
+  })
+
+  it('keeps active usable when only rollback capability is degraded', async () => {
+    const result = await runSnapshotWindow({
+      city: 'Taipei', env: environment(), now: clock(), store: fakeStore(),
+      publisher: async () => terminal('unchanged', {
+        probe: healthyProbe({
+          activeProbeResult: 'degraded', probeFailureClass: 'previous_unavailable',
+          rollbackAvailable: false, diagnosticWarnings: ['previous_unavailable'],
+        }),
+      }),
+      emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
+    })
+    expect(result.ok).toBe(true)
+    expect(result.outcome).toMatchObject({ result: 'unchanged', failureClass: 'none' })
+    expect(result.summary).toMatchObject({ activeProbeResult: 'degraded', rollbackAvailable: false })
+  })
+
   it('reuses the original workflow window on a GitHub rerun', async () => {
     const store = fakeStore({
       findWindowForWorkflowRun: vi.fn(async () => ({
@@ -162,7 +237,7 @@ describe('snapshot window runner', () => {
     })
     const result = await runSnapshotWindow({
       city: 'Taipei', env: environment({ GITHUB_RUN_ATTEMPT: '2' }), now: clock(), store,
-      publisher: async () => terminal('unchanged'),
+      publisher: async () => terminal('unchanged', { probe: healthyProbe({ windowId: 'v1:Taipei:2026-07-13:0317' }) }),
       emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
     })
     expect(result.outcome).toMatchObject({
@@ -196,6 +271,18 @@ describe('snapshot window runner', () => {
     expect(result.outcome.result).toBe('published')
   })
 
+  it('does not touch the active snapshot when durable probe evidence cannot be written', async () => {
+    const store = fakeStore({ complete: vi.fn(async () => { throw new Error('probe table unavailable') }) })
+    const result = await runSnapshotWindow({
+      city: 'Taipei', env: environment(), now: clock(), store,
+      publisher: async () => terminal('unchanged'),
+      emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
+    })
+    expect(result).toMatchObject({ ok: false, durableRecordWrite: 'failed' })
+    expect(result.outcome).toMatchObject({ result: 'unchanged', activeVersion: 'v1' })
+    expect(store.readActiveSnapshot).toHaveBeenCalledOnce()
+  })
+
   it('recovers from a start-record failure when terminal upsert succeeds', async () => {
     const store = fakeStore({ recordStart: vi.fn(async () => { throw new Error('temporary') }) })
     const result = await runSnapshotWindow({
@@ -213,7 +300,7 @@ describe('snapshot window runner', () => {
     })
     expect(store.readActiveSnapshot).toHaveBeenCalledTimes(3)
     expect(result.outcome).toMatchObject({
-      result: 'failed', failureClass: 'snapshot_active_pointer_read', activeVersion: null,
+      result: 'failed', failureClass: 'active_pointer_invalid', activeVersion: null,
     })
   })
 
@@ -236,7 +323,8 @@ describe('snapshot window runner', () => {
       publisher: async () => terminal('unchanged'), emitter: (event) => events.push(event),
       summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
     })
-    expect(events).toHaveLength(1)
-    expect(JSON.stringify(events[0])).not.toMatch(/token|authorization|https?:|routeUid|stopUid|stack|message/i)
+    expect(events).toHaveLength(2)
+    expect(events.map((event) => event.event)).toEqual(['snapshot_window_completed', 'snapshot_probe_completed'])
+    expect(JSON.stringify(events)).not.toMatch(/token|authorization|https?:|routeUid|stopUid|stack|message/i)
   })
 })

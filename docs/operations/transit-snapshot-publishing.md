@@ -49,7 +49,7 @@ Window event／D1 outcome 寫入與產品 pointer 分離。寫入失敗不得 ro
 1. 先查 `dataset_versions` 與公開 routes API，確定實際 active version；不要從預期 version 推測。
 2. 查該 city/window 的 attempts 與 canonical row；若 attempt 已有 terminal、canonical 缺失，依 GitHub summary 的嚴格欄位重跑同一 workflow attempt，勿手填 raw error。
 3. 若 publisher 已成功而只有 record write 失敗，不要盲目 rollback；修復 D1 可用性後 rerun 同一 window，idempotent upsert 會保留成功且不降級。
-4. migration step 本身失敗時，本批 publisher 尚未開始，因此不會有 terminal record；保留 workflow failure，交由 A5b 之後的 watchdog 推導 missing 並重跑。
+4. migration step 本身失敗時，本批 publisher 尚未開始，因此不會有 terminal record；保留 workflow failure，交由 A6 watchdog 推導 missing 並重跑。
 
 驗證查詢：
 
@@ -58,7 +58,39 @@ npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, wind
 npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, window_id, attempt_id, result, started_at, completed_at, failure_class FROM snapshot_window_attempts WHERE city_code='Chiayi' ORDER BY started_at DESC LIMIT 10"
 ```
 
-Window state 只證明同步流程的 terminal 事實，不證明 active R2 artifacts 仍完整。unchanged path 的 D1/R2/public artifact probe 屬 A5b；本輪不得因 `result=unchanged` 單獨宣稱城市 Green。
+### Unchanged active health probe
+
+`source hash unchanged` 現在只是進入唯讀 probe 的條件，不再直接成功退出。只有下列 hard checks 全過，window 才能寫 `unchanged`：
+
+- D1 `dataset_versions.active_version` 存在且為權威。
+- active routes/patterns/stops/places/pattern stops 非零，且無 catalogue route 缺 pattern。
+- R2 manifest 的 city/version/counts 與 D1 一致，並宣告 network/shape/schedule/place 類 artifacts。
+- network HEAD size 符合 manifest，前 64 KiB metadata 宣告同一 city/version。
+- public routes schema/source/version/count 正確。
+- deterministic route detail 至少兩站。
+- deterministic place arrivals 實際使用 active `place-bundle`。
+
+任一 hard failure：window=`failed`、`last_source_check_at` 可更新、`last_published_at` 不更新；不改 active pointer，也不自動 force publish。固定 failure class 可直接在 GitHub summary 或 `snapshot_active_probes` 查詢。
+
+State pointer mismatch、previous 不完整及非核心 rotating shape/schedule HEAD 失敗屬診斷 warning。Current active 全部 hard checks 健康時，window 仍為 `unchanged`，但 probe=`degraded`、`rollback_available=0`，summary 列入 `unchanged-rollback-degraded`。這代表目前服務可用，但復原能力不足，不得標成 active unavailable。
+
+Sample 使用 `SHA-256(city + windowId + probeCaseVersion) % candidateCount`；同 window rerun 可重現、跨週輪替。只保存 `sample_case_id`，不記 route/place/stop identity或 artifact key。雙北 network 只做 HEAD + 64 KiB Range/prefix；bounded reader 在 Range 被忽略時也會取消，不下載、parse 或 index 完整 network。
+
+`network.json` schema v1 的序列化格式契約是頂層前三個欄位固定依序為 `schemaVersion`、`city`、`version`；publisher 以同一 object insertion order 產生 JSON，因此 metadata 必須在開頭數百 bytes 內完整出現。probe 對截斷 token、缺少 metadata 或在 metadata 前插入其他欄位一律 fail closed。若未來 network schema 無法維持此前綴契約，應先新增獨立小型 metadata object 並升級 probe schema，不可只放寬到搜尋任意 64 KiB 內容。
+
+Window terminal 與 probe evidence 由同一 D1 batch寫入：
+
+- `snapshot_probe_attempts`：每個 attempt 的 probe history。
+- `snapshot_active_probes`：同 city/window 的 canonical probe outcome；成功或 degraded 時可作為 `unchanged` evidence，若該 window 尚未成功則也可能保留 error outcome。
+- `snapshot_probe_completed`：單一整體 probe completion；子檢查不加入分母。
+
+驗證查詢：
+
+```powershell
+npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, window_id, active_probe_result, probe_failure_class, rollback_available, active_version, hard_checks_passed, diagnostic_warnings FROM snapshot_active_probes WHERE city_code='Chiayi' ORDER BY active_probe_at DESC LIMIT 5"
+```
+
+`snapshot_windows.result='unchanged'` 必須能 join 到同 window 的 `snapshot_active_probes` success/degraded evidence；缺 row 視為 observation incomplete，不可宣稱 fully observed。07:30 `missing` 與每日 22 城 public drift probe 留給 A6。
 
 ## Rollback
 
@@ -74,7 +106,16 @@ npm run snapshot:rollback -- Chiayi
 npm run snapshot:rollback -- Chiayi 20260711T000000000Z
 ```
 
-Rollback 會先確認目標 D1 rows 與 R2 manifest/network 存在，切換後再跑公開 smoke；若 smoke 失敗，會自動恢復原版本。成功後 state 的 active/previous 會互換，因此可以再次執行以復原 rollback。
+Rollback 開始時先讀 D1 active pointer。D1 是 current service 唯一權威；若 R2 state.version 與 D1 active 分歧，工具會 fail closed，必須先 reconcile，不能讓 state 決定 current 或 rollback target。權威一致後才確認目標 D1 rows 與 R2 manifest/network，切換後再跑公開 smoke；若 smoke 失敗，會自動恢復原版本。成功後 state 的 active/previous 會互換，因此可以再次執行以復原 rollback。
+
+### Authority mismatch repair path
+
+權威資料分歧時不提供略過完整性檢查的 `--force`。人工修復順序固定為：
+
+1. 查 `dataset_versions.active_version`，以 D1 確認目前線上版本。
+2. 以 manifest、network metadata 與核心 D1 counts 驗證指定 rollback target。
+3. 依 D1 active reconcile R2 state 的 active／previous metadata；reconcile 前不得修改 active pointer。
+4. 重新執行一般 rollback 命令，讓既有 public smoke gate 決定是否切換。
 
 ## Failure handling
 

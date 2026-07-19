@@ -74,6 +74,29 @@ function validWindowEvent(overrides: Partial<TelemetryEnvelope> = {}): Telemetry
   })
 }
 
+function validProbeEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryEnvelope {
+  return validEvent({
+    event: 'snapshot_probe_completed',
+    operation: 'snapshot_probe',
+    result: 'success',
+    source: 'snapshot',
+    snapshotVersion: '20260719T031700000Z',
+    httpStatusClass: 'none',
+    cacheResult: 'not_applicable',
+    trafficClass: 'publish_smoke',
+    sampleProbability: 1,
+    windowId: 'v1:Taipei:2026-07-20:0317',
+    versionRole: 'active',
+    probeGroup: 'active_snapshot',
+    rollbackAvailable: true,
+    probeCaseVersion: 1,
+    sampleCaseId: 'case_0123456789ab',
+    hardChecksPassed: 11,
+    diagnosticWarningCount: 0,
+    ...overrides,
+  })
+}
+
 describe('telemetry contract', () => {
   it('accepts and freezes an allowlisted common envelope', () => {
     const event = parseTelemetryEvent(validEvent())
@@ -174,6 +197,21 @@ describe('telemetry contract', () => {
     expect(parseTelemetryEvent(validWindowEvent({ result: 'success', windowResult: 'failed' }))).toBeUndefined()
     expect(parseTelemetryEvent(validWindowEvent({ snapshotVersion: 'other-version' }))).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), windowId: 'v1:Taipei:2026-07-20:0317' })).toBeUndefined()
+  })
+
+  it('accepts only bounded active snapshot probe metadata', () => {
+    expect(parseTelemetryEvent(validProbeEvent())).toEqual(validProbeEvent())
+    expect(parseTelemetryEvent(validProbeEvent({
+      result: 'degraded', failureClass: 'previous_unavailable',
+      rollbackAvailable: false, diagnosticWarningCount: 1,
+    }))).toBeDefined()
+    expect(parseTelemetryEvent(validProbeEvent({
+      result: 'error', failureClass: 'network_missing', rollbackAvailable: false, hardChecksPassed: 5,
+    }))).toBeDefined()
+    expect(parseTelemetryEvent(validProbeEvent({ hardChecksPassed: 12 }))).toBeUndefined()
+    expect(parseTelemetryEvent(validProbeEvent({ result: 'success', failureClass: 'network_missing' }))).toBeUndefined()
+    expect(parseTelemetryEvent(validProbeEvent({ versionRole: 'previous' }))).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validEvent(), sampleCaseId: 'case_0123456789ab' })).toBeUndefined()
   })
 })
 

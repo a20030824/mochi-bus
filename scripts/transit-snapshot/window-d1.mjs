@@ -65,6 +65,56 @@ WHERE
     >= (CASE snapshot_windows.result WHEN 'published' THEN 2 WHEN 'unchanged' THEN 1 ELSE 0 END)
 `
 
+export const COMPLETE_PROBE_ATTEMPT_SQL = `
+INSERT INTO snapshot_probe_attempts (
+  probe_schema_version, city_code, window_id, attempt_id, attempt_started_at,
+  active_version, previous_version, active_probe_at, active_probe_result,
+  probe_failure_class, rollback_available, probe_case_version, sample_case_id,
+  hard_checks_passed, diagnostic_warnings
+) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(city_code, window_id, attempt_id) DO UPDATE SET
+  attempt_started_at=excluded.attempt_started_at,
+  active_version=excluded.active_version,
+  previous_version=excluded.previous_version,
+  active_probe_at=excluded.active_probe_at,
+  active_probe_result=excluded.active_probe_result,
+  probe_failure_class=excluded.probe_failure_class,
+  rollback_available=excluded.rollback_available,
+  probe_case_version=excluded.probe_case_version,
+  sample_case_id=excluded.sample_case_id,
+  hard_checks_passed=excluded.hard_checks_passed,
+  diagnostic_warnings=excluded.diagnostic_warnings
+`
+
+export const UPSERT_CANONICAL_PROBE_SQL = `
+INSERT INTO snapshot_active_probes (
+  probe_schema_version, city_code, window_id, attempt_id, attempt_started_at,
+  active_version, previous_version, active_probe_at, active_probe_result,
+  probe_failure_class, rollback_available, probe_case_version, sample_case_id,
+  hard_checks_passed, diagnostic_warnings
+) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(city_code, window_id) DO UPDATE SET
+  probe_schema_version=excluded.probe_schema_version,
+  attempt_id=excluded.attempt_id,
+  attempt_started_at=excluded.attempt_started_at,
+  active_version=excluded.active_version,
+  previous_version=excluded.previous_version,
+  active_probe_at=excluded.active_probe_at,
+  active_probe_result=excluded.active_probe_result,
+  probe_failure_class=excluded.probe_failure_class,
+  rollback_available=excluded.rollback_available,
+  probe_case_version=excluded.probe_case_version,
+  sample_case_id=excluded.sample_case_id,
+  hard_checks_passed=excluded.hard_checks_passed,
+  diagnostic_warnings=excluded.diagnostic_warnings
+WHERE
+  (excluded.attempt_started_at > snapshot_active_probes.attempt_started_at
+    OR (excluded.attempt_started_at = snapshot_active_probes.attempt_started_at
+      AND excluded.active_probe_at >= snapshot_active_probes.active_probe_at))
+  AND (CASE excluded.active_probe_result WHEN 'success' THEN 2 WHEN 'degraded' THEN 1 ELSE 0 END)
+    >= (CASE snapshot_active_probes.active_probe_result WHEN 'success' THEN 2 WHEN 'degraded' THEN 1 ELSE 0 END)
+`
+
 const FIND_WORKFLOW_WINDOW_SQL = `
 SELECT window_id, scheduled_at, run_kind
 FROM snapshot_window_attempts
@@ -88,6 +138,7 @@ export function createD1WindowStore({
 }) {
   if (!accountId || !apiToken || !databaseId) throw new Error('Missing D1 window store configuration')
   const query = (sql, params) => queryD1({ accountId, apiToken, databaseId, fetchImpl, sql, params })
+  const batch = (queries) => queryD1Batch({ accountId, apiToken, databaseId, fetchImpl, queries })
 
   return Object.freeze({
     async findWindowForWorkflowRun(city, workflowRunId) {
@@ -116,13 +167,35 @@ export function createD1WindowStore({
 
     async complete(outcome) {
       const safe = validateWindowOutcome(outcome)
-      await query(COMPLETE_WINDOW_ATTEMPT_SQL, completeAttemptParams(safe))
-      await query(UPSERT_CANONICAL_WINDOW_SQL, canonicalParams(safe))
+      const queries = [
+        { sql: COMPLETE_WINDOW_ATTEMPT_SQL, params: completeAttemptParams(safe) },
+        { sql: UPSERT_CANONICAL_WINDOW_SQL, params: canonicalParams(safe) },
+      ]
+      if (safe.probe) {
+        const params = probeParams(safe)
+        queries.push(
+          { sql: COMPLETE_PROBE_ATTEMPT_SQL, params },
+          { sql: UPSERT_CANONICAL_PROBE_SQL, params },
+        )
+      }
+      await batch(queries)
     },
   })
 }
 
 export async function queryD1({ accountId, apiToken, databaseId, fetchImpl, sql, params }) {
+  const results = await requestD1({
+    accountId, apiToken, databaseId, fetchImpl,
+    body: { sql, params },
+  })
+  return results[0]
+}
+
+export async function queryD1Batch({ accountId, apiToken, databaseId, fetchImpl, queries }) {
+  return requestD1({ accountId, apiToken, databaseId, fetchImpl, body: queries })
+}
+
+async function requestD1({ accountId, apiToken, databaseId, fetchImpl, body }) {
   const response = await fetchImpl(
     `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/d1/database/${encodeURIComponent(databaseId)}/query`,
     {
@@ -131,7 +204,7 @@ export async function queryD1({ accountId, apiToken, databaseId, fetchImpl, sql,
         Authorization: `Bearer ${apiToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ sql, params }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
     },
   )
@@ -141,11 +214,12 @@ export async function queryD1({ accountId, apiToken, databaseId, fetchImpl, sql,
   } catch {
     throw new Error('D1 window query returned invalid JSON')
   }
-  const result = Array.isArray(payload?.result) ? payload.result[0] : undefined
-  if (!response.ok || payload?.success !== true || result?.success !== true || !Array.isArray(result.results)) {
+  const result = Array.isArray(payload?.result) ? payload.result : undefined
+  if (!response.ok || payload?.success !== true || !result?.length
+    || result.some((item) => item?.success !== true || !Array.isArray(item.results))) {
     throw new Error('D1 window query failed')
   }
-  return result.results
+  return result.map((item) => item.results)
 }
 
 function startParams(value) {
@@ -203,5 +277,25 @@ function canonicalParams(value) {
     value.failureClass,
     value.runKind,
     value.forcePublish ? 1 : 0,
+  ]
+}
+
+function probeParams(value) {
+  const probe = value.probe
+  return [
+    value.city,
+    value.windowId,
+    value.attemptId,
+    value.startedAt,
+    probe.activeVersion,
+    probe.previousVersion,
+    probe.activeProbeAt,
+    probe.activeProbeResult,
+    probe.probeFailureClass,
+    probe.rollbackAvailable ? 1 : 0,
+    probe.probeCaseVersion,
+    probe.sampleCaseId,
+    probe.hardChecksPassed,
+    JSON.stringify(probe.diagnosticWarnings),
   ]
 }

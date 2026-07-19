@@ -602,6 +602,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
       city,
       routes: arrivals,
       scheduleSource: bundle ? 'place-bundle' : 'route-objects',
+      snapshotVersion: bundle?.version ?? null,
       warning,
       realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
     }, 200, { 'Cache-Control': warning || c.req.header('Authorization') ? 'no-store' : 'public, max-age=15' })

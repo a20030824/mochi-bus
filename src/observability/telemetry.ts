@@ -1,7 +1,7 @@
 import { supportedCities } from '../config'
 import type { ReleaseIdentity } from './release-identity'
 
-export const TELEMETRY_EVENT_SCHEMA = 4 as const
+export const TELEMETRY_EVENT_SCHEMA = 5 as const
 
 export const telemetryEvents = [
   'api_operation_completed',
@@ -102,6 +102,26 @@ export const telemetryFailureClasses = [
   'snapshot_rollback',
   'snapshot_finalize',
   'snapshot_window_record_write',
+  'active_pointer_missing',
+  'active_pointer_invalid',
+  'active_rows_empty',
+  'route_without_pattern',
+  'manifest_missing',
+  'manifest_version_mismatch',
+  'manifest_count_mismatch',
+  'network_missing',
+  'network_version_mismatch',
+  'public_routes_failed',
+  'public_schema_invalid',
+  'public_version_mismatch',
+  'public_count_mismatch',
+  'route_sample_failed',
+  'place_bundle_sample_failed',
+  'state_pointer_mismatch',
+  'previous_unavailable',
+  'shape_sample_unavailable',
+  'schedule_sample_unavailable',
+  'probe_record_write_failed',
   'unknown',
 ] as const
 
@@ -147,7 +167,7 @@ export const telemetryLatencyBuckets = [
   'unknown',
 ] as const
 
-export const telemetryTrafficClasses = ['user', 'synthetic', 'snapshot_publish'] as const
+export const telemetryTrafficClasses = ['user', 'synthetic', 'snapshot_publish', 'publish_smoke'] as const
 export const telemetryHttpStatusClasses = ['2xx', '3xx', '4xx', '5xx', 'none'] as const
 export const telemetryTdxOperations = [
   'route_catalog',
@@ -170,6 +190,8 @@ export const telemetryDataAgeBuckets = [
   'not_applicable',
 ] as const
 export const telemetryWindowResults = ['published', 'unchanged', 'failed'] as const
+export const telemetryVersionRoles = ['active', 'previous'] as const
+export const telemetryProbeGroups = ['active_snapshot'] as const
 
 export type TelemetryEventName = typeof telemetryEvents[number]
 export type TelemetryOperation = typeof telemetryOperations[number]
@@ -188,6 +210,8 @@ export type TelemetryResolution = typeof telemetryResolutions[number]
 export type TelemetryRetryCountBucket = typeof telemetryRetryCountBuckets[number]
 export type TelemetryDataAgeBucket = typeof telemetryDataAgeBuckets[number]
 export type TelemetryWindowResult = typeof telemetryWindowResults[number]
+export type TelemetryVersionRole = typeof telemetryVersionRoles[number]
+export type TelemetryProbeGroup = typeof telemetryProbeGroups[number]
 export type TelemetryCity = typeof supportedCities[number][0]
 
 export type TelemetryEnvelope = Readonly<{
@@ -223,6 +247,13 @@ export type TelemetryEnvelope = Readonly<{
   activeVersion?: string | null
   previousVersion?: string | null
   workflowRunId?: string | null
+  versionRole?: TelemetryVersionRole
+  probeGroup?: TelemetryProbeGroup
+  rollbackAvailable?: boolean
+  probeCaseVersion?: number
+  sampleCaseId?: string
+  hardChecksPassed?: number
+  diagnosticWarningCount?: number
   errorFingerprint?: string
 }>
 
@@ -267,6 +298,13 @@ const allowedKeys = new Set<AllowedKey>([
   'activeVersion',
   'previousVersion',
   'workflowRunId',
+  'versionRole',
+  'probeGroup',
+  'rollbackAvailable',
+  'probeCaseVersion',
+  'sampleCaseId',
+  'hardChecksPassed',
+  'diagnosticWarningCount',
   'errorFingerprint',
 ])
 
@@ -310,6 +348,8 @@ const resolutions = new Set<string>(telemetryResolutions)
 const retryCountBuckets = new Set<string>(telemetryRetryCountBuckets)
 const dataAgeBuckets = new Set<string>(telemetryDataAgeBuckets)
 const windowResults = new Set<string>(telemetryWindowResults)
+const versionRoles = new Set<string>(telemetryVersionRoles)
+const probeGroups = new Set<string>(telemetryProbeGroups)
 const tdxUpstreamStatusClasses = new Set<string>(['2xx', '4xx', '5xx', 'none'])
 const tdxOnlyKeys = [
   'tdxOperation',
@@ -320,7 +360,11 @@ const tdxOnlyKeys = [
   'dataAgeBucket',
   'upstreamStatusClass',
 ] as const
-const windowOnlyKeys = ['windowId', 'windowResult', 'activeVersion', 'previousVersion', 'workflowRunId'] as const
+const windowTerminalOnlyKeys = ['windowResult', 'activeVersion', 'previousVersion', 'workflowRunId'] as const
+const probeOnlyKeys = [
+  'versionRole', 'probeGroup', 'rollbackAvailable', 'probeCaseVersion',
+  'sampleCaseId', 'hardChecksPassed', 'diagnosticWarningCount',
+] as const
 
 const safeIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const safeReleaseSha = /^[a-f0-9]{40}$/
@@ -369,6 +413,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
     if (value.result === 'error' && value.failureClass === 'none') return undefined
     if (!validTdxFields(value)) return undefined
     if (!validWindowFields(value)) return undefined
+    if (!validProbeFields(value)) return undefined
     if (value.errorFingerprint !== undefined && !identifier(value.errorFingerprint, safeErrorFingerprint)) return undefined
 
     return Object.freeze({
@@ -404,6 +449,13 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
       ...(value.activeVersion === undefined ? {} : { activeVersion: value.activeVersion as string | null }),
       ...(value.previousVersion === undefined ? {} : { previousVersion: value.previousVersion as string | null }),
       ...(value.workflowRunId === undefined ? {} : { workflowRunId: value.workflowRunId as string | null }),
+      ...(value.versionRole === undefined ? {} : { versionRole: value.versionRole as TelemetryVersionRole }),
+      ...(value.probeGroup === undefined ? {} : { probeGroup: value.probeGroup as TelemetryProbeGroup }),
+      ...(value.rollbackAvailable === undefined ? {} : { rollbackAvailable: value.rollbackAvailable as boolean }),
+      ...(value.probeCaseVersion === undefined ? {} : { probeCaseVersion: value.probeCaseVersion as number }),
+      ...(value.sampleCaseId === undefined ? {} : { sampleCaseId: value.sampleCaseId as string }),
+      ...(value.hardChecksPassed === undefined ? {} : { hardChecksPassed: value.hardChecksPassed as number }),
+      ...(value.diagnosticWarningCount === undefined ? {} : { diagnosticWarningCount: value.diagnosticWarningCount as number }),
       ...(value.errorFingerprint === undefined ? {} : { errorFingerprint: value.errorFingerprint as string }),
     })
   } catch {
@@ -467,8 +519,11 @@ function validTdxFields(value: Record<string, unknown>): boolean {
 
 function validWindowFields(value: Record<string, unknown>): boolean {
   const isWindowEvent = value.event === 'snapshot_window_completed'
-  if (!isWindowEvent) return !windowOnlyKeys.some((key) => Object.hasOwn(value, key))
-  if (!windowOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
+  if (!isWindowEvent) {
+    return !windowTerminalOnlyKeys.some((key) => Object.hasOwn(value, key))
+      && (value.event === 'snapshot_probe_completed' || !Object.hasOwn(value, 'windowId'))
+  }
+  if (!Object.hasOwn(value, 'windowId') || !windowTerminalOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
   if (!identifier(value.windowId, safeIdentifier)) return false
   if (!enumValue(value.windowResult, windowResults)) return false
   if (!nullableIdentifier(value.activeVersion, safeIdentifier)) return false
@@ -486,6 +541,31 @@ function validWindowFields(value: Record<string, unknown>): boolean {
     return value.result === 'error' && value.source === 'none' && value.failureClass !== 'none'
   }
   return value.result === 'success' && value.source === 'snapshot' && value.failureClass === 'none'
+}
+
+function validProbeFields(value: Record<string, unknown>): boolean {
+  const isProbeEvent = value.event === 'snapshot_probe_completed'
+  if (!isProbeEvent) return !probeOnlyKeys.some((key) => Object.hasOwn(value, key))
+  if (!Object.hasOwn(value, 'windowId') || !probeOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
+  if (!identifier(value.windowId, safeIdentifier)) return false
+  if (!enumValue(value.versionRole, versionRoles) || value.versionRole !== 'active') return false
+  if (!enumValue(value.probeGroup, probeGroups)) return false
+  if (typeof value.rollbackAvailable !== 'boolean') return false
+  if (!boundedInteger(value.probeCaseVersion, 1, 1000)) return false
+  if (!identifier(value.sampleCaseId, safeIdentifier)) return false
+  if (!boundedInteger(value.hardChecksPassed, 0, 11)) return false
+  if (!boundedInteger(value.diagnosticWarningCount, 0, 16)) return false
+  if (value.operation !== 'snapshot_probe'
+    || value.source !== 'snapshot'
+    || value.trafficClass !== 'publish_smoke'
+    || value.sampleProbability !== 1
+    || value.httpStatusClass !== 'none'
+    || value.cacheResult !== 'not_applicable'
+    || value.emptyReason !== 'not_applicable'
+    || value.qualityBucket !== 'not_applicable') return false
+  if (value.result === 'success') return value.failureClass === 'none' && value.diagnosticWarningCount === 0
+  if (value.result === 'degraded') return value.failureClass !== 'none' && Number(value.diagnosticWarningCount) > 0
+  return value.result === 'error' && value.failureClass !== 'none'
 }
 
 export function createTelemetryEnvelope(
@@ -583,6 +663,10 @@ function sampleProbability(value: unknown): value is number {
     && Number.isFinite(value)
     && value > 0
     && value <= 1
+}
+
+function boundedInteger(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum && value <= maximum
 }
 
 function sanitizedErrorType(value: unknown): string {

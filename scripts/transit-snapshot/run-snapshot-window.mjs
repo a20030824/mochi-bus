@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   createSnapshotWindowEvent,
+  createSnapshotProbeEvent,
   parsePublisherMarker,
   safeWindowSummary,
   snapshotAttemptId,
@@ -13,6 +14,7 @@ import {
   validateWindowOutcome,
 } from './window-contract.mjs'
 import { createD1WindowStore } from './window-d1.mjs'
+import { validateProbeResult } from './active-probe.mjs'
 
 const SUMMARY_ROOT = join('.transit-snapshot', 'window-results')
 
@@ -21,7 +23,7 @@ export async function runSnapshotWindow({
   env = process.env,
   now = () => new Date(),
   store,
-  publisher = () => runPublisherProcess(city, env),
+  publisher,
   emitter = (event) => console.log(JSON.stringify(event)),
   summaryWriter = writeWindowSummary,
   activeReadRetryDelayMs = 250,
@@ -65,13 +67,16 @@ export async function runSnapshotWindow({
 
   let publication
   try {
-    publication = await publisher()
+    publication = publisher
+      ? await publisher()
+      : await runPublisherProcess(city, { ...env, SNAPSHOT_WINDOW_ID: identity.windowId })
   } catch {
     publication = {
       exitCode: 1,
       lastPhase: 'source_fetch',
       lastSourceCheckAt: null,
       lastPublishedAt: null,
+      probe: null,
       terminal: null,
     }
   }
@@ -85,14 +90,29 @@ export async function runSnapshotWindow({
     safeErrorLog('snapshot_window_active_pointer_read_failed', city, identity.windowId)
   }
 
+  let probe = publication.probe ?? null
+  if (probe && (activeReadFailed || active.activeVersion !== probe.activeVersion)) {
+    probe = validateProbeResult({
+      ...probe,
+      activeVersion: active.activeVersion,
+      activeProbeResult: 'error',
+      probeFailureClass: 'active_pointer_invalid',
+      rollbackAvailable: false,
+      diagnosticWarnings: [],
+    })
+  }
   const successfulTerminal = publication.exitCode === 0
-    && (publication.terminal?.result === 'published' || publication.terminal?.result === 'unchanged')
+    && (publication.terminal?.result === 'published'
+      || (publication.terminal?.result === 'unchanged'
+        && probe !== null
+        && probe.activeProbeResult !== 'error'))
   const result = activeReadFailed ? 'failed'
     : successfulTerminal ? publication.terminal.result
       : 'failed'
   const failureClass = result !== 'failed' ? 'none'
-    : activeReadFailed ? 'snapshot_active_pointer_read'
-      : snapshotFailureClass(publication.lastPhase)
+    : probe?.activeProbeResult === 'error' ? probe.probeFailureClass
+      : activeReadFailed ? 'snapshot_active_pointer_read'
+        : snapshotFailureClass(publication.lastPhase)
   const completedAt = now().toISOString()
   const retainedPreviousActive = publication.previousVersion !== null
     && publication.previousVersion !== undefined
@@ -107,8 +127,12 @@ export async function runSnapshotWindow({
     lastSourceCheckAt: publication.lastSourceCheckAt ?? publication.terminal?.lastSourceCheckAt ?? null,
     lastPublishedAt,
     activeVersion: active.activeVersion,
-    previousVersion: publication.terminal?.previousVersion ?? publication.previousVersion ?? null,
+    previousVersion: probe?.previousVersion
+      ?? publication.terminal?.previousVersion
+      ?? publication.previousVersion
+      ?? null,
     failureClass,
+    probe,
   })
 
   let durableRecordWrite = 'success'
@@ -120,6 +144,7 @@ export async function runSnapshotWindow({
   }
 
   emitFailOpen(createSnapshotWindowEvent(outcome, scriptGitSha), emitter)
+  if (probe) emitFailOpen(createSnapshotProbeEvent(probe, scriptGitSha), emitter)
   const summary = safeWindowSummary(outcome, durableRecordWrite)
   try {
     await summaryWriter(summary)
@@ -143,6 +168,7 @@ export async function runPublisherProcess(city, env = process.env) {
     let lastPublishedAt = null
     let previousVersion = null
     let terminal = null
+    let probe = null
     let settled = false
     const child = spawn(process.execPath, ['scripts/sync-transit-snapshot.mjs', city], {
       env,
@@ -159,11 +185,13 @@ export async function runPublisherProcess(city, env = process.env) {
           lastSourceCheckAt = marker.lastSourceCheckAt ?? lastSourceCheckAt
           lastPublishedAt = marker.lastPublishedAt ?? lastPublishedAt
           previousVersion = marker.previousVersion ?? previousVersion
-        } else {
+        } else if (marker.event === 'snapshot_window_terminal') {
           terminal = marker
           lastSourceCheckAt = marker.lastSourceCheckAt ?? lastSourceCheckAt
           lastPublishedAt = marker.lastPublishedAt ?? lastPublishedAt
           previousVersion = marker.previousVersion ?? previousVersion
+        } else {
+          probe = marker
         }
       } catch {
         // Publisher diagnostics are forwarded, but only strict markers affect durable state.
@@ -178,7 +206,7 @@ export async function runPublisherProcess(city, env = process.env) {
     function finish(exitCode) {
       if (settled) return
       settled = true
-      resolve({ exitCode, lastPhase, lastSourceCheckAt, lastPublishedAt, previousVersion, terminal })
+      resolve({ exitCode, lastPhase, lastSourceCheckAt, lastPublishedAt, previousVersion, terminal, probe })
     }
   })
 }
