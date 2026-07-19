@@ -141,15 +141,17 @@ jobs:
           i = one(lines, lambda _i, x: x.strip() == "import { manifestReadLimit } from './transit-snapshot/manifest-read-limit.mjs'", 'manifest import')
           lines[i] = lines[i].replace('{ manifestReadLimit }', '{ manifestReadLimit, readManifestJson }')
 
-          i = one(
-              lines,
-              lambda k, x: x.strip() == 'getJson: s3GetJson,'
+          adapter_hits = [
+              k for k, x in enumerate(lines)
+              if x.strip() == 'getJson: s3GetJson,'
                   and k > 0 and lines[k - 1].strip() == 'r2: {'
-                  and k + 1 < len(lines) and lines[k + 1].strip() == 'head: s3HeadObject,',
-              'active probe R2 adapter',
-          )
-          indent = lines[i][:-len(lines[i].lstrip())]
-          lines.insert(i, indent + 'getManifest: s3GetManifest,')
+                  and k + 1 < len(lines) and lines[k + 1].strip() == 'head: s3HeadObject,'
+          ]
+          if len(adapter_hits) != 2:
+              raise SystemExit(f'active probe R2 adapters: expected 2 matches, found {len(adapter_hits)}')
+          for i in reversed(adapter_hits):
+              indent = lines[i][:-len(lines[i].lstrip())]
+              lines.insert(i, indent + 'getManifest: s3GetManifest,')
 
           i = one(lines, lambda _i, x: x.strip() == 'async function s3GetJson(key, maximumBytes = 1024 * 1024) {', 's3GetJson')
           lines[i:i] = [
