@@ -24,5 +24,14 @@ export function manifestReadLimit(expectedManifest) {
 export async function readManifestJson({ key, head, getJson }) {
   const metadata = await head(key)
   if (!metadata) return null
-  return getJson(key, manifestReadLimitFromBytes(metadata.size))
+
+  // Some R2 S3-compatible HEAD responses omit Content-Length. The caller used to
+  // normalize that absence to 0, which silently restored the one MiB floor and
+  // rejected valid large-city manifests. Unknown or zero size still stays
+  // bounded by the absolute manifest safety ceiling.
+  const maximumBytes = Number.isSafeInteger(metadata.size) && metadata.size > 0
+    ? manifestReadLimitFromBytes(metadata.size)
+    : MAX_MANIFEST_READ_LIMIT
+
+  return getJson(key, maximumBytes)
 }
