@@ -24,6 +24,7 @@
     "snapshot:chiayi": "node scripts/sync-transit-snapshot.mjs Chiayi",
     "snapshot:city": "node scripts/sync-transit-snapshot.mjs",
     "snapshot:window": "node scripts/transit-snapshot/run-snapshot-window.mjs",
+    "snapshot:watchdog": "node scripts/transit-snapshot/run-window-watchdog.mjs",
     "snapshot:rollback": "node scripts/transit-snapshot/rollback.mjs"
   },
   "dependencies": {

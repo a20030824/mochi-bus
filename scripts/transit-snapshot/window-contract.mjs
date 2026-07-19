@@ -4,9 +4,17 @@ import {
   SNAPSHOT_PROBE_FAILURE_CLASSES,
   validateProbeResult,
 } from './active-probe.mjs'
+import {
+  assertScheduledCity,
+  latestScheduledTaipeiDate,
+  scheduledSnapshotWindow,
+  taipeiDate,
+  taipeiLocalTimeAsUtc,
+  validDateOnly,
+} from './snapshot-schedule.mjs'
 
 export const SNAPSHOT_WINDOW_SCHEMA_VERSION = 1
-export const SNAPSHOT_WINDOW_EVENT_SCHEMA = 5
+export const SNAPSHOT_WINDOW_EVENT_SCHEMA = 6
 export const SNAPSHOT_WINDOW_RESULTS = Object.freeze(['published', 'unchanged', 'failed'])
 export const SNAPSHOT_WINDOW_FAILURE_CLASSES = Object.freeze([
   'none',
@@ -25,39 +33,21 @@ export const SNAPSHOT_WINDOW_FAILURE_CLASSES = Object.freeze([
   'unknown',
 ])
 
-const CITY_LOCAL_WEEKDAY = new Map([
-  ...['Taipei', 'NewTaipei'].map((city) => [city, 1]),
-  ...['Chiayi', 'Keelung', 'Hsinchu', 'HsinchuCounty'].map((city) => [city, 2]),
-  ...['Tainan', 'MiaoliCounty', 'NantouCounty', 'PenghuCounty', 'KinmenCounty', 'LienchiangCounty']
-    .map((city) => [city, 3]),
-  ...['ChiayiCounty', 'ChanghuaCounty', 'PingtungCounty'].map((city) => [city, 4]),
-  ['Taichung', 5],
-  ...['Kaohsiung', 'YunlinCounty'].map((city) => [city, 6]),
-  ...['Taoyuan', 'YilanCounty', 'HualienCounty', 'TaitungCounty'].map((city) => [city, 0]),
-])
-
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const SAFE_SHA = /^[a-f0-9]{40}$/
-const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
-const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000
-const SCHEDULE_HOUR = 3
-const SCHEDULE_MINUTE = 17
 
 export function snapshotWindowIdentity({ city, now = new Date(), windowType = 'scheduled', windowDate }) {
   assertCity(city)
   if (windowType !== 'scheduled' && windowType !== 'manual') throw new Error('Invalid snapshot window type')
   const current = validDate(now)
   const localDate = windowDate === undefined || windowDate === ''
-    ? windowType === 'scheduled' ? latestScheduledLocalDate(city, current) : taipeiDate(current)
+    ? windowType === 'scheduled' ? latestScheduledTaipeiDate(city, current) : taipeiDate(current)
     : validDateOnly(windowDate)
-  const slot = windowType === 'scheduled' ? '0317' : 'manual'
-  const scheduledAt = windowType === 'scheduled'
-    ? taipeiLocalTimeAsUtc(localDate, SCHEDULE_HOUR, SCHEDULE_MINUTE).toISOString()
-    : taipeiLocalTimeAsUtc(localDate, 0, 0).toISOString()
+  if (windowType === 'scheduled') return scheduledSnapshotWindow(city, localDate)
   return Object.freeze({
-    windowId: `v1:${city}:${localDate}:${slot}`,
-    scheduledAt,
+    windowId: `v1:${city}:${localDate}:manual`,
+    scheduledAt: taipeiLocalTimeAsUtc(localDate, 0, 0).toISOString(),
     runKind: windowType,
   })
 }
@@ -210,18 +200,21 @@ export function validateWindowOutcome(value) {
   }
   if (value.runKind !== 'scheduled' && value.runKind !== 'manual') throw new Error('Invalid snapshot run kind')
   const probe = value.probe === null || value.probe === undefined ? null : validateProbeResult(value.probe)
-  if (value.result === 'unchanged' && (!probe || probe.activeProbeResult === 'error')) {
-    throw new Error('Unchanged snapshot requires a healthy active probe')
+  if ((value.result === 'unchanged' || value.result === 'published')
+    && (!probe || probe.activeProbeResult === 'error')) {
+    throw new Error('Successful snapshot window requires healthy active probe evidence')
   }
-  if (value.result === 'published' && probe) throw new Error('Published snapshot cannot include unchanged probe')
   if (probe && (probe.city !== value.city || probe.windowId !== value.windowId)) {
     throw new Error('Snapshot probe and terminal window identity conflict')
   }
   if (probe && probe.activeVersion !== nullableIdentifier(value.activeVersion)) {
     throw new Error('Snapshot probe and terminal active version conflict')
   }
+  // A failed rollback keeps the rejected target active: the window fails as
+  // 'snapshot_rollback' while the persisted probe retains the original reason.
   if (probe?.activeProbeResult === 'error'
-    && (value.result !== 'failed' || value.failureClass !== probe.probeFailureClass)) {
+    && (value.result !== 'failed'
+      || (value.failureClass !== probe.probeFailureClass && value.failureClass !== 'snapshot_rollback'))) {
     throw new Error('Failed active probe must fail the window')
   }
   return Object.freeze({
@@ -315,37 +308,6 @@ export function parseWindowSummary(value) {
   })
 }
 
-function latestScheduledLocalDate(city, now) {
-  const weekday = CITY_LOCAL_WEEKDAY.get(city)
-  const local = new Date(now.getTime() + TAIPEI_OFFSET_MS)
-  const beforeSlot = local.getUTCHours() < SCHEDULE_HOUR
-    || (local.getUTCHours() === SCHEDULE_HOUR && local.getUTCMinutes() < SCHEDULE_MINUTE)
-  let daysBack = (local.getUTCDay() - weekday + 7) % 7
-  if (daysBack === 0 && beforeSlot) daysBack = 7
-  local.setUTCDate(local.getUTCDate() - daysBack)
-  return dateParts(local)
-}
-
-function taipeiDate(now) {
-  return dateParts(new Date(now.getTime() + TAIPEI_OFFSET_MS))
-}
-
-function dateParts(value) {
-  return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')}`
-}
-
-function taipeiLocalTimeAsUtc(date, hour, minute) {
-  const [year, month, day] = date.split('-').map(Number)
-  return new Date(Date.UTC(year, month - 1, day, hour, minute) - TAIPEI_OFFSET_MS)
-}
-
-function validDateOnly(value) {
-  if (!DATE_ONLY.test(value)) throw new Error('Invalid snapshot window date')
-  const parsed = new Date(`${value}T00:00:00.000Z`)
-  if (Number.isNaN(parsed.getTime()) || dateParts(parsed) !== value) throw new Error('Invalid snapshot window date')
-  return value
-}
-
 function validDate(value) {
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) throw new Error('Invalid timestamp')
@@ -380,7 +342,7 @@ function positiveInteger(value) {
 }
 
 function assertCity(city) {
-  if (!CITY_LOCAL_WEEKDAY.has(city)) throw new Error('Unsupported snapshot city')
+  assertScheduledCity(city)
 }
 
 function latencyBucket(milliseconds) {

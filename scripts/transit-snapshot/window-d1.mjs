@@ -115,6 +115,16 @@ WHERE
     >= (CASE snapshot_active_probes.active_probe_result WHEN 'success' THEN 2 WHEN 'degraded' THEN 1 ELSE 0 END)
 `
 
+export const RECORD_WINDOW_WRITE_FAILURE_SQL = `
+INSERT INTO snapshot_window_record_failures (
+  schema_version, city_code, window_id, attempt_id, recorded_at, failure_class
+) VALUES (1, ?, ?, ?, ?, 'record_write_failed')
+ON CONFLICT(city_code, window_id, attempt_id) DO UPDATE SET
+  recorded_at=excluded.recorded_at,
+  failure_class=excluded.failure_class
+WHERE excluded.recorded_at >= snapshot_window_record_failures.recorded_at
+`
+
 const FIND_WORKFLOW_WINDOW_SQL = `
 SELECT window_id, scheduled_at, run_kind
 FROM snapshot_window_attempts
@@ -179,6 +189,10 @@ export function createD1WindowStore({
         )
       }
       await batch(queries)
+    },
+
+    async recordWriteFailure({ city, windowId, attemptId, recordedAt }) {
+      await query(RECORD_WINDOW_WRITE_FAILURE_SQL, [city, windowId, attemptId, recordedAt])
     },
   })
 }

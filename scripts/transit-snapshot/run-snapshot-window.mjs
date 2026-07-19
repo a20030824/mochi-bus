@@ -90,29 +90,49 @@ export async function runSnapshotWindow({
     safeErrorLog('snapshot_window_active_pointer_read_failed', city, identity.windowId)
   }
 
-  let probe = publication.probe ?? null
+  const observedProbe = publication.probe ?? null
+  let probe = observedProbe
+  let probeForTelemetry = observedProbe
+  let rolledBackProbeFailureClass = null
   if (probe && (activeReadFailed || active.activeVersion !== probe.activeVersion)) {
-    probe = validateProbeResult({
-      ...probe,
-      activeVersion: active.activeVersion,
-      activeProbeResult: 'error',
-      probeFailureClass: 'active_pointer_invalid',
-      rollbackAvailable: false,
-      diagnosticWarnings: [],
-    })
+    if (!activeReadFailed && probe.activeProbeResult === 'error') {
+      // A published target can fail its active probe and then be rolled back by
+      // publishWithRollback. Keep the failed target in telemetry, but do not
+      // persist it as evidence about the restored D1 active version.
+      rolledBackProbeFailureClass = probe.probeFailureClass
+      probe = null
+    } else {
+      probe = validateProbeResult({
+        ...probe,
+        activeVersion: active.activeVersion,
+        activeProbeResult: 'error',
+        probeFailureClass: 'active_pointer_invalid',
+        rollbackAvailable: false,
+        diagnosticWarnings: [],
+      })
+      probeForTelemetry = probe
+    }
   }
   const successfulTerminal = publication.exitCode === 0
-    && (publication.terminal?.result === 'published'
-      || (publication.terminal?.result === 'unchanged'
-        && probe !== null
-        && probe.activeProbeResult !== 'error'))
+    && (publication.terminal?.result === 'published' || publication.terminal?.result === 'unchanged')
+    && probe !== null
+    && probe.activeProbeResult !== 'error'
   const result = activeReadFailed ? 'failed'
     : successfulTerminal ? publication.terminal.result
       : 'failed'
+  // Rollback success and rollback failure both end with exit 1 in the rollback
+  // phase; only the re-read D1 pointer tells them apart. When the pointer still
+  // names the rejected target, the rollback itself failed.
+  const rollbackFailed = publication.lastPhase === 'rollback'
+    && probe !== null
+    && probe === observedProbe
+    && probe.activeProbeResult === 'error'
   const failureClass = result !== 'failed' ? 'none'
-    : probe?.activeProbeResult === 'error' ? probe.probeFailureClass
-      : activeReadFailed ? 'snapshot_active_pointer_read'
-        : snapshotFailureClass(publication.lastPhase)
+    : rollbackFailed ? 'snapshot_rollback'
+      : probe?.activeProbeResult === 'error' ? probe.probeFailureClass
+        : rolledBackProbeFailureClass ?? (activeReadFailed
+          ? 'snapshot_active_pointer_read'
+          : snapshotFailureClass(publication.lastPhase))
   const completedAt = now().toISOString()
   const retainedPreviousActive = publication.previousVersion !== null
     && publication.previousVersion !== undefined
@@ -141,10 +161,20 @@ export async function runSnapshotWindow({
   } catch {
     durableRecordWrite = 'failed'
     safeErrorLog('snapshot_window_terminal_write_failed', city, identity.windowId)
+    try {
+      await store.recordWriteFailure?.({
+        city,
+        windowId: identity.windowId,
+        attemptId: attempt.attemptId,
+        recordedAt: completedAt,
+      })
+    } catch {
+      safeErrorLog('snapshot_window_record_failure_marker_failed', city, identity.windowId)
+    }
   }
 
   emitFailOpen(createSnapshotWindowEvent(outcome, scriptGitSha), emitter)
-  if (probe) emitFailOpen(createSnapshotProbeEvent(probe, scriptGitSha), emitter)
+  if (probeForTelemetry) emitFailOpen(createSnapshotProbeEvent(probeForTelemetry, scriptGitSha), emitter)
   const summary = safeWindowSummary(outcome, durableRecordWrite)
   try {
     await summaryWriter(summary)

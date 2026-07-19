@@ -7,6 +7,7 @@ import { createD1WindowStore, queryD1 } from './window-d1.mjs'
 const migration = [
   readFileSync(new URL('../../migrations/0003_snapshot_window_outcomes.sql', import.meta.url), 'utf8'),
   readFileSync(new URL('../../migrations/0004_snapshot_active_probes.sql', import.meta.url), 'utf8'),
+  readFileSync(new URL('../../migrations/0005_snapshot_window_watchdog.sql', import.meta.url), 'utf8'),
 ].join('\n')
 
 function healthyProbe(overrides = {}) {
@@ -30,7 +31,7 @@ function healthyProbe(overrides = {}) {
 }
 
 function outcome(overrides = {}) {
-  return validateWindowOutcome({
+  const value = {
     city: 'Taipei',
     windowId: 'v1:Taipei:2026-07-20:0317',
     attemptId: 'gh:100:1:Taipei',
@@ -49,7 +50,11 @@ function outcome(overrides = {}) {
     runKind: 'scheduled',
     forcePublish: false,
     ...overrides,
-  })
+  }
+  if ((value.result === 'published' || value.result === 'unchanged') && !Object.hasOwn(overrides, 'probe')) {
+    value.probe = healthyProbe({ activeVersion: value.activeVersion, previousVersion: value.previousVersion })
+  }
+  return validateWindowOutcome(value)
 }
 
 describe('snapshot window D1 store', () => {
@@ -100,6 +105,26 @@ describe('snapshot window D1 store', () => {
       scheduledAt: value.scheduledAt,
       runKind: 'scheduled',
     })
+  })
+
+  it('records a fixed durable-write failure marker without snapshot mutation', async () => {
+    const value = outcome()
+    await store.recordStart(value)
+    await store.recordWriteFailure({
+      city: value.city,
+      windowId: value.windowId,
+      attemptId: value.attemptId,
+      recordedAt: '2026-07-19T19:29:00.000Z',
+    })
+    await store.recordWriteFailure({
+      city: value.city,
+      windowId: value.windowId,
+      attemptId: value.attemptId,
+      recordedAt: '2026-07-19T19:29:00.000Z',
+    })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM snapshot_window_record_failures').get().count).toBe(1)
+    expect(db.prepare('SELECT active_version FROM dataset_versions WHERE city_code = ?').get('Taipei').active_version)
+      .toBe('v1')
   })
 
   it('stores unchanged as terminal while preserving the previous publication time', async () => {

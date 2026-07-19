@@ -1,13 +1,14 @@
 import { supportedCities } from '../config'
 import type { ReleaseIdentity } from './release-identity'
 
-export const TELEMETRY_EVENT_SCHEMA = 5 as const
+export const TELEMETRY_EVENT_SCHEMA = 6 as const
 
 export const telemetryEvents = [
   'api_operation_completed',
   'tdx_resolution_completed',
   'snapshot_window_completed',
   'snapshot_probe_completed',
+  'window_watchdog_completed',
   'snapshot_fallback_selected',
   'rate_limit_decision',
   'circuit_state_changed',
@@ -41,6 +42,7 @@ export const telemetryOperations = [
   'snapshot_publish',
   'snapshot_validate',
   'snapshot_probe',
+  'window_watchdog',
   'snapshot_rollback',
   'release_smoke',
   'frontend_boot',
@@ -122,6 +124,19 @@ export const telemetryFailureClasses = [
   'shape_sample_unavailable',
   'schedule_sample_unavailable',
   'probe_record_write_failed',
+  'window_terminal_missing',
+  'attempt_incomplete',
+  'window_record_missing',
+  'probe_record_missing',
+  'probe_evidence_expired',
+  'window_probe_conflict',
+  'active_version_conflict',
+  'rollback_unavailable',
+  'record_write_failed',
+  'unsupported_schema',
+  'watchdog_query_failed',
+  'window_failed_active_healthy',
+  'active_probe_failed',
   'unknown',
 ] as const
 
@@ -189,9 +204,21 @@ export const telemetryDataAgeBuckets = [
   'unknown',
   'not_applicable',
 ] as const
-export const telemetryWindowResults = ['published', 'unchanged', 'failed'] as const
+export const telemetryWindowResults = ['published', 'unchanged', 'failed', 'none'] as const
 export const telemetryVersionRoles = ['active', 'previous'] as const
 export const telemetryProbeGroups = ['active_snapshot'] as const
+export const telemetryWatchdogStatuses = [
+  'published',
+  'unchanged_healthy',
+  'unchanged_rollback_degraded',
+  'failed_active_healthy',
+  'failed_active_unhealthy',
+  'missing',
+  'record_write_failed',
+  'unknown',
+] as const
+export const telemetryWatchdogProbeResults = ['success', 'degraded', 'error', 'missing', 'expired'] as const
+export const telemetryWatchdogSignalAgeBuckets = ['same_window', 'lt_24h', '1_7d', '7_8d', 'expired', 'none'] as const
 
 export type TelemetryEventName = typeof telemetryEvents[number]
 export type TelemetryOperation = typeof telemetryOperations[number]
@@ -212,6 +239,9 @@ export type TelemetryDataAgeBucket = typeof telemetryDataAgeBuckets[number]
 export type TelemetryWindowResult = typeof telemetryWindowResults[number]
 export type TelemetryVersionRole = typeof telemetryVersionRoles[number]
 export type TelemetryProbeGroup = typeof telemetryProbeGroups[number]
+export type TelemetryWatchdogStatus = typeof telemetryWatchdogStatuses[number]
+export type TelemetryWatchdogProbeResult = typeof telemetryWatchdogProbeResults[number]
+export type TelemetryWatchdogSignalAgeBucket = typeof telemetryWatchdogSignalAgeBuckets[number]
 export type TelemetryCity = typeof supportedCities[number][0]
 
 export type TelemetryEnvelope = Readonly<{
@@ -249,11 +279,15 @@ export type TelemetryEnvelope = Readonly<{
   workflowRunId?: string | null
   versionRole?: TelemetryVersionRole
   probeGroup?: TelemetryProbeGroup
-  rollbackAvailable?: boolean
+  rollbackAvailable?: boolean | null
   probeCaseVersion?: number
   sampleCaseId?: string
   hardChecksPassed?: number
   diagnosticWarningCount?: number
+  watchdogStatus?: TelemetryWatchdogStatus
+  probeResult?: TelemetryWatchdogProbeResult
+  signalAgeBucket?: TelemetryWatchdogSignalAgeBucket
+  probeWindowDistance?: number | null
   errorFingerprint?: string
 }>
 
@@ -305,6 +339,10 @@ const allowedKeys = new Set<AllowedKey>([
   'sampleCaseId',
   'hardChecksPassed',
   'diagnosticWarningCount',
+  'watchdogStatus',
+  'probeResult',
+  'signalAgeBucket',
+  'probeWindowDistance',
   'errorFingerprint',
 ])
 
@@ -350,6 +388,9 @@ const dataAgeBuckets = new Set<string>(telemetryDataAgeBuckets)
 const windowResults = new Set<string>(telemetryWindowResults)
 const versionRoles = new Set<string>(telemetryVersionRoles)
 const probeGroups = new Set<string>(telemetryProbeGroups)
+const watchdogStatuses = new Set<string>(telemetryWatchdogStatuses)
+const watchdogProbeResults = new Set<string>(telemetryWatchdogProbeResults)
+const watchdogSignalAgeBuckets = new Set<string>(telemetryWatchdogSignalAgeBuckets)
 const tdxUpstreamStatusClasses = new Set<string>(['2xx', '4xx', '5xx', 'none'])
 const tdxOnlyKeys = [
   'tdxOperation',
@@ -360,11 +401,12 @@ const tdxOnlyKeys = [
   'dataAgeBucket',
   'upstreamStatusClass',
 ] as const
-const windowTerminalOnlyKeys = ['windowResult', 'activeVersion', 'previousVersion', 'workflowRunId'] as const
+const windowTerminalOnlyKeys = ['activeVersion', 'previousVersion', 'workflowRunId'] as const
 const probeOnlyKeys = [
-  'versionRole', 'probeGroup', 'rollbackAvailable', 'probeCaseVersion',
+  'versionRole', 'probeGroup', 'probeCaseVersion',
   'sampleCaseId', 'hardChecksPassed', 'diagnosticWarningCount',
 ] as const
+const watchdogOnlyKeys = ['watchdogStatus', 'probeResult', 'signalAgeBucket', 'probeWindowDistance'] as const
 
 const safeIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const safeReleaseSha = /^[a-f0-9]{40}$/
@@ -414,6 +456,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
     if (!validTdxFields(value)) return undefined
     if (!validWindowFields(value)) return undefined
     if (!validProbeFields(value)) return undefined
+    if (!validWatchdogFields(value)) return undefined
     if (value.errorFingerprint !== undefined && !identifier(value.errorFingerprint, safeErrorFingerprint)) return undefined
 
     return Object.freeze({
@@ -451,11 +494,15 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
       ...(value.workflowRunId === undefined ? {} : { workflowRunId: value.workflowRunId as string | null }),
       ...(value.versionRole === undefined ? {} : { versionRole: value.versionRole as TelemetryVersionRole }),
       ...(value.probeGroup === undefined ? {} : { probeGroup: value.probeGroup as TelemetryProbeGroup }),
-      ...(value.rollbackAvailable === undefined ? {} : { rollbackAvailable: value.rollbackAvailable as boolean }),
+      ...(value.rollbackAvailable === undefined ? {} : { rollbackAvailable: value.rollbackAvailable as boolean | null }),
       ...(value.probeCaseVersion === undefined ? {} : { probeCaseVersion: value.probeCaseVersion as number }),
       ...(value.sampleCaseId === undefined ? {} : { sampleCaseId: value.sampleCaseId as string }),
       ...(value.hardChecksPassed === undefined ? {} : { hardChecksPassed: value.hardChecksPassed as number }),
       ...(value.diagnosticWarningCount === undefined ? {} : { diagnosticWarningCount: value.diagnosticWarningCount as number }),
+      ...(value.watchdogStatus === undefined ? {} : { watchdogStatus: value.watchdogStatus as TelemetryWatchdogStatus }),
+      ...(value.probeResult === undefined ? {} : { probeResult: value.probeResult as TelemetryWatchdogProbeResult }),
+      ...(value.signalAgeBucket === undefined ? {} : { signalAgeBucket: value.signalAgeBucket as TelemetryWatchdogSignalAgeBucket }),
+      ...(value.probeWindowDistance === undefined ? {} : { probeWindowDistance: value.probeWindowDistance as number | null }),
       ...(value.errorFingerprint === undefined ? {} : { errorFingerprint: value.errorFingerprint as string }),
     })
   } catch {
@@ -521,11 +568,14 @@ function validWindowFields(value: Record<string, unknown>): boolean {
   const isWindowEvent = value.event === 'snapshot_window_completed'
   if (!isWindowEvent) {
     return !windowTerminalOnlyKeys.some((key) => Object.hasOwn(value, key))
-      && (value.event === 'snapshot_probe_completed' || !Object.hasOwn(value, 'windowId'))
+      && (value.event === 'snapshot_probe_completed'
+        || value.event === 'window_watchdog_completed'
+        || !Object.hasOwn(value, 'windowId'))
+      && (value.event === 'window_watchdog_completed' || !Object.hasOwn(value, 'windowResult'))
   }
   if (!Object.hasOwn(value, 'windowId') || !windowTerminalOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
   if (!identifier(value.windowId, safeIdentifier)) return false
-  if (!enumValue(value.windowResult, windowResults)) return false
+  if (!enumValue(value.windowResult, windowResults) || value.windowResult === 'none') return false
   if (!nullableIdentifier(value.activeVersion, safeIdentifier)) return false
   if (!nullableIdentifier(value.previousVersion, safeIdentifier)) return false
   if (!nullableIdentifier(value.workflowRunId, safeIdentifier)) return false
@@ -545,7 +595,10 @@ function validWindowFields(value: Record<string, unknown>): boolean {
 
 function validProbeFields(value: Record<string, unknown>): boolean {
   const isProbeEvent = value.event === 'snapshot_probe_completed'
-  if (!isProbeEvent) return !probeOnlyKeys.some((key) => Object.hasOwn(value, key))
+  if (!isProbeEvent) {
+    return !probeOnlyKeys.some((key) => Object.hasOwn(value, key))
+      && (value.event === 'window_watchdog_completed' || !Object.hasOwn(value, 'rollbackAvailable'))
+  }
   if (!Object.hasOwn(value, 'windowId') || !probeOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
   if (!identifier(value.windowId, safeIdentifier)) return false
   if (!enumValue(value.versionRole, versionRoles) || value.versionRole !== 'active') return false
@@ -566,6 +619,52 @@ function validProbeFields(value: Record<string, unknown>): boolean {
   if (value.result === 'success') return value.failureClass === 'none' && value.diagnosticWarningCount === 0
   if (value.result === 'degraded') return value.failureClass !== 'none' && Number(value.diagnosticWarningCount) > 0
   return value.result === 'error' && value.failureClass !== 'none'
+}
+
+function validWatchdogFields(value: Record<string, unknown>): boolean {
+  const isWatchdogEvent = value.event === 'window_watchdog_completed'
+  if (!isWatchdogEvent) return !watchdogOnlyKeys.some((key) => Object.hasOwn(value, key))
+  if (!watchdogOnlyKeys.every((key) => Object.hasOwn(value, key))
+    || !Object.hasOwn(value, 'windowId')
+    || !Object.hasOwn(value, 'windowResult')
+    || !Object.hasOwn(value, 'rollbackAvailable')) return false
+  if (!identifier(value.windowId, safeIdentifier)) return false
+  if (!enumValue(value.windowResult, windowResults)) return false
+  if (!enumValue(value.watchdogStatus, watchdogStatuses)) return false
+  if (!enumValue(value.probeResult, watchdogProbeResults)) return false
+  if (!enumValue(value.signalAgeBucket, watchdogSignalAgeBuckets)) return false
+  if (!(value.rollbackAvailable === null || typeof value.rollbackAvailable === 'boolean')) return false
+  if (!(value.probeWindowDistance === null || boundedInteger(value.probeWindowDistance, 0, 52))) return false
+  if (value.operation !== 'window_watchdog'
+    || value.trafficClass !== 'synthetic'
+    || value.sampleProbability !== 1
+    || value.httpStatusClass !== 'none'
+    || value.cacheResult !== 'not_applicable'
+    || value.emptyReason !== 'not_applicable'
+    || value.qualityBucket !== 'not_applicable') return false
+
+  const status = value.watchdogStatus
+  const healthy = status === 'published' || status === 'unchanged_healthy'
+  const degraded = status === 'unchanged_rollback_degraded' || status === 'failed_active_healthy'
+  if (healthy && !(value.result === 'success' && value.failureClass === 'none')) return false
+  if (degraded && !(value.result === 'degraded' && value.failureClass !== 'none')) return false
+  if (!healthy && !degraded && !(value.result === 'error' && value.failureClass !== 'none')) return false
+  if (status === 'published'
+    && !(value.windowResult === 'published' && value.probeResult === 'success')) return false
+  if (status === 'unchanged_healthy'
+    && !(value.windowResult === 'unchanged' && value.probeResult === 'success' && value.rollbackAvailable === true)) return false
+  if (status === 'unchanged_rollback_degraded'
+    && !(value.windowResult === 'unchanged'
+      && (value.probeResult === 'success' || value.probeResult === 'degraded')
+      && value.rollbackAvailable === false)) return false
+  if (status === 'failed_active_healthy'
+    && !(value.windowResult === 'failed'
+      && (value.probeResult === 'success' || value.probeResult === 'degraded'))) return false
+  if (status === 'failed_active_unhealthy'
+    && !(value.windowResult === 'failed' && value.probeResult === 'error')) return false
+  if (status === 'missing' && value.windowResult !== 'none') return false
+  if (value.source !== (value.windowResult === 'none' ? 'none' : 'snapshot')) return false
+  return true
 }
 
 export function createTelemetryEnvelope(

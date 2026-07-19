@@ -41,6 +41,7 @@ function fakeStore(overrides = {}) {
       lastPublishedAt: '2026-07-12T19:27:00.000Z',
     })),
     complete: vi.fn(async () => undefined),
+    recordWriteFailure: vi.fn(async () => undefined),
     ...overrides,
   }
 }
@@ -66,7 +67,7 @@ function terminal(result, overrides = {}) {
       activeVersion: result === 'published' ? 'v2' : 'v1',
       previousVersion: 'v0',
     },
-    probe: result === 'unchanged' ? healthyProbe() : null,
+    probe: healthyProbe({ activeVersion: result === 'published' ? 'v2' : 'v1' }),
     ...overrides,
   }
 }
@@ -173,6 +174,75 @@ describe('snapshot window runner', () => {
     })
   })
 
+  it('does not treat a failed published target probe as evidence that the restored active is unhealthy', async () => {
+    const emitter = vi.fn()
+    const store = fakeStore()
+    const result = await runSnapshotWindow({
+      city: 'Taipei', env: environment(), now: clock(), store,
+      publisher: async () => ({
+        exitCode: 1,
+        lastPhase: 'smoke',
+        lastSourceCheckAt: sourceCheckedAt,
+        lastPublishedAt: '2026-07-12T19:27:00.000Z',
+        previousVersion: 'v1',
+        terminal: null,
+        probe: healthyProbe({
+          activeVersion: 'v2',
+          previousVersion: 'v1',
+          activeProbeResult: 'error',
+          probeFailureClass: 'place_bundle_sample_failed',
+          rollbackAvailable: false,
+          hardChecksPassed: 10,
+        }),
+      }),
+      emitter, summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
+    })
+
+    expect(result.outcome).toMatchObject({
+      result: 'failed', failureClass: 'place_bundle_sample_failed', activeVersion: 'v1', probe: null,
+    })
+    expect(emitter.mock.calls.map(([event]) => event).find((event) => event.event === 'snapshot_probe_completed'))
+      .toMatchObject({ result: 'error', snapshotVersion: 'v2', failureClass: 'place_bundle_sample_failed' })
+    expect(store.complete).toHaveBeenCalledWith(result.outcome)
+  })
+
+  it('classifies a failed rollback distinctly from a restored previous version', async () => {
+    const store = fakeStore({
+      readActiveSnapshot: vi.fn(async () => ({
+        // Rollback failed: the rejected target is still the D1 active pointer.
+        activeVersion: 'v2',
+        lastPublishedAt: '2026-07-19T19:27:00.000Z',
+      })),
+    })
+    const result = await runSnapshotWindow({
+      city: 'Taipei', env: environment(), now: clock(), store,
+      publisher: async () => ({
+        exitCode: 1,
+        lastPhase: 'rollback',
+        lastSourceCheckAt: sourceCheckedAt,
+        lastPublishedAt: '2026-07-19T19:27:00.000Z',
+        previousVersion: 'v1',
+        terminal: null,
+        probe: healthyProbe({
+          activeVersion: 'v2',
+          previousVersion: 'v1',
+          activeProbeResult: 'error',
+          probeFailureClass: 'place_bundle_sample_failed',
+          rollbackAvailable: false,
+          hardChecksPassed: 10,
+        }),
+      }),
+      emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
+    })
+    expect(result.outcome).toMatchObject({
+      result: 'failed', failureClass: 'snapshot_rollback', activeVersion: 'v2',
+    })
+    expect(result.outcome.probe).toMatchObject({
+      activeProbeResult: 'error', probeFailureClass: 'place_bundle_sample_failed',
+    })
+    expect(store.complete).toHaveBeenCalledWith(result.outcome)
+  })
+
   it('fails an unchanged window when the active probe fails without changing publication time', async () => {
     const store = fakeStore()
     const result = await runSnapshotWindow({
@@ -208,6 +278,23 @@ describe('snapshot window runner', () => {
     expect(result.ok).toBe(false)
     expect(result.outcome).toMatchObject({
       result: 'failed', failureClass: 'snapshot_source_compare', activeVersion: 'v1', probe: null,
+    })
+  })
+
+  it('fails closed when a published terminal marker has no durable active probe evidence', async () => {
+    const store = fakeStore({
+      readActiveSnapshot: vi.fn(async () => ({
+        activeVersion: 'v2', lastPublishedAt: '2026-07-19T19:27:00.000Z',
+      })),
+    })
+    const result = await runSnapshotWindow({
+      city: 'Taipei', env: environment(), now: clock(), store,
+      publisher: async () => terminal('published', { probe: null }),
+      emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.outcome).toMatchObject({
+      result: 'failed', failureClass: 'snapshot_finalize', activeVersion: 'v2', probe: null,
     })
   })
 
@@ -248,10 +335,17 @@ describe('snapshot window runner', () => {
   })
 
   it('keeps manual force publish in the selected manual window', async () => {
+    const store = fakeStore({
+      readActiveSnapshot: vi.fn(async () => ({
+        activeVersion: 'v2', lastPublishedAt: '2026-07-19T19:27:00.000Z',
+      })),
+    })
     const result = await runSnapshotWindow({
       city: 'Taipei',
       env: environment({ SNAPSHOT_WINDOW_TYPE: 'manual', SNAPSHOT_WINDOW_DATE: '2026-07-18', SNAPSHOT_FORCE: '1' }),
-      now: clock(), store: fakeStore(), publisher: async () => terminal('published'),
+      now: clock(), store, publisher: async () => terminal('published', {
+        probe: healthyProbe({ windowId: 'v1:Taipei:2026-07-18:manual', activeVersion: 'v2' }),
+      }),
       emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
     })
     expect(result.outcome).toMatchObject({
@@ -261,7 +355,12 @@ describe('snapshot window runner', () => {
 
   it('does not undo a successful publication when durable state writing fails', async () => {
     const productPublication = vi.fn(async () => terminal('published'))
-    const store = fakeStore({ complete: vi.fn(async () => { throw new Error('D1 unavailable') }) })
+    const store = fakeStore({
+      readActiveSnapshot: vi.fn(async () => ({
+        activeVersion: 'v2', lastPublishedAt: '2026-07-19T19:27:00.000Z',
+      })),
+      complete: vi.fn(async () => { throw new Error('D1 unavailable') }),
+    })
     const result = await runSnapshotWindow({
       city: 'Taipei', env: environment(), now: clock(), store,
       publisher: productPublication, emitter: vi.fn(), summaryWriter: vi.fn(), activeReadRetryDelayMs: 0,
@@ -269,6 +368,9 @@ describe('snapshot window runner', () => {
     expect(productPublication).toHaveBeenCalledOnce()
     expect(result).toMatchObject({ ok: false, durableRecordWrite: 'failed' })
     expect(result.outcome.result).toBe('published')
+    expect(store.recordWriteFailure).toHaveBeenCalledWith(expect.objectContaining({
+      city: 'Taipei', windowId: 'v1:Taipei:2026-07-20:0317',
+    }))
   })
 
   it('does not touch the active snapshot when durable probe evidence cannot be written', async () => {
@@ -281,6 +383,7 @@ describe('snapshot window runner', () => {
     expect(result).toMatchObject({ ok: false, durableRecordWrite: 'failed' })
     expect(result.outcome).toMatchObject({ result: 'unchanged', activeVersion: 'v1' })
     expect(store.readActiveSnapshot).toHaveBeenCalledOnce()
+    expect(store.recordWriteFailure).toHaveBeenCalledOnce()
   })
 
   it('recovers from a start-record failure when terminal upsert succeeds', async () => {

@@ -75,15 +75,7 @@ jobs:
             # 城市分片:單日 D1 寫入量要留在額度內,大城市獨占或成對一天、小縣市成組。
             # 內容沒變的城市會被 hash 檢查跳過,實際寫入只發生在資料有更新的日子。
             # 1=週一 … 7=週日(UTC)
-            case "$(date -u +%u)" in
-              1) cities="Chiayi Keelung Hsinchu HsinchuCounty" ;;
-              2) cities="Tainan MiaoliCounty NantouCounty PenghuCounty KinmenCounty LienchiangCounty" ;;
-              3) cities="ChiayiCounty ChanghuaCounty PingtungCounty" ;;
-              4) cities="Taichung" ;;
-              5) cities="Kaohsiung YunlinCounty" ;;
-              6) cities="Taoyuan YilanCounty HualienCounty TaitungCounty" ;;
-              7) cities="Taipei NewTaipei" ;;
-            esac
+            cities="$(node scripts/transit-snapshot/scheduled-cities.mjs)"
           fi
           if [ -z "$cities" ]; then
             echo "今天沒有排程的城市"

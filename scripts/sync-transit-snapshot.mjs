@@ -451,6 +451,20 @@ await writeFile(manifestFile, JSON.stringify(manifest))
 artifactTasks.push({ key: manifestKey, file: manifestFile, contentType: 'application/json' })
 
 const previousVersion = existingRows.active[0]?.active_version ?? null
+const importedAt = new Date().toISOString()
+const publishedState = {
+  schemaVersion: 2,
+  contentHash,
+  version,
+  previousVersion,
+  manifestKey,
+  counts: validation.counts,
+  quality: validation.quality,
+  generatedAt: importedAt,
+  publishedAt: importedAt,
+  source: 'TDX',
+  workflowRun: process.env.GITHUB_RUN_ID ?? null,
+}
 const smokePattern = patterns[0]
 const smokeTarget = {
   counts: validation.counts,
@@ -464,7 +478,6 @@ function validSnapshotTimestamp(value) {
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString()
 }
-const importedAt = new Date().toISOString()
 const activationFile = join(outputRoot, 'activate.sql')
 await writeFile(activationFile,
   `INSERT INTO dataset_versions(city_code, active_version, source_updated_at, imported_at) VALUES (${values(CITY, version, importedAt, importedAt)}) ON CONFLICT(city_code) DO UPDATE SET active_version=excluded.active_version, source_updated_at=excluded.source_updated_at, imported_at=excluded.imported_at;`)
@@ -494,6 +507,7 @@ const obsoleteObjectKeys = [...new Set([
   ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/network.json`),
   ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/manifest.json`),
 ])]
+let publishedProbe = null
 await publishWithRollback({
   targetVersion: version,
   previousVersion,
@@ -510,9 +524,23 @@ await publishWithRollback({
     console.log(JSON.stringify(snapshotProgressMarker(CITY, 'activate', { lastSourceCheckAt, previousVersion })))
     return runD1(activationFile)
   },
-  smoke: () => {
+  smoke: async () => {
     console.log(JSON.stringify(snapshotProgressMarker(CITY, 'smoke', { lastSourceCheckAt, previousVersion })))
-    return smokePublishedSnapshot(version, smokeTarget)
+    await smokePublishedSnapshot(version, smokeTarget)
+    publishedProbe = await probeActiveSnapshot({
+      city: CITY,
+      windowId: process.env.SNAPSHOT_WINDOW_ID ?? `local:${CITY}:${lastSourceCheckAt.slice(0, 10)}`,
+      state: publishedState,
+      query: queryActiveProbeD1,
+      r2: {
+        getJson: s3GetJson,
+        head: s3HeadObject,
+        readPrefix: s3ReadPrefix,
+      },
+      publicApi: { getJson: fetchProbePublicJson },
+    })
+    console.log(JSON.stringify(snapshotProbeMarker(publishedProbe)))
+    if (publishedProbe.activeProbeResult === 'error') throw new Error('Published active snapshot probe failed')
   },
   rollback: async (targetVersion) => {
     console.log(JSON.stringify(snapshotProgressMarker(CITY, 'rollback', { lastSourceCheckAt, previousVersion })))
@@ -528,23 +556,15 @@ await publishWithRollback({
     console.log(JSON.stringify(snapshotProgressMarker(CITY, 'finalize', { lastSourceCheckAt, previousVersion })))
     if (r2) {
       await s3Request('PUT', stateKey, JSON.stringify({
-        schemaVersion: 2,
-        contentHash,
-        version,
-        previousVersion,
-        manifestKey,
-        counts: validation.counts,
-        quality: validation.quality,
-        generatedAt: importedAt,
+        ...publishedState,
         publishedAt: new Date().toISOString(),
-        source: 'TDX',
-        workflowRun: process.env.GITHUB_RUN_ID ?? null,
       }), 'application/json')
     }
     if (cleanupFile) await runD1(cleanupFile)
     await deleteObjects(obsoleteObjectKeys)
   },
 })
+if (!publishedProbe) throw new Error('Published active snapshot probe missing')
 console.log(JSON.stringify(snapshotTerminalMarker(CITY, 'published', {
   lastSourceCheckAt,
   activeVersion: version,

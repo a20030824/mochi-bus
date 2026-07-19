@@ -32,26 +32,32 @@ const healthyProbe = (overrides = {}) => ({
   ...overrides,
 })
 
-const publishedOutcome = (overrides = {}) => validateWindowOutcome({
-  city: 'Taipei',
-  windowId: 'v1:Taipei:2026-07-20:0317',
-  attemptId: 'gh:29500000000:1:Taipei',
-  scheduledAt: '2026-07-19T19:17:00.000Z',
-  startedAt: '2026-07-19T19:18:00.000Z',
-  completedAt: '2026-07-19T19:28:00.000Z',
-  result: 'published',
-  lastSourceCheckAt: '2026-07-19T19:20:00.000Z',
-  lastPublishedAt: '2026-07-19T19:27:00.000Z',
-  activeVersion: '20260719T192700000Z',
-  previousVersion: '20260712T192700000Z',
-  workflowRunId: '29500000000',
-  workflowRunAttempt: 1,
-  scriptGitSha: '0123456789abcdef0123456789abcdef01234567',
-  failureClass: 'none',
-  runKind: 'scheduled',
-  forcePublish: false,
-  ...overrides,
-})
+const publishedOutcome = (overrides = {}) => {
+  const value = {
+    city: 'Taipei',
+    windowId: 'v1:Taipei:2026-07-20:0317',
+    attemptId: 'gh:29500000000:1:Taipei',
+    scheduledAt: '2026-07-19T19:17:00.000Z',
+    startedAt: '2026-07-19T19:18:00.000Z',
+    completedAt: '2026-07-19T19:28:00.000Z',
+    result: 'published',
+    lastSourceCheckAt: '2026-07-19T19:20:00.000Z',
+    lastPublishedAt: '2026-07-19T19:27:00.000Z',
+    activeVersion: '20260719T192700000Z',
+    previousVersion: '20260712T192700000Z',
+    workflowRunId: '29500000000',
+    workflowRunAttempt: 1,
+    scriptGitSha: '0123456789abcdef0123456789abcdef01234567',
+    failureClass: 'none',
+    runKind: 'scheduled',
+    forcePublish: false,
+    ...overrides,
+  }
+  if ((value.result === 'published' || value.result === 'unchanged') && !Object.hasOwn(overrides, 'probe')) {
+    value.probe = healthyProbe({ activeVersion: value.activeVersion, previousVersion: value.previousVersion })
+  }
+  return validateWindowOutcome(value)
+}
 
 describe('snapshot window contract', () => {
   it('derives the deterministic Asia/Taipei scheduled slot independently of workflow run ID', () => {
@@ -141,6 +147,7 @@ describe('snapshot window contract', () => {
   })
 
   it('does not accept unchanged without matching non-error probe evidence', () => {
+    expect(() => publishedOutcome({ probe: null })).toThrow()
     expect(() => publishedOutcome({ result: 'unchanged', probe: null })).toThrow()
     expect(() => publishedOutcome({
       result: 'unchanged',

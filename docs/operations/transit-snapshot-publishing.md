@@ -90,7 +90,9 @@ Window terminal 與 probe evidence 由同一 D1 batch寫入：
 npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, window_id, active_probe_result, probe_failure_class, rollback_available, active_version, hard_checks_passed, diagnostic_warnings FROM snapshot_active_probes WHERE city_code='Chiayi' ORDER BY active_probe_at DESC LIMIT 5"
 ```
 
-`snapshot_windows.result='unchanged'` 必須能 join 到同 window 的 `snapshot_active_probes` success/degraded evidence；缺 row 視為 observation incomplete，不可宣稱 fully observed。07:30 `missing` 與每日 22 城 public drift probe 留給 A6。
+`snapshot_windows.result IN ('published','unchanged')` 必須能 join 到同 window 的 `snapshot_active_probes` evidence；published 要求 success，unchanged 允許 success/degraded。Publisher 原有 remote validation／smoke 完成後，會再使用同一 A5b probe留下 published-window evidence；缺 row視為 observation incomplete，不可宣稱 fully observed。
+
+07:30 Asia/Taipei 是 window close；獨立 watchdog 於 07:45（UTC `45 23 * * *`）只讀 D1 推導 missing、failed-active-health與rollback capability，詳見 [snapshot-window-watchdog.md](./snapshot-window-watchdog.md)。每日 22 城 public drift probe留給 A6b。
 
 ## Rollback
 

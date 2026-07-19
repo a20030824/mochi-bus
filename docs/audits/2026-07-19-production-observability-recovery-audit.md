@@ -1,6 +1,6 @@
 # Mochi Bus 生產可觀測性與故障復原審計 — 2026-07-19
 
-> 本文件記錄唯讀審計結論、隱私安全 telemetry contract 與分批實作順序。A1–A5a 已依序以 `b13057c`、`baea152`、`22933f0`、`0673335`、`aad570b` 獨立提交並推送；A5b 已在本機完成實作與 review/check，尚未提交，且仍未導入第三方平台。
+> 本文件記錄唯讀審計結論、隱私安全 telemetry contract 與分批實作順序。A1–A5a 已依序以 `b13057c`、`baea152`、`22933f0`、`0673335`、`aad570b` 獨立提交並推送；A5b 已在本機提交為 `c2c45e3`，因執行環境的網路核准額度用盡而尚未推送。A6a 已在本機完成實作與驗證，仍未導入第三方平台。
 
 ## 1. 結論
 
@@ -81,7 +81,7 @@ Cloudflare 現行建議以 object 形式寫入結構化 JSON，讓 Workers Logs 
 
 | 欄位 | 契約 |
 | --- | --- |
-| `eventSchema` | 數字 schema version；A5b 加入 active probe 欄位後為 `5` |
+| `eventSchema` | 數字 schema version；A6a 加入 window watchdog 欄位後為 `6` |
 | `event` | allowlist event name |
 | `releaseSha` | Git SHA 或 `null`；A2 才注入 |
 | `workerVersionId` | Cloudflare Worker version ID 或 `null`；A2 才注入 |
@@ -215,6 +215,18 @@ D1 migration `0004_snapshot_active_probes.sql` 建立 `snapshot_probe_attempts` 
 
 A6 watchdog 最少只需讀 `snapshot_windows.city_code/window_id/scheduled_at/completed_at/result/last_source_check_at/last_published_at/active_version/failure_class`，並 left join `snapshot_active_probes.active_probe_at/active_probe_result/probe_failure_class/rollback_available`。07:30 後沒有 terminal row 才推導 `missing`；A5b 不寫 missing，也不做每日 22 城 probe。
 
+### 5.8 A6a missed-window watchdog contract
+
+獨立 workflow 每日台灣時間 07:45（UTC cron `45 23 * * *`）執行，固定以台灣時間 07:30 作 window close。排程、window ID 與城市清單由 `snapshot-schedule.mjs` 單一契約產生；snapshot workflow 與 watchdog 不再各自維護 weekday mapping。cron 延遲不改變 schedule date 或 window ID，07:30 前的手動執行會檢查最近已關閉的 window。
+
+Watchdog 以 D1 canonical window、attempt summary、same-window probe、最近可信 probe、record-write marker 與實際 `dataset_versions.active_version` 判定。固定狀態為 `published`、`unchanged_healthy`、`unchanged_rollback_degraded`、`failed_active_healthy`、`failed_active_unhealthy`、`missing`、`record_write_failed`、`unknown`。只有前兩者讓 job 成功；第一階段沒有外部告警管道，因此 degraded 與 error 都在全城市判定完成後使 job 失敗，但 summary 明確區分「服務仍可用」與「active unhealthy」。不做自動 rollback。
+
+`published` 與 `unchanged` 必須有同 window active probe evidence。為此 published path 在原有 remote validation、production smoke 與 cleanup 後，也執行同一個 A5b 唯讀 active probe；probe 不依賴 TDX realtime，失敗不改 active pointer。failed／missing 可引用最近成功或 degraded 的 active probe，但須同一 active version、最多跨一個該城市 weekly window且不超過 8 天；超限改為 `unknown + probe_evidence_expired`，不沿用舊 Green。
+
+D1 migration `0005_snapshot_window_watchdog.sql` 保存 watchdog run history、每城市 attempt 與每個 schedule date 的 canonical city result。較舊 watchdog run 不得覆蓋較新結果。`snapshot_window_record_failures` 只在 marker 不早於目前 canonical completion 時視為未解決；後續成功 rerun 可消除舊 marker 的診斷影響，較晚的 write failure 仍 fail closed。Watchdog 僅讀 snapshot/D1 證據並寫自己的結果，不修改 active pointer、R2 state 或 artifacts。
+
+`window_watchdog_completed` 每城市恰好一筆，`trafficClass=synthetic`、sample 100%，只含 city/window、固定 status/result/failure、版本、age bucket、rollback availability 與 latency bucket；不含 workflow URL、artifact key、route/place identity、credential、raw error 或 stack。A6b 才會從公網每日獨立驗證 22 城 routes/network/route/place/journey。
+
 ## 6. 22 城市 probe 與 freshness contract
 
 排程固定於 UTC 19:17 執行，台灣時間為次日 03:17；workflow timeout 為 180 分鐘。以台灣時間 07:30 作為該 window 的最晚允許完成時間，不能用固定「三天未更新」套用所有城市。
@@ -344,12 +356,13 @@ A6 watchdog 最少只需讀 `snapshot_windows.city_code/window_id/scheduled_at/c
 | A3 API completion denominator | 已提交並推送（`22933f0`） | schema v2、complete-once tracker、固定 cohort sampling、四個 route callsite 與 result/source/empty/quality contract；targeted 5 files/63 tests、完整 check 58 files/390 tests、typecheck、build、Worker dry-run 通過；不含 `tdx_resolution_completed` |
 | A4 TDX resolution completion | 已提交並推送（`0673335`） | schema v3、complete-once logical resolution tracker、memory/edge/upstream/circuit/stale、受控 retry、五類 TDX operation；targeted 7 files/95 tests、完整 check 60 files/414 tests、typecheck、build、Worker dry-run 通過；不改 A3 分母 |
 | A5a snapshot window outcome | 已提交並推送（`aad570b`） | D1 attempt/canonical tables、deterministic window ID、strict phase markers、實際 active pointer reconciliation、schema v4 event 與 GitHub summary；targeted 5 files/59 tests、完整 check 64 files/444 tests、typecheck、build、Worker dry-run、workflow YAML、local migration apply/reapply 通過；不含 active artifact probe 或 watchdog |
-| A5b unchanged active probe | 本機完成，待獨立 commit | D1 authority、11 hard checks、diagnostic rollback capability、deterministic sample、64 KiB network prefix、atomic durable probe evidence、schema v5 completion；66 個測試檔／481 tests、typecheck、map build、Worker dry-run 與 migration reapply 均通過；不含 watchdog/daily probe |
-| A6–A9 | 已排程，未開始 | A6 下一批合併 missed-window watchdog 與每日 22 城 public probe；各批保持可獨立 review/rollback |
+| A5b unchanged active probe | 本機已提交（`c2c45e3`），尚未推送 | D1 authority、11 hard checks、diagnostic rollback capability、deterministic sample、64 KiB network prefix、atomic durable probe evidence、schema v5 completion；66 個測試檔／481 tests、typecheck、map build、Worker dry-run 與 migration reapply 均通過；不含 watchdog/daily probe |
+| A6a missed-window watchdog | 本機完成，待獨立 review/commit | 共用 Asia/Taipei schedule/window ID、07:45 watchdog、8 種狀態、8 天／一 window probe 效期、D1 run/history/canonical result、schema v6 city completion 與 fail-after-batch summary；完整 check 70 個測試檔／513 tests、typecheck、map build、Worker dry-run、workflow YAML、migration apply/reapply 均通過；不含每日 public probe |
+| A6b–A9 | 已排程，未開始 | A6b 下一批只做每日 22 城 public probe；各批保持可獨立 review/rollback |
 | Phase B/C | 未開始 | 等 Phase A 事件量與操作需求證明 |
 
 ## 12. 最值得先實作的三項
 
-1. Review 並獨立提交 A5b unchanged active probe，關閉「source 未變但 active artifacts 已損壞」盲區。
-2. A6 07:30 missed-window watchdog，讓 workflow 根本沒跑也能被發現。
-3. A6 每日 22 城 public probe，補足兩次 weekly windows 間的日常 artifact drift。
+1. Review 並獨立提交 A6a missed-window watchdog，讓 workflow 根本沒跑、durable evidence 缺失或 probe 過期都能被發現。
+2. A6b 每日 22 城 public probe，補足 weekly windows 間的日常 artifact drift，且與 publisher evidence 保持獨立。
+3. A7 post-deploy release-specific smoke，讓 Worker release、browser boot 與代表城市 API 契約可在部署後立即關聯。
