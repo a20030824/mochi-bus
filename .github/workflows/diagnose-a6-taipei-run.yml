@@ -17,38 +17,14 @@ jobs:
       - name: Download failed publisher log
         env:
           GH_TOKEN: ${{ github.token }}
-          FAILED_JOB_ID: '88238189493'
-        run: |
-          curl --fail --location --silent --show-error \
-            -H 'Accept: application/vnd.github+json' \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/a20030824/mochi-bus/actions/jobs/$FAILED_JOB_ID/logs" \
-            --output failed-job.log
-      - name: Summarize publisher error context
-        run: |
-          python - <<'PY'
-          import re
-          from pathlib import Path
-
-          lines = Path('failed-job.log').read_text(encoding='utf-8-sig', errors='replace').splitlines()
-          pattern = re.compile(
-              r'error|exception|failed|failure|quota|limit|exceed|too many|d1|sqlite|validation|snapshot publication|rollback|route-without-pattern',
-              re.IGNORECASE,
-          )
-          indexes = set()
-          for index, line in enumerate(lines):
-              if pattern.search(line):
-                  indexes.update(range(max(0, index - 2), min(len(lines), index + 4)))
-
-          selected = [lines[index] for index in sorted(indexes)]
-          if not selected:
-              selected = lines[-80:]
-          else:
-              selected = selected[-100:]
-
-          print('=== A6 TAIPEI FAILED PUBLISHER DIAGNOSTIC ===')
-          for line in selected:
-              print(line)
-          print('=== END DIAGNOSTIC ===')
-          PY
+        run: >-
+          curl --fail --location --silent --show-error
+          -H 'Accept: application/vnd.github+json'
+          -H "Authorization: Bearer $GH_TOKEN"
+          -H 'X-GitHub-Api-Version: 2022-11-28'
+          'https://api.github.com/repos/a20030824/mochi-bus/actions/jobs/88238189493/logs'
+          --output failed-job.log
+      - name: Show publisher failure
+        run: >-
+          grep -Ei 'error|exception|failed|failure|quota|limit|exceed|too many|d1|sqlite|validation|snapshot publication|rollback|routes-without-pattern'
+          failed-job.log | tail -n 30
