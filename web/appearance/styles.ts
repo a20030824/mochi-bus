@@ -125,44 +125,4 @@ html[data-appearance-page="map"][data-map-tiles-theme="dark"] .nearby-map-marker
 html[data-appearance-page="map"][data-map-tiles-theme="dark"] .vehicle-marker { border-color: #f3ebde; background: #28251f; box-shadow: var(--shadow-marker), 0 0 0 1.5px #28251f; }
 html[data-appearance-page="map"][data-map-tiles-theme="dark"] .vehicle-marker::before { background: #81a08f; }
 html[data-appearance-page="map"][data-map-tiles-theme="dark"] .vehicle-marker::after { background: #df7357; }
-
-.appearance-list { display: grid; margin-top: 10px; border-block: 1px solid var(--line); }
-.appearance-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; padding: 10px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
-.appearance-row:last-child { border-bottom: 0; }
-.appearance-copy { display: grid; gap: 3px; }
-.appearance-copy strong { color: inherit; font-size: 14px; }
-.appearance-copy small { color: var(--text-muted); font-size: 12px; }
-.appearance-switch {
-  appearance: none;
-  flex: 0 0 auto;
-  width: 44px;
-  height: 26px;
-  margin: 0;
-  padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-  cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease;
-}
-.appearance-switch::before {
-  content: "";
-  display: block;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .2);
-  transition: transform 150ms ease, background-color 150ms ease;
-}
-.appearance-switch:checked { border-color: var(--green); background: var(--green); }
-.appearance-switch:checked::before { transform: translateX(18px); background: var(--paper-strong); }
-.appearance-switch:focus-visible { outline: 3px solid rgba(79, 104, 91, .2); outline-offset: 2px; }
-.appearance-message { min-height: 18px; margin: 8px 0 0; }
-@media (prefers-color-scheme: dark) {
-  .appearance-list, .appearance-row { border-color: #4d473e; }
-  .appearance-switch { border-color: #4d473e; background: #302c26; }
-  .appearance-switch:checked { border-color: #81a08f; background: #81a08f; }
-  .appearance-switch:checked::before { background: #211f1b; }
-}
 `

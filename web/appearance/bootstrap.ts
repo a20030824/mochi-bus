@@ -4,6 +4,7 @@ import {
   type AppearancePreferences,
   type AppearanceTheme,
 } from './preferences'
+import { appearanceSettingsStyles } from './settings-styles'
 import { appearanceStyles } from './styles'
 
 const STYLE_ID = 'mochi-appearance-overrides'
@@ -16,6 +17,10 @@ type AppearanceOption = {
   id: string
   label: string
 }
+
+type AppearanceControl = Record<AppearanceTheme, HTMLInputElement>
+
+const themes: AppearanceTheme[] = ['light', 'dark']
 
 const appearanceOptions: AppearanceOption[] = [
   { key: 'home', id: 'appearance-home', label: '首頁外觀' },
@@ -56,7 +61,7 @@ function installAppearanceStyles(): void {
   if (document.getElementById(STYLE_ID)) return
   const style = document.createElement('style')
   style.id = STYLE_ID
-  style.textContent = appearanceStyles
+  style.textContent = `${appearanceStyles}\n${appearanceSettingsStyles}`
   document.head.appendChild(style)
 }
 
@@ -82,38 +87,50 @@ function installAppearanceSettings(initial: AppearancePreferences): void {
   announcement.className = 'form-message appearance-message'
   announcement.setAttribute('aria-live', 'polite')
 
-  const controls = new Map<AppearanceKey, { input: HTMLInputElement; value: HTMLElement }>()
+  const controls = new Map<AppearanceKey, AppearanceControl>()
   for (const option of appearanceOptions) {
-    const row = document.createElement('label')
+    const row = document.createElement('div')
     row.className = 'appearance-row'
-    row.htmlFor = option.id
+    row.setAttribute('role', 'radiogroup')
 
-    const copy = document.createElement('span')
-    copy.className = 'appearance-copy'
     const label = document.createElement('strong')
+    label.id = `${option.id}-label`
+    label.className = 'appearance-label'
     label.textContent = option.label
-    const value = document.createElement('small')
-    value.id = `${option.id}-value`
-    copy.replaceChildren(label, value)
+    row.setAttribute('aria-labelledby', label.id)
 
-    const input = document.createElement('input')
-    input.id = option.id
-    input.className = 'appearance-switch'
-    input.type = 'checkbox'
-    input.setAttribute('role', 'switch')
-    input.setAttribute('aria-describedby', value.id)
-    input.checked = preferences[option.key] === 'dark'
-    updateControlText(input, value)
+    const segmented = document.createElement('div')
+    segmented.className = 'appearance-segmented'
 
-    input.addEventListener('change', () => {
-      const theme: AppearanceTheme = input.checked ? 'dark' : 'light'
-      preferences = writeAppearancePreferences({ ...preferences, [option.key]: theme })
-      updateControlText(input, value)
-      announcement.textContent = `${option.label}已改為${themeLabel(theme)}。`
-    })
+    const optionControls = {} as AppearanceControl
+    for (const theme of themes) {
+      const segment = document.createElement('label')
+      segment.className = 'appearance-segment'
 
-    controls.set(option.key, { input, value })
-    row.replaceChildren(copy, input)
+      const input = document.createElement('input')
+      input.id = `${option.id}-${theme}`
+      input.className = 'appearance-option-input'
+      input.type = 'radio'
+      input.name = option.id
+      input.value = theme
+      input.checked = preferences[option.key] === theme
+
+      const text = document.createElement('span')
+      text.textContent = themeLabel(theme)
+
+      input.addEventListener('change', () => {
+        if (!input.checked) return
+        preferences = writeAppearancePreferences({ ...preferences, [option.key]: theme })
+        announcement.textContent = `${option.label}已改為${themeLabel(theme)}。`
+      })
+
+      optionControls[theme] = input
+      segment.replaceChildren(input, text)
+      segmented.appendChild(segment)
+    }
+
+    controls.set(option.key, optionControls)
+    row.replaceChildren(label, segmented)
     list.appendChild(row)
   }
 
@@ -128,16 +145,9 @@ function installAppearanceSettings(initial: AppearancePreferences): void {
     for (const option of appearanceOptions) {
       const control = controls.get(option.key)
       if (!control) continue
-      control.input.checked = preferences[option.key] === 'dark'
-      updateControlText(control.input, control.value)
+      control[preferences[option.key]].checked = true
     }
   })
-}
-
-function updateControlText(input: HTMLInputElement, value: HTMLElement): void {
-  const theme: AppearanceTheme = input.checked ? 'dark' : 'light'
-  input.setAttribute('aria-checked', String(input.checked))
-  value.textContent = themeLabel(theme)
 }
 
 function themeLabel(theme: AppearanceTheme): string {
