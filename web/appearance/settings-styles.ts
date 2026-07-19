@@ -28,13 +28,13 @@ export const appearanceSettingsStyles = `
 .appearance-segment { position: relative; }
 .appearance-option-input {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 .appearance-segment span {
   display: grid;
@@ -45,11 +45,11 @@ export const appearanceSettingsStyles = `
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 800;
-  cursor: pointer;
+  pointer-events: none;
   user-select: none;
   transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
 }
-.appearance-option-input:not(:checked) + span:hover {
+.appearance-segment:hover .appearance-option-input:not(:checked) + span {
   background: rgba(41, 37, 31, .06);
   color: #29251f;
 }
@@ -66,7 +66,7 @@ export const appearanceSettingsStyles = `
 @media (prefers-color-scheme: dark) {
   .appearance-list, .appearance-row { border-color: #4d473e; }
   .appearance-segmented { border-color: #4d473e; background: #302c26; }
-  .appearance-option-input:not(:checked) + span:hover { background: rgba(248, 240, 227, .08); color: #f8f0e3; }
+  .appearance-segment:hover .appearance-option-input:not(:checked) + span { background: rgba(248, 240, 227, .08); color: #f8f0e3; }
   .appearance-option-input:checked + span { background: #f8f0e3; color: #211f1b; box-shadow: 0 1px 4px rgba(0, 0, 0, .34); }
   .appearance-option-input:focus-visible + span { outline-color: #81a08f; }
 }
