@@ -1,7 +1,7 @@
 import {
   APPEARANCE_STORAGE_KEY,
   DEFAULT_APPEARANCE,
-  LEGACY_APPEARANCE_STORAGE_KEY,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
   normalizeAppearancePreferences,
   type AppearancePreferences,
 } from '../../src/domain/appearance'
@@ -9,7 +9,7 @@ import {
 export {
   APPEARANCE_STORAGE_KEY,
   DEFAULT_APPEARANCE,
-  LEGACY_APPEARANCE_STORAGE_KEY,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
   normalizeAppearancePreferences,
 }
 export type { AppearancePreferences, AppearanceTheme } from '../../src/domain/appearance'
@@ -24,18 +24,21 @@ export function readAppearancePreferences(storage: Storage | undefined = browser
     }
   }
 
-  const legacy = safeGet(storage, LEGACY_APPEARANCE_STORAGE_KEY)
-  if (legacy === null) return { ...DEFAULT_APPEARANCE }
-  try {
-    const normalized = normalizeAppearancePreferences(JSON.parse(legacy) as unknown)
-    if (safeSet(storage, APPEARANCE_STORAGE_KEY, JSON.stringify(normalized))) {
-      safeRemove(storage, LEGACY_APPEARANCE_STORAGE_KEY)
+  for (const legacyKey of LEGACY_APPEARANCE_STORAGE_KEYS) {
+    const legacy = safeGet(storage, legacyKey)
+    if (legacy === null) continue
+    try {
+      const normalized = normalizeAppearancePreferences(JSON.parse(legacy) as unknown)
+      if (safeSet(storage, APPEARANCE_STORAGE_KEY, JSON.stringify(normalized))) {
+        clearLegacyAppearancePreferences(storage)
+      }
+      return normalized
+    } catch {
+      safeRemove(storage, legacyKey)
     }
-    return normalized
-  } catch {
-    safeRemove(storage, LEGACY_APPEARANCE_STORAGE_KEY)
-    return { ...DEFAULT_APPEARANCE }
   }
+
+  return { ...DEFAULT_APPEARANCE }
 }
 
 export function writeAppearancePreferences(
@@ -44,14 +47,18 @@ export function writeAppearancePreferences(
 ): AppearancePreferences {
   const normalized = normalizeAppearancePreferences(value)
   if (safeSet(storage, APPEARANCE_STORAGE_KEY, JSON.stringify(normalized))) {
-    safeRemove(storage, LEGACY_APPEARANCE_STORAGE_KEY)
+    clearLegacyAppearancePreferences(storage)
   }
   return normalized
 }
 
 export function clearAppearancePreferences(storage: Storage | undefined = browserStorage()): void {
   safeRemove(storage, APPEARANCE_STORAGE_KEY)
-  safeRemove(storage, LEGACY_APPEARANCE_STORAGE_KEY)
+  clearLegacyAppearancePreferences(storage)
+}
+
+function clearLegacyAppearancePreferences(storage: Storage | undefined): void {
+  for (const key of LEGACY_APPEARANCE_STORAGE_KEYS) safeRemove(storage, key)
 }
 
 function browserStorage(): Storage | undefined {
