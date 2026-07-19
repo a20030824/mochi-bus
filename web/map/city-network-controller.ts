@@ -3,6 +3,7 @@ import { buildNetworkIndex, pickNetwork, type LonLat, type NetworkIndex } from '
 import { setTextTooltip } from './leaflet-tooltip'
 import type { CityNetwork } from './map-api-client'
 import { networkStopRadius } from './network-style'
+import { stopFillGreen, stopHaloColor } from './theme'
 
 export type ResolvedNetworkPick =
   | { kind: 'place'; place: CityNetwork['places'][number] }
@@ -121,8 +122,8 @@ export function createCityNetworkController(options: CityNetworkControllerOption
         interactive: false,
         radius,
         weight: 1,
-        color: '#fffaf0',
-        fillColor: '#4f685b',
+        color: stopHaloColor,
+        fillColor: stopFillGreen,
         fillOpacity: .72,
       }).addTo(options.layer))
     })

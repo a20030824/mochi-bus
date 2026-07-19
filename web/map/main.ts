@@ -31,6 +31,7 @@ import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import { createMapFeatureDiscovery, type MapFeature } from './feature-discovery'
 import { createCityNetworkController } from './city-network-controller'
 import { bindTextTooltip } from './leaflet-tooltip'
+import { routeCasingColor, routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './theme'
 import {
   mapApi,
   type DirectRoute,
@@ -241,7 +242,7 @@ let lastTransferPlans: TransferPlan[] = []
 let journeyWarning: TDXWarning | undefined
 let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = 'browse'
 let routeReturnsToTrip = false
-let activeRouteColor = '#b85f49'
+let activeRouteColor = stopFillAccent
 let previewRequest = 0
 let timetableRequest = 0
 // 行程候選離開前的鏡頭只存可序列化值;路線 detail 的 fit 不應覆蓋它。
@@ -281,7 +282,6 @@ let vehicleRefreshTimer: number | undefined
 let vehicleRefreshEpoch = 0
 let vehicleRefreshController: AbortController | undefined
 
-const routePalette = ['#b85f49', '#4f685b', '#8a674f', '#b08a47', '#765b78', '#6f7561']
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 
 const cityNetwork = createCityNetworkController({
@@ -398,7 +398,7 @@ function addPreviewStopDots(
     pane: 'previewDotPane',
     pointToLayer: (_feature, latlng) => {
       const dot = L.circleMarker(latlng, {
-        pane: 'previewDotPane', radius, weight, color: '#fffaf0', fillColor: color, fillOpacity: .6,
+        pane: 'previewDotPane', radius, weight, color: stopHaloColor, fillColor: color, fillOpacity: .6,
         className: 'preview-stop-dot',
         interactive: false,
       })
@@ -1372,13 +1372,13 @@ function returnToRoutePicker() {
 function unifiedStopMarker(
   position: L.LatLngExpression,
   prominent = false,
-  fillColor = '#4f685b',
+  fillColor = stopFillGreen,
 ): L.CircleMarker {
   const prominentRadius = map.getZoom() >= 16 ? 11 : 9
   return L.circleMarker(position, {
     pane: 'stopPane',
     radius: prominent ? prominentRadius : stopStyleForZoom(map.getZoom()).radius,
-    color: '#fffaf0',
+    color: stopHaloColor,
     weight: prominent ? 2.4 : 1.4,
     fillColor,
     fillOpacity: .96,
@@ -1387,10 +1387,10 @@ function unifiedStopMarker(
 
 function drawTripEndpoints() {
   if (fromCoordinate) {
-    bindTextTooltip(unifiedStopMarker(fromCoordinate, true, '#b85f49'), '出發位置', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
+    bindTextTooltip(unifiedStopMarker(fromCoordinate, true, stopFillAccent), '出發位置', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
   }
   if (toCoordinate) {
-    bindTextTooltip(unifiedStopMarker(toCoordinate, true, '#4f685b'), '目的地', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
+    bindTextTooltip(unifiedStopMarker(toCoordinate, true, stopFillGreen), '目的地', { permanent: true, direction: 'top' }).addTo(nearbyLayer)
   }
 }
 
@@ -1416,7 +1416,7 @@ async function loadRoute(
   routeName: string,
   preferredVariant?: string | null,
   returnToTrip = false,
-  color = '#b85f49',
+  color = stopFillAccent,
   backAction?: () => void,
 ) {
   if (!activeCity) return
@@ -1618,7 +1618,7 @@ function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 
   if (!feature) return
   const [longitude, latitude] = feature.geometry.coordinates
   camera.focusPoint([latitude, longitude], 15)
-  const marker = unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(selectionLayer)
+  const marker = unifiedStopMarker([latitude, longitude], true, stopFillAccent).addTo(selectionLayer)
   marker.getElement()?.classList.add('timetable-stop-focus')
   marker.getElement()?.setAttribute('data-stop-uid', stop.stopUid)
 }
@@ -1673,7 +1673,7 @@ function drawVariant(variant: RouteMapVariant) {
   stopMarkers = []
   const casing = L.geoJSON(variant.shape, {
     pane: 'routePane',
-    style: { color: '#f4efe4', weight: 11, opacity: 0.95, lineCap: 'round', lineJoin: 'round' },
+    style: { color: routeCasingColor, weight: 11, opacity: 0.95, lineCap: 'round', lineJoin: 'round' },
   }).addTo(routeLayer)
   L.geoJSON(variant.shape, {
     pane: 'routePane',
@@ -1888,7 +1888,7 @@ async function findNearbyPlaces(
   lastNearbyOrigin = [latitude, longitude]
   const city = activeCity
   const radius = map.getZoom() >= 15 ? 300 : 500
-  unifiedStopMarker([latitude, longitude], true, '#b85f49').addTo(nearbyLayer)
+  unifiedStopMarker([latitude, longitude], true, stopFillAccent).addTo(nearbyLayer)
   setStatus('正在找這附近的站牌…')
   const { requestId, signal } = beginNavRequest()
 
@@ -1918,7 +1918,7 @@ function renderNearbyPlaces() {
   if (!activeCity || !lastNearbyOrigin) return
   cancelNavRequest()
   nearbyLayer.clearLayers()
-  const origin = unifiedStopMarker(lastNearbyOrigin, true, '#b85f49').addTo(nearbyLayer)
+  const origin = unifiedStopMarker(lastNearbyOrigin, true, stopFillAccent).addTo(nearbyLayer)
   bindHoverTooltip(origin, '你點的位置')
 
   for (const place of lastNearbyPlaces) {

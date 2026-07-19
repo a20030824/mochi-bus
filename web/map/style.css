@@ -859,6 +859,61 @@ button { cursor: pointer; }
   }
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --ink: #f3ebde;
+    --paper: #28251f;
+    --paper-strong: #322e27;
+    --canvas: #1d1c19;
+    --surface: #302c26;
+    --line: #504a41;
+    --line-faint: #403b34;
+    --line-strong: #71695c;
+    --skeleton-base: #2e2a24;
+    --skeleton-highlight: #38332b;
+    --text-muted: #aaa197;
+    --text-faint: #817a70;
+    --accent: #df7357;
+    --accent-deep: #f09b80;
+    --ink-live: #f3ebde;
+    --ink-estimated: #aaa197;
+    --ink-urgent: #f09b80;
+    /* 深色版的 green 提高明度作為文字/圖示色;實心綠底改配深字(--paper-strong)。
+       與 web/map/theme.ts 的 stopFillGreen/stopFillAccent 同值,圖層與 UI 一致。 */
+    --green: #81a08f;
+    --green-deep: #a9c0b2;
+    --shadow-marker: 0 3px 10px rgba(0, 0, 0, .45);
+    --shadow-overlay: 0 8px 24px rgba(0, 0, 0, .5);
+  }
+
+  #map { background: #232120; }
+  /* 反轉+轉回色相:OSM 底圖變成低彩度深色製圖,灰階與亮度沿用亮色版的靜音策略。 */
+  .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) grayscale(.6) brightness(.82) contrast(.88); }
+  .leaflet-control-attribution { background: rgba(40, 37, 31, .85) !important; }
+  .leaflet-control-attribution a { color: var(--green-deep); }
+  .leaflet-control-zoom a { background: rgba(40, 37, 31, .96) !important; }
+
+  .map-brand, .quiet-button, .drawer-back { background: rgba(40, 37, 31, .97); }
+  .map-drawer { background: rgba(40, 37, 31, .97); }
+  .drawer-scroll-fade { background: linear-gradient(to bottom, rgba(40, 37, 31, 0), rgba(40, 37, 31, .97)); }
+  .map-status { background: rgba(58, 53, 45, .94); color: var(--ink); }
+
+  .map-search {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23aaa197' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-4-4'/%3E%3C/svg%3E");
+  }
+  .map-search:focus-visible,
+  .timetable-stop-field select:focus-visible { box-shadow: 0 0 0 3px rgba(125, 156, 139, .28); }
+
+  .nearby-map-marker { box-shadow: 0 0 0 5px rgba(29, 28, 25, .78), var(--shadow-marker); }
+  .region-marker, .city-marker { border-color: rgba(243, 235, 222, .3); background: rgba(40, 37, 31, .92); }
+  .route-service-summary { background: rgba(48, 44, 38, .72); }
+  .trip-nearby-candidate.selected { background: rgba(125, 156, 139, .16); }
+  .favorite-direction-button.selected { background: rgba(223, 115, 87, .16); }
+  .timetable-minute.next { box-shadow: 0 0 0 2px rgba(223, 115, 87, .2); }
+  .direct-route-card.selected, .transfer-plan.selected { box-shadow: 0 4px 14px rgba(0, 0, 0, .4); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
   .place-route-skeleton { background: var(--skeleton-base); }

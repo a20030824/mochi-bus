@@ -19,7 +19,8 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#e8e2d6">
+  <meta name="theme-color" content="#e8e2d6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1d1c19" media="(prefers-color-scheme: dark)">
   <meta name="description" content="${escapeHTML(description)}">
   <link rel="canonical" href="${escapeHTML(canonical)}">
   <meta property="og:title" content="${escapeHTML(title)}">

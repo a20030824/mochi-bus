@@ -11,6 +11,14 @@ function token(name: string): string {
   return match[1]
 }
 
+function darkToken(name: string): string {
+  const darkBlock = css.match(/@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*$/)?.[0]
+  if (!darkBlock) throw new Error('Missing dark scheme block')
+  const match = darkBlock.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`))
+  if (!match) throw new Error(`Missing dark color token --${name}`)
+  return match[1]
+}
+
 function luminance(hex: string): number {
   const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255)
   const [red, green, blue] = channels.map((channel) =>
@@ -41,6 +49,16 @@ describe('map design tokens', () => {
     expect(opacity).toBeLessThanOrEqual(.04)
     expect(css).toMatch(/\.map-drawer::before\s*\{[^}]*pointer-events:\s*none/s)
     expect(css).not.toMatch(/#map::before|#map\s*\{[^}]*paper-grain/s)
+  })
+
+  it('keeps dark-mode text above WCAG AA on dark surfaces', () => {
+    expect(contrast(darkToken('text-muted'), darkToken('paper'))).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(darkToken('text-muted'), darkToken('surface'))).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(darkToken('ink-estimated'), darkToken('paper'))).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(darkToken('ink-urgent'), darkToken('paper'))).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(darkToken('green'), darkToken('paper'))).toBeGreaterThanOrEqual(4.5)
+    // 深色實心綠鈕配深字;圖示與短標籤屬大字級,AA 門檻為 3:1。
+    expect(contrast(darkToken('paper-strong'), darkToken('green'))).toBeGreaterThanOrEqual(3)
   })
 
   it('does not reintroduce retired orphan colors or 10px labels', () => {
