@@ -48,9 +48,19 @@ export function validateSnapshot(snapshot, previousState = null) {
   const patternStopCounts = new Map()
   const patternStopRefs = new Set()
   const patternStopIdentities = new Set()
+  const patternStopPlaceMismatches = new Map()
   for (const item of snapshot.patternStops) {
     if (!patternIds.has(item.patternId)) issues.push(`pattern stop references missing pattern ${item.patternId}`)
-    if (!snapshot.stops.has(item.stopUid)) issues.push(`pattern stop references missing stop ${item.stopUid}`)
+    const canonicalStop = snapshot.stops.get(item.stopUid)
+    if (!canonicalStop) issues.push(`pattern stop references missing stop ${item.stopUid}`)
+    else if (canonicalStop.placeId !== item.placeId) {
+      const key = `${item.stopUid}\0${item.placeId}\0${canonicalStop.placeId}`
+      const mismatch = patternStopPlaceMismatches.get(key) ?? {
+        stopUid: item.stopUid, referencedPlaceId: item.placeId, canonicalPlaceId: canonicalStop.placeId, count: 0,
+      }
+      mismatch.count += 1
+      patternStopPlaceMismatches.set(key, mismatch)
+    }
     if (!snapshot.places.has(item.placeId)) issues.push(`pattern stop references missing place ${item.placeId}`)
     if (!Number.isInteger(item.sequence) || item.sequence < 0) {
       issues.push(`pattern ${item.patternId} has invalid stop sequence ${item.sequence}`)
@@ -61,6 +71,9 @@ export function validateSnapshot(snapshot, previousState = null) {
     patternStopCounts.set(item.patternId, (patternStopCounts.get(item.patternId) ?? 0) + 1)
     patternStopRefs.add(`${item.patternId}\0${item.stopUid}\0${item.placeId}\0${item.sequence}`)
     patternStopIdentities.add(`${item.patternId}\0${item.stopUid}\0${item.placeId}`)
+  }
+  for (const mismatch of patternStopPlaceMismatches.values()) {
+    issues.push(`stop ${mismatch.stopUid} has ${mismatch.count} pattern reference(s) to ${mismatch.referencedPlaceId}, but canonical place is ${mismatch.canonicalPlaceId}`)
   }
   for (const patternId of patternIds) {
     const stopCount = patternStopCounts.get(patternId) ?? 0

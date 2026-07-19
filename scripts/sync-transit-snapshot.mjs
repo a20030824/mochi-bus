@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { validateSnapshot } from './transit-snapshot/validate.mjs'
+import { createStopPlaceRegistry } from './transit-snapshot/stop-place-registry.mjs'
+import { patternStopPlaceMismatchQuery } from './transit-snapshot/snapshot-invariants.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
 import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
@@ -235,34 +237,11 @@ for (const route of routeByUid.values()) {
 }
 
 const patterns = []
-const stops = new Map()
-const places = new Map()
-const patternStops = []
+const stopPlaceRegistry = createStopPlaceRegistry({
+  city: CITY, normalizeName, hash, distanceMeters,
+})
+const { stops, places, patternStops } = stopPlaceRegistry
 const usedShapes = new Map()
-// 站位合併用的網格索引:同名站牌只跟鄰近 3×3 格內的既有站位比距離,
-// 避免每個 stop 線性掃全部 places 的 O(n²)(台北規模會是數億次距離計算)。
-// 格邊長 0.002°(緯度 ~222m,台灣緯度的經度 ~201m)≥ 合併半徑 200m,鄰格掃描才涵蓋所有候選。
-const PLACE_GRID_DEGREES = 0.002
-const placeGrid = new Map()
-const placeGridKey = (normalized, latCell, lonCell) => `${normalized}:${latCell}:${lonCell}`
-function findExistingPlace(normalized, lat, lon) {
-  const latCell = Math.floor(lat / PLACE_GRID_DEGREES)
-  const lonCell = Math.floor(lon / PLACE_GRID_DEGREES)
-  for (let dLat = -1; dLat <= 1; dLat += 1) {
-    for (let dLon = -1; dLon <= 1; dLon += 1) {
-      const bucket = placeGrid.get(placeGridKey(normalized, latCell + dLat, lonCell + dLon))
-      const match = bucket?.find((place) => distanceMeters(lat, lon, place.lat, place.lon) <= 200)
-      if (match) return match
-    }
-  }
-  return undefined
-}
-function indexPlace(place) {
-  const key = placeGridKey(place.normalized, Math.floor(place.lat / PLACE_GRID_DEGREES), Math.floor(place.lon / PLACE_GRID_DEGREES))
-  const bucket = placeGrid.get(key)
-  if (bucket) bucket.push(place)
-  else placeGrid.set(key, [place])
-}
 for (const item of stopOfRouteItems) {
   if (!item.RouteUID || !isSupportedBusDirection(item.Direction) || !item.Stops?.length) continue
   const route = routeByUid.get(item.RouteUID)
@@ -292,20 +271,10 @@ for (const item of stopOfRouteItems) {
   })
   await writeFile(join(shapeDir, `${safeId}.json`), JSON.stringify(shapeFeature))
 
-  for (const stop of validStops) {
-    const lat = stop.StopPosition.PositionLat
-    const lon = stop.StopPosition.PositionLon
-    const normalized = normalizeName(stop.StopName.Zh_tw)
-    const existingPlace = findExistingPlace(normalized, lat, lon)
-    const placeId = existingPlace?.id ?? `${CITY}:${hash(`${normalized}:${lat.toFixed(4)}:${lon.toFixed(4)}`)}`
-    stops.set(stop.StopUID, { uid: stop.StopUID, name: stop.StopName.Zh_tw, normalized, lat, lon, placeId })
-    if (!existingPlace) {
-      const place = { id: placeId, name: stop.StopName.Zh_tw, normalized, lat, lon }
-      places.set(placeId, place)
-      indexPlace(place)
-    }
-    patternStops.push({ patternId, stopUid: stop.StopUID, placeId, sequence: stop.StopSequence ?? 0 })
-  }
+  for (const stop of validStops) stopPlaceRegistry.addOccurrence({ patternId, stop })
+}
+for (const warning of stopPlaceRegistry.duplicateWarnings()) {
+  console.warn(JSON.stringify({ city: CITY, warning: 'duplicate-stop-observation', ...warning }))
 }
 
 const patternById = new Map(patterns.map((pattern) => [pattern.id, pattern]))
@@ -699,7 +668,8 @@ function hashContent(payloads) {
   // 5:normalizeName 加「臺→台、車站→站、去結尾站」,placeId 全部重算。
   // 6:network.json 內建 schemaVersion/city(API 改原樣串流)+ shape 簡化瘦身。
   // 7:manifest/state 加入品質指標，所有城市重跑新版 gate 後才可沿用 unchanged 快取。
-  const SNAPSHOT_FORMAT = 7
+  // 8:StopUID 首次觀測決定 canonical place，後續 route occurrence 重用該 placeId。
+  const SNAPSHOT_FORMAT = 8
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])
@@ -741,6 +711,7 @@ async function validateRemoteSnapshot(targetVersion, expectedCounts, expectedQua
       WHERE p.version=${sqlValue(targetVersion)} AND p.city_code=${sqlValue(CITY)}
       GROUP BY p.pattern_id HAVING COUNT(ps.stop_uid) < 2
     )`,
+    patternStopPlaceMismatchQuery(targetVersion),
   ].join(';'))
   const actual = {
     routes: Number(result[0]?.results?.[0]?.count),
@@ -758,6 +729,10 @@ async function validateRemoteSnapshot(targetVersion, expectedCounts, expectedQua
   if (dangling !== 0) throw new Error(`Remote D1 contains ${dangling} dangling snapshot references`)
   const shortPatterns = Number(result[6]?.results?.[0]?.count)
   if (shortPatterns !== 0) throw new Error(`Remote D1 contains ${shortPatterns} patterns with fewer than two stops`)
+  const placeMismatches = Number(result[7]?.results?.[0]?.count)
+  if (placeMismatches !== 0) {
+    throw new Error(`Remote D1 contains ${placeMismatches} pattern stop place mismatches`)
+  }
   if (r2) {
     const remoteManifest = await s3GetJson(manifestKey)
     if (remoteManifest?.schemaVersion !== 2

@@ -66,6 +66,16 @@ describe('validateSnapshot', () => {
     expect(() => validateSnapshot(snapshot)).toThrow(/references missing route|references missing stop|references missing place|network references missing pattern/)
   })
 
+  it('rejects pattern-stop places that differ from the canonical stop', () => {
+    const snapshot = validSnapshot()
+    snapshot.places.set('L2', { id: 'L2', lat: 23.41, lon: 120.41 })
+    snapshot.patternStops[0].placeId = 'L2'
+
+    expect(() => validateSnapshot(snapshot)).toThrow(
+      /stop S1 has 1 pattern reference\(s\) to L2, but canonical place is L1/,
+    )
+  })
+
   it('rejects empty or geographically invalid data', () => {
     const snapshot = validSnapshot()
     snapshot.patterns = []
