@@ -15,23 +15,35 @@ describe('appearance domain', () => {
     }
   })
 
-  it('migrates the old homepage field into the general interface field', () => {
+  it('migrates v1 fields into general and unified map preferences', () => {
     expect(normalizeAppearancePreferences({
       version: 1,
       home: 'light',
       mapUi: 'dark',
       mapTiles: 'light',
     })).toEqual({
-      version: 2,
+      version: 3,
       general: 'light',
-      mapUi: 'dark',
-      mapTiles: 'light',
+      map: 'dark',
+    })
+  })
+
+  it('uses the v2 interface theme when interface and basemap disagree', () => {
+    expect(normalizeAppearancePreferences({
+      version: 2,
+      general: 'dark',
+      mapUi: 'light',
+      mapTiles: 'dark',
+    })).toEqual({
+      version: 3,
+      general: 'dark',
+      map: 'light',
     })
   })
 
   it('derives browser chrome colors from the current page surface', () => {
     expect(appearanceThemeColor('general', DEFAULT_APPEARANCE)).toBe('#211f1b')
     expect(appearanceThemeColor('map', DEFAULT_APPEARANCE)).toBe('#e8e2d6')
-    expect(appearanceThemeColor('map', { ...DEFAULT_APPEARANCE, mapUi: 'dark' })).toBe('#1d1c19')
+    expect(appearanceThemeColor('map', { ...DEFAULT_APPEARANCE, map: 'dark' })).toBe('#1d1c19')
   })
 })
