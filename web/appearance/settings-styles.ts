@@ -63,13 +63,11 @@ export const appearanceSettingsStyles = `
   outline-offset: 2px;
 }
 .appearance-message { min-height: 18px; margin: 8px 0 0; }
-@media (prefers-color-scheme: dark) {
-  .appearance-list, .appearance-row { border-color: #4d473e; }
-  .appearance-segmented { border-color: #4d473e; background: #302c26; }
-  .appearance-segment:hover .appearance-option-input:not(:checked) + span { background: rgba(248, 240, 227, .08); color: #f8f0e3; }
-  .appearance-option-input:checked + span { background: #f8f0e3; color: #211f1b; box-shadow: 0 1px 4px rgba(0, 0, 0, .34); }
-  .appearance-option-input:focus-visible + span { outline-color: #81a08f; }
-}
+html[data-general-theme="dark"] :is(.appearance-list, .appearance-row) { border-color: #4d473e; }
+html[data-general-theme="dark"] .appearance-segmented { border-color: #4d473e; background: #302c26; }
+html[data-general-theme="dark"] .appearance-segment:hover .appearance-option-input:not(:checked) + span { background: rgba(248, 240, 227, .08); color: #f8f0e3; }
+html[data-general-theme="dark"] .appearance-option-input:checked + span { background: #f8f0e3; color: #211f1b; box-shadow: 0 1px 4px rgba(0, 0, 0, .34); }
+html[data-general-theme="dark"] .appearance-option-input:focus-visible + span { outline-color: #81a08f; }
 @media (prefers-reduced-motion: reduce) {
   .appearance-segment span { transition: none; }
 }
