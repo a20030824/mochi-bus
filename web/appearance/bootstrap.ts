@@ -2,7 +2,7 @@ import {
   APPEARANCE_STORAGE_KEY,
   appearancePageForPath,
   appearanceThemeColor,
-  LEGACY_APPEARANCE_STORAGE_KEY,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
   LOCAL_DATA_CLEARED_EVENT,
   type AppearancePage,
 } from '../../src/domain/appearance'
@@ -19,7 +19,7 @@ const STYLE_ID = 'mochi-appearance-overrides'
 const SETTINGS_STYLE_ID = 'mochi-appearance-settings'
 const SETTINGS_ID = 'appearance-settings'
 
-type AppearanceKey = 'general' | 'mapUi' | 'mapTiles'
+type AppearanceKey = 'general' | 'map'
 
 type AppearanceOption = {
   key: AppearanceKey
@@ -27,13 +27,15 @@ type AppearanceOption = {
   label: string
 }
 
-type AppearanceControl = Record<AppearanceTheme, HTMLInputElement>
+type AppearanceControl = {
+  inputs: Record<AppearanceTheme, HTMLInputElement>
+  segmented: HTMLDivElement
+}
 
 const themes: AppearanceTheme[] = ['light', 'dark']
 const appearanceOptions: AppearanceOption[] = [
   { key: 'general', id: 'appearance-general', label: '一般介面' },
-  { key: 'mapUi', id: 'appearance-map-ui', label: '地圖介面' },
-  { key: 'mapTiles', id: 'appearance-map-tiles', label: '地圖底圖' },
+  { key: 'map', id: 'appearance-map', label: '地圖外觀' },
 ]
 
 let syncAppearanceSettings: ((preferences: AppearancePreferences) => void) | undefined
@@ -49,8 +51,9 @@ function applyAppearance(preferences: AppearancePreferences): void {
   const root = document.documentElement
   root.dataset.appearancePage = page
   root.dataset.generalTheme = preferences.general
-  root.dataset.mapUiTheme = preferences.mapUi
-  root.dataset.mapTilesTheme = preferences.mapTiles
+  root.dataset.mapTheme = preferences.map
+  delete root.dataset.mapUiTheme
+  delete root.dataset.mapTilesTheme
   installAppearanceStyles()
   updateThemeColor(page, preferences)
   if (location.pathname === '/setup') {
@@ -106,16 +109,15 @@ function installAppearanceSettings(initial: AppearancePreferences): void {
   const list = document.createElement('div')
   list.className = 'appearance-list'
 
-  const announcement = document.createElement('p')
-  announcement.className = 'form-message appearance-message'
-  announcement.setAttribute('aria-live', 'polite')
-
   const controls = new Map<AppearanceKey, AppearanceControl>()
   const syncControls = (next: AppearancePreferences) => {
     preferences = next
     for (const option of appearanceOptions) {
       const control = controls.get(option.key)
-      if (control) control[preferences[option.key]].checked = true
+      if (!control) continue
+      const theme = preferences[option.key]
+      control.inputs[theme].checked = true
+      control.segmented.dataset.selected = theme
     }
   }
   syncAppearanceSettings = syncControls
@@ -133,7 +135,8 @@ function installAppearanceSettings(initial: AppearancePreferences): void {
 
     const segmented = document.createElement('div')
     segmented.className = 'appearance-segmented'
-    const optionControls = {} as AppearanceControl
+    segmented.dataset.selected = preferences[option.key]
+    const optionControls = {} as Record<AppearanceTheme, HTMLInputElement>
 
     for (const theme of themes) {
       const segment = document.createElement('label')
@@ -154,7 +157,6 @@ function installAppearanceSettings(initial: AppearancePreferences): void {
         if (!input.checked) return
         preferences = writeAppearancePreferences({ ...preferences, [option.key]: theme })
         applyAppearance(preferences)
-        announcement.textContent = `${option.label}已改為${themeLabel(theme)}。`
       })
 
       optionControls[theme] = input
@@ -162,12 +164,12 @@ function installAppearanceSettings(initial: AppearancePreferences): void {
       segmented.appendChild(segment)
     }
 
-    controls.set(option.key, optionControls)
+    controls.set(option.key, { inputs: optionControls, segmented })
     row.replaceChildren(label, segmented)
     list.appendChild(row)
   }
 
-  details.replaceChildren(summary, list, announcement)
+  details.replaceChildren(summary, list)
   section.appendChild(details)
   const firstSection = advanced.querySelector(':scope > .advanced-section')
   advanced.insertBefore(section, firstSection)
@@ -186,7 +188,11 @@ function themeLabel(theme: AppearanceTheme): string {
 
 window.addEventListener('pageshow', applyStoredAppearance)
 window.addEventListener('storage', (event) => {
-  if (event.key === null || event.key === APPEARANCE_STORAGE_KEY || event.key === LEGACY_APPEARANCE_STORAGE_KEY) {
+  if (
+    event.key === null
+    || event.key === APPEARANCE_STORAGE_KEY
+    || LEGACY_APPEARANCE_STORAGE_KEYS.some((key) => key === event.key)
+  ) {
     applyStoredAppearance()
   }
 })
