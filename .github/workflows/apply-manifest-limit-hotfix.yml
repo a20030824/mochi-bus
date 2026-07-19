@@ -147,3 +147,5 @@ describe('snapshot manifest remote read limit', () => {
           git fetch origin main
           git rebase origin/main
           git push origin HEAD:main
+
+# trigger bounded manifest hotfix
