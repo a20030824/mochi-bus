@@ -111,6 +111,7 @@ export const telemetryFailureClasses = [
   'active_rows_empty',
   'route_without_pattern',
   'manifest_missing',
+  'manifest_read_failed',
   'manifest_version_mismatch',
   'manifest_count_mismatch',
   'network_missing',

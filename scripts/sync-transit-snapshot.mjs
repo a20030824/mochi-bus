@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { validateSnapshot } from './transit-snapshot/validate.mjs'
 import { createStopPlaceRegistry } from './transit-snapshot/stop-place-registry.mjs'
 import { patternStopPlaceMismatchQuery } from './transit-snapshot/snapshot-invariants.mjs'
-import { manifestReadLimit } from './transit-snapshot/manifest-read-limit.mjs'
+import { manifestReadLimit, readManifestJson } from './transit-snapshot/manifest-read-limit.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
 import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
@@ -170,6 +170,7 @@ if (previousState && process.env.SNAPSHOT_FORCE !== '1') {
       state: previousState,
       query: queryActiveProbeD1,
       r2: {
+        getManifest: s3GetManifest,
         getJson: s3GetJson,
         head: s3HeadObject,
         readPrefix: s3ReadPrefix,
@@ -503,6 +504,7 @@ await publishWithRollback({
       state: publishedState,
       query: queryActiveProbeD1,
       r2: {
+        getManifest: s3GetManifest,
         getJson: s3GetJson,
         head: s3HeadObject,
         readPrefix: s3ReadPrefix,
@@ -843,6 +845,9 @@ async function verifyR2Artifact(artifact) {
     throw new Error(`R2 GET ${artifact.key} failed (${response.status})`)
   }
   assertArtifactIntegrity(artifact, await response.arrayBuffer())
+}
+async function s3GetManifest(key) {
+  return readManifestJson({ key, head: s3HeadObject, getJson: s3GetJson })
 }
 async function s3GetJson(key, maximumBytes = 1024 * 1024) {
   const response = await r2.client.fetch(objectUrl(key))

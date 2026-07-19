@@ -1,26 +1,42 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_JSON_READ_LIMIT,
   MAX_MANIFEST_READ_LIMIT,
   manifestReadLimit,
+  manifestReadLimitFromBytes,
+  readManifestJson,
 } from './manifest-read-limit.mjs'
 
 describe('snapshot manifest remote read limit', () => {
-  it('keeps the existing one MiB floor for small JSON objects', () => {
+  it('keeps the one MiB floor and scales from object size', () => {
     expect(manifestReadLimit({ schemaVersion: 2, artifacts: [] })).toBe(DEFAULT_JSON_READ_LIMIT)
+    expect(manifestReadLimitFromBytes(1_100_000)).toBe(1_100_000 + 64 * 1024)
   })
 
-  it('scales above one MiB from the locally generated expected manifest size', () => {
-    const manifest = { schemaVersion: 2, artifacts: [{ key: 'x'.repeat(1_100_000) }] }
-    const expectedBytes = Buffer.byteLength(JSON.stringify(manifest))
-    const limit = manifestReadLimit(manifest)
-    expect(limit).toBeGreaterThan(expectedBytes)
-    expect(limit).toBeGreaterThan(DEFAULT_JSON_READ_LIMIT)
-    expect(limit - expectedBytes).toBe(64 * 1024)
+  it('uses HEAD metadata for active probe reads', async () => {
+    const getJson = vi.fn(async () => ({ schemaVersion: 2 }))
+    await expect(readManifestJson({
+      key: 'manifest.json',
+      head: vi.fn(async () => ({ size: 1_100_000 })),
+      getJson,
+    })).resolves.toEqual({ schemaVersion: 2 })
+    expect(getJson).toHaveBeenCalledWith('manifest.json', 1_100_000 + 64 * 1024)
   })
 
-  it('rejects manifests that would exceed the absolute safety ceiling', () => {
-    const manifest = { schemaVersion: 2, artifacts: [{ key: 'x'.repeat(MAX_MANIFEST_READ_LIMIT) }] }
-    expect(() => manifestReadLimit(manifest)).toThrow('Snapshot manifest exceeds the remote validation safety limit')
+  it('returns null only for a missing object', async () => {
+    const getJson = vi.fn()
+    await expect(readManifestJson({
+      key: 'manifest.json',
+      head: vi.fn(async () => null),
+      getJson,
+    })).resolves.toBeNull()
+    expect(getJson).not.toHaveBeenCalled()
+  })
+
+  it('fails closed for unavailable or oversized metadata', () => {
+    expect(() => manifestReadLimitFromBytes(Number.NaN)).toThrow('Snapshot manifest size is unavailable')
+    expect(manifestReadLimitFromBytes(MAX_MANIFEST_READ_LIMIT)).toBe(MAX_MANIFEST_READ_LIMIT)
+    expect(() => manifestReadLimitFromBytes(MAX_MANIFEST_READ_LIMIT + 1))
+      .toThrow('Snapshot manifest exceeds the remote validation safety limit')
   })
 })

@@ -48,7 +48,7 @@ function fixture(overrides = {}) {
     ],
   }
   const r2 = {
-    getJson: vi.fn(async (key) => key.includes(previousVersion)
+    getManifest: vi.fn(async (key) => key.includes(previousVersion)
       ? {
           ...manifest,
           version: previousVersion,
@@ -110,7 +110,7 @@ describe('unchanged active snapshot probe', () => {
       `snapshots/${activeVersion}/cities/${city}/network.json`,
       65_536,
     )
-    expect(options.r2.getJson).not.toHaveBeenCalledWith(expect.stringContaining('network.json'))
+    expect(options.r2.getManifest).not.toHaveBeenCalledWith(expect.stringContaining('network.json'))
   })
 
   it('uses a stable sample for a rerun and rotates across windows', () => {
@@ -198,10 +198,11 @@ describe('unchanged active snapshot probe', () => {
         ? [{ routes: 2, patterns: 2, stops: 4, places: 2, pattern_stops: 4, route_without_pattern: 1, sample_count: 2 }]
         : original(sql, params))
     }],
-    ['manifest_missing', (options) => { options.r2.getJson = vi.fn(async () => null) }],
+    ['manifest_missing', (options) => { options.r2.getManifest = vi.fn(async () => null) }],
+    ['manifest_read_failed', (options) => { options.r2.getManifest = vi.fn(async () => { throw new Error('oversized manifest') }) }],
     ['manifest_count_mismatch', (options) => {
-      const original = options.r2.getJson
-      options.r2.getJson = vi.fn(async (key) => ({ ...(await original(key)), counts: { ...counts, routes: 99 } }))
+      const original = options.r2.getManifest
+      options.r2.getManifest = vi.fn(async (key) => ({ ...(await original(key)), counts: { ...counts, routes: 99 } }))
     }],
     ['network_missing', (options) => {
       const original = options.r2.head

@@ -10,6 +10,7 @@ export const SNAPSHOT_PROBE_FAILURE_CLASSES = Object.freeze([
   'active_rows_empty',
   'route_without_pattern',
   'manifest_missing',
+  'manifest_read_failed',
   'manifest_version_mismatch',
   'manifest_count_mismatch',
   'network_missing',
@@ -123,9 +124,9 @@ export async function probeActiveSnapshot({
     const prefix = snapshotPrefix(activeVersion, city)
     let manifest
     try {
-      manifest = await r2.getJson(`${prefix}manifest.json`)
+      manifest = await r2.getManifest(`${prefix}manifest.json`)
     } catch {
-      throw probeFailure('manifest_missing')
+      throw probeFailure('manifest_read_failed')
     }
     if (!manifest) throw probeFailure('manifest_missing')
     if (manifest.schemaVersion !== 2 || manifest.city !== city || manifest.version !== activeVersion) {
@@ -369,7 +370,7 @@ async function probeDiagnostics({ city, activeVersion, state, sample, query, r2 
     try {
       const counts = await readCounts(query, city, previousVersion)
       const prefix = snapshotPrefix(previousVersion, city)
-      const manifest = await r2.getJson(`${prefix}manifest.json`)
+      const manifest = await r2.getManifest(`${prefix}manifest.json`)
       const networkKey = `${prefix}network.json`
       const networkArtifact = Array.isArray(manifest?.artifacts)
         ? manifest.artifacts.find((artifact) => artifact?.key === networkKey)
