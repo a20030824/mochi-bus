@@ -66,6 +66,14 @@ describe('validateSnapshot', () => {
     expect(() => validateSnapshot(snapshot)).toThrow(/references missing route|references missing stop|references missing place|network references missing pattern/)
   })
 
+  it('rejects catalogue routes that have no pattern', () => {
+    const snapshot = validSnapshot()
+    snapshot.routes.set('ORPHAN', { uid: 'ORPHAN', name: 'orphan' })
+    snapshot.schedules.set('ORPHAN', [])
+
+    expect(() => validateSnapshot(snapshot)).toThrow(/route ORPHAN has no pattern/)
+  })
+
   it('rejects pattern-stop places that differ from the canonical stop', () => {
     const snapshot = validSnapshot()
     snapshot.places.set('L2', { id: 'L2', lat: 23.41, lon: 120.41 })

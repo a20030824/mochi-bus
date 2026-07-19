@@ -26,12 +26,17 @@ export function validateSnapshot(snapshot, previousState = null) {
 
   const patternIds = new Set()
   const patternById = new Map()
+  const patternedRouteUids = new Set()
   for (const pattern of snapshot.patterns) {
     if (!pattern.id || patternIds.has(pattern.id)) issues.push(`duplicate or empty pattern id: ${pattern.id ?? ''}`)
     patternIds.add(pattern.id)
     patternById.set(pattern.id, pattern)
+    patternedRouteUids.add(pattern.routeUid)
     if (!snapshot.routes.has(pattern.routeUid)) issues.push(`pattern ${pattern.id} references missing route ${pattern.routeUid}`)
     validateLineString(pattern.id, pattern.shapeFeature, issues)
+  }
+  for (const routeUid of snapshot.routes.keys()) {
+    if (!patternedRouteUids.has(routeUid)) issues.push(`route ${routeUid} has no pattern`)
   }
 
   for (const [stopUid, stop] of snapshot.stops) {

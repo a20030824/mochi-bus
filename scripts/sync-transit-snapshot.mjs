@@ -9,6 +9,7 @@ import { manifestReadLimit, readManifestJson } from './transit-snapshot/manifest
 import { parseContentLength } from './transit-snapshot/r2-metadata.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
+import { retainRoutesWithPatterns } from './transit-snapshot/route-catalogue.mjs'
 import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
 import { snapshotProbeMarker, snapshotProgressMarker, snapshotTerminalMarker } from './transit-snapshot/window-contract.mjs'
 import {
@@ -29,7 +30,7 @@ const tdxClientSecret = process.env.TDX_CLIENT_SECRET ?? workerVars.TDX_CLIENT_S
 if (!tdxClientId || !tdxClientSecret) {
   throw new Error('Missing TDX_CLIENT_ID or TDX_CLIENT_SECRET in the environment or .dev.vars')
 }
-// R2 物件走 S3 相容 API 直接 PUT/DELETE:wrangler CLI 每個物件要 spawn 一個 process,
+// R2 物件走 S3 相容 API直接 PUT/DELETE:wrangler CLI 每個物件要 spawn 一個 process,
 // 大城市數萬個物件會跑不完(GitHub Actions 單 job 上限 6 小時)。
 const r2 = await createR2Client()
 if (!r2) {
@@ -276,6 +277,18 @@ for (const item of stopOfRouteItems) {
 
   for (const stop of validStops) stopPlaceRegistry.addOccurrence({ patternId, stop })
 }
+const removedRouteUids = retainRoutesWithPatterns({
+  routes: routeByUid,
+  schedules: schedulesByRouteUid,
+  patterns,
+})
+if (removedRouteUids.length) {
+  console.warn(JSON.stringify({
+    city: CITY,
+    warning: 'routes-without-pattern-removed',
+    count: removedRouteUids.length,
+  }))
+}
 for (const warning of stopPlaceRegistry.duplicateWarnings()) {
   console.warn(JSON.stringify({ city: CITY, warning: 'duplicate-stop-observation', ...warning }))
 }
@@ -364,7 +377,7 @@ for (let start = 0; start < sql.length; start += SQL_CHUNK_STATEMENTS) {
 
 const networkKey = `snapshots/${version}/cities/${CITY}/network.json`
 const networkFile = join(outputRoot, 'network.json')
-// schemaVersion/city 直接寫進檔案:API 端把這個物件原樣串流給瀏覽器
+// schemaVersion/city直接寫進檔案:API 端把這個物件原樣串流給瀏覽器
 // (雙北 35MB+ 在 Worker 內 parse+stringify 會撞記憶體上限),不再有機會補欄位。
 // 全路網 geometry 統一使用 8m Douglas-Peucker 容差。50m 雖可顯著縮小 payload，
 // 但會犧牲路網線形的視覺正確性，因此不再用於正式 snapshot。細節路線圖使用的
@@ -672,7 +685,8 @@ function hashContent(payloads) {
   // 6:network.json 內建 schemaVersion/city(API 改原樣串流)+ shape 簡化瘦身。
   // 7:manifest/state 加入品質指標，所有城市重跑新版 gate 後才可沿用 unchanged 快取。
   // 8:StopUID 首次觀測決定 canonical place，後續 route occurrence 重用該 placeId。
-  const SNAPSHOT_FORMAT = 8
+  // 9:route catalogue 只保留至少有一個有效 pattern 的 route。
+  const SNAPSHOT_FORMAT = 9
   // UpdateTime/VersionID 這類欄位在 TDX 重新發佈時會變動,但不影響我們匯入的內容,
   // 納入 hash 會讓「跳過未變更城市」幾乎永遠不生效。
   const volatileKeys = new Set(['UpdateTime', 'SrcUpdateTime', 'SrcTransTime', 'VersionID'])
@@ -714,6 +728,12 @@ async function validateRemoteSnapshot(targetVersion, expectedCounts, expectedQua
       WHERE p.version=${sqlValue(targetVersion)} AND p.city_code=${sqlValue(CITY)}
       GROUP BY p.pattern_id HAVING COUNT(ps.stop_uid) < 2
     )`,
+    `SELECT COUNT(*) AS count FROM routes r
+      WHERE r.version=${sqlValue(targetVersion)} AND r.city_code=${sqlValue(CITY)}
+      AND NOT EXISTS (
+        SELECT 1 FROM patterns p
+        WHERE p.version=r.version AND p.city_code=r.city_code AND p.route_uid=r.route_uid
+      )`,
     patternStopPlaceMismatchQuery(targetVersion),
   ].join(';'))
   const actual = {
@@ -732,7 +752,9 @@ async function validateRemoteSnapshot(targetVersion, expectedCounts, expectedQua
   if (dangling !== 0) throw new Error(`Remote D1 contains ${dangling} dangling snapshot references`)
   const shortPatterns = Number(result[6]?.results?.[0]?.count)
   if (shortPatterns !== 0) throw new Error(`Remote D1 contains ${shortPatterns} patterns with fewer than two stops`)
-  const placeMismatches = Number(result[7]?.results?.[0]?.count)
+  const orphanRoutes = Number(result[7]?.results?.[0]?.count)
+  if (orphanRoutes !== 0) throw new Error(`Remote D1 contains ${orphanRoutes} routes without patterns`)
+  const placeMismatches = Number(result[8]?.results?.[0]?.count)
   if (placeMismatches !== 0) {
     throw new Error(`Remote D1 contains ${placeMismatches} pattern stop place mismatches`)
   }
