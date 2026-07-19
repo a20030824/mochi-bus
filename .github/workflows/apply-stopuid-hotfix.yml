@@ -1,0 +1,348 @@
+name: Apply StopUID canonicalization hotfix
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-stopuid-hotfix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-stopuid-hotfix
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Apply focused hotfix
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one replacement, found {count}')
+              file.write_text(text.replace(old, new), encoding='utf-8')
+
+          Path('scripts/transit-snapshot/stop-place-registry.mjs').write_text(r'''const DEFAULT_GRID_DEGREES = 0.002
+
+export function createStopPlaceRegistry({
+  city,
+  normalizeName,
+  hash,
+  distanceMeters,
+  mergeRadiusMeters = 200,
+  warningDistanceMeters = 50,
+  gridDegrees = DEFAULT_GRID_DEGREES,
+}) {
+  if (!city || typeof normalizeName !== 'function' || typeof hash !== 'function'
+    || typeof distanceMeters !== 'function') {
+    throw new Error('Invalid stop/place registry configuration')
+  }
+
+  const stops = new Map()
+  const places = new Map()
+  const patternStops = []
+  const placeGrid = new Map()
+  const observations = new Map()
+  const placeGridKey = (normalized, latCell, lonCell) => `${normalized}:${latCell}:${lonCell}`
+
+  function findExistingPlace(normalized, lat, lon) {
+    const latCell = Math.floor(lat / gridDegrees)
+    const lonCell = Math.floor(lon / gridDegrees)
+    for (let dLat = -1; dLat <= 1; dLat += 1) {
+      for (let dLon = -1; dLon <= 1; dLon += 1) {
+        const bucket = placeGrid.get(placeGridKey(normalized, latCell + dLat, lonCell + dLon))
+        const match = bucket?.find((place) => distanceMeters(lat, lon, place.lat, place.lon) <= mergeRadiusMeters)
+        if (match) return match
+      }
+    }
+    return undefined
+  }
+
+  function indexPlace(place) {
+    const key = placeGridKey(place.normalized, Math.floor(place.lat / gridDegrees), Math.floor(place.lon / gridDegrees))
+    const bucket = placeGrid.get(key)
+    if (bucket) bucket.push(place)
+    else placeGrid.set(key, [place])
+  }
+
+  function addOccurrence({ patternId, stop }) {
+    const stopUid = stop?.StopUID
+    const name = stop?.StopName?.Zh_tw
+    const lat = stop?.StopPosition?.PositionLat
+    const lon = stop?.StopPosition?.PositionLon
+    if (!patternId || !stopUid || !name || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+      throw new Error('Invalid stop occurrence')
+    }
+    const normalized = normalizeName(name)
+    const canonical = stops.get(stopUid)
+
+    // City StopOfRoute is loaded before InterCity. The first observation owns
+    // the canonical StopUID record; later route occurrences must reuse its placeId.
+    if (canonical) {
+      const observation = observations.get(stopUid)
+      observation.occurrences += 1
+      observation.normalizedNameMismatch ||= canonical.normalized !== normalized
+      observation.maxDistanceMeters = Math.max(
+        observation.maxDistanceMeters,
+        distanceMeters(canonical.lat, canonical.lon, lat, lon),
+      )
+      patternStops.push({
+        patternId,
+        stopUid,
+        placeId: canonical.placeId,
+        sequence: stop.StopSequence ?? 0,
+      })
+      return canonical
+    }
+
+    const existingPlace = findExistingPlace(normalized, lat, lon)
+    const placeId = existingPlace?.id ?? `${city}:${hash(`${normalized}:${lat.toFixed(4)}:${lon.toFixed(4)}`)}`
+    const canonicalStop = { uid: stopUid, name, normalized, lat, lon, placeId }
+    stops.set(stopUid, canonicalStop)
+    observations.set(stopUid, {
+      stopUid,
+      occurrences: 1,
+      canonicalPlaceId: placeId,
+      normalizedNameMismatch: false,
+      maxDistanceMeters: 0,
+    })
+    if (!existingPlace) {
+      const place = { id: placeId, name, normalized, lat, lon }
+      places.set(placeId, place)
+      indexPlace(place)
+    }
+    patternStops.push({ patternId, stopUid, placeId, sequence: stop.StopSequence ?? 0 })
+    return canonicalStop
+  }
+
+  function duplicateWarnings() {
+    return [...observations.values()]
+      .filter((item) => item.occurrences > 1
+        && (item.normalizedNameMismatch || item.maxDistanceMeters > warningDistanceMeters))
+      .sort((left, right) => left.stopUid.localeCompare(right.stopUid))
+      .map((item) => Object.freeze({
+        stopUid: item.stopUid,
+        occurrences: item.occurrences,
+        canonicalPlaceId: item.canonicalPlaceId,
+        normalizedNameMismatch: item.normalizedNameMismatch,
+        maxDistanceMeters: Math.round(item.maxDistanceMeters),
+      }))
+  }
+
+  return Object.freeze({ stops, places, patternStops, addOccurrence, duplicateWarnings })
+}
+''', encoding='utf-8')
+
+          Path('scripts/transit-snapshot/stop-place-registry.test.mjs').write_text(r'''import { describe, expect, it } from 'vitest'
+import { createStopPlaceRegistry } from './stop-place-registry.mjs'
+
+function normalizeName(value) {
+  return value.normalize('NFKC').replace(/[\s()（）]/g, '').toLowerCase()
+    .replaceAll('臺', '台').replace(/火車站|車站/g, '站').replace(/站$/, '')
+}
+
+function hash(value) {
+  let result = 2166136261
+  for (const char of value) result = Math.imul(result ^ char.charCodeAt(0), 16777619)
+  return (result >>> 0).toString(36)
+}
+
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const radius = 6_371_000
+  const radians = (value) => value * Math.PI / 180
+  const deltaLat = radians(lat2 - lat1)
+  const deltaLon = radians(lon2 - lon1)
+  const a = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(radians(lat1)) * Math.cos(radians(lat2)) * Math.sin(deltaLon / 2) ** 2
+  return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+function observation({ uid = 'TAO1054', name = '桃園站', lat = 24.989, lon = 121.313, sequence = 1 } = {}) {
+  return {
+    StopUID: uid,
+    StopName: { Zh_tw: name },
+    StopPosition: { PositionLat: lat, PositionLon: lon },
+    StopSequence: sequence,
+  }
+}
+
+function registry() {
+  return createStopPlaceRegistry({ city: 'Taoyuan', normalizeName, hash, distanceMeters })
+}
+
+describe('StopUID canonical stop/place registry', () => {
+  it('keeps the first City observation when a later InterCity occurrence differs', () => {
+    const value = registry()
+    const first = value.addOccurrence({ patternId: 'CITY:0', stop: observation() })
+    const later = value.addOccurrence({
+      patternId: 'THB:0',
+      stop: observation({ name: '桃園火車站', lat: 24.9915, lon: 121.3155 }),
+    })
+
+    expect(later).toBe(first)
+    expect(value.stops.get('TAO1054')).toMatchObject({
+      name: '桃園站', lat: 24.989, lon: 121.313, placeId: first.placeId,
+    })
+    expect(value.patternStops.map((item) => item.placeId)).toEqual([first.placeId, first.placeId])
+    expect(value.places.size).toBe(1)
+    expect(value.duplicateWarnings()).toEqual([expect.objectContaining({
+      stopUid: 'TAO1054', occurrences: 2, canonicalPlaceId: first.placeId,
+      maxDistanceMeters: expect.any(Number),
+    })])
+  })
+
+  it('reuses one canonical place across eight pattern occurrences', () => {
+    const value = registry()
+    for (let index = 0; index < 8; index += 1) {
+      value.addOccurrence({
+        patternId: `P${index}`,
+        stop: observation({ sequence: index + 1, lat: 24.989 + index * 0.00001 }),
+      })
+    }
+    const placeIds = new Set(value.patternStops.map((item) => item.placeId))
+    expect(placeIds.size).toBe(1)
+    expect(value.stops.size).toBe(1)
+    expect(value.places.size).toBe(1)
+  })
+
+  it('does not create an orphan place for a duplicate StopUID', () => {
+    const value = registry()
+    const first = value.addOccurrence({ patternId: 'P1', stop: observation() })
+    value.addOccurrence({
+      patternId: 'P2',
+      stop: observation({ name: '完全不同站名', lat: 25.2, lon: 121.6 }),
+    })
+    expect([...value.places.keys()]).toEqual([first.placeId])
+  })
+
+  it('retains nearby same-name clustering for distinct StopUIDs', () => {
+    const value = registry()
+    const first = value.addOccurrence({ patternId: 'P1', stop: observation({ uid: 'S1' }) })
+    const second = value.addOccurrence({
+      patternId: 'P2',
+      stop: observation({ uid: 'S2', lat: 24.9892, lon: 121.3132 }),
+    })
+    expect(second.placeId).toBe(first.placeId)
+    expect(value.stops.size).toBe(2)
+    expect(value.places.size).toBe(1)
+  })
+})
+''', encoding='utf-8')
+
+          Path('scripts/transit-snapshot/snapshot-invariants.mjs').write_text(r'''export function patternStopPlaceMismatchQuery(version) {
+  return `SELECT COUNT(*) AS count
+FROM pattern_stops ps
+JOIN stops s ON s.version=ps.version AND s.stop_uid=ps.stop_uid
+WHERE ps.version=${sqlValue(version)} AND ps.place_id <> s.place_id`
+}
+
+function sqlValue(value) {
+  return `'${String(value).replaceAll("'", "''")}'`
+}
+''', encoding='utf-8')
+
+          Path('scripts/transit-snapshot/snapshot-invariants.test.mjs').write_text(r'''import { DatabaseSync } from 'node:sqlite'
+import { describe, expect, it } from 'vitest'
+import { patternStopPlaceMismatchQuery } from './snapshot-invariants.mjs'
+
+describe('remote snapshot invariants', () => {
+  it('counts pattern-stop place IDs that differ from the canonical stop', () => {
+    const db = new DatabaseSync(':memory:')
+    try {
+      db.exec('CREATE TABLE stops (version TEXT, stop_uid TEXT, place_id TEXT)')
+      db.exec('CREATE TABLE pattern_stops (version TEXT, pattern_id TEXT, stop_uid TEXT, place_id TEXT)')
+      db.exec("INSERT INTO stops VALUES ('v1', 'TAO1054', 'B')")
+      db.exec("INSERT INTO pattern_stops VALUES ('v1', 'P1', 'TAO1054', 'A')")
+      db.exec("INSERT INTO pattern_stops VALUES ('v1', 'P2', 'TAO1054', 'B')")
+      expect(db.prepare(patternStopPlaceMismatchQuery('v1')).get().count).toBe(1)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('escapes the version literal', () => {
+    expect(patternStopPlaceMismatchQuery("v'1")).toContain("'v''1'")
+  })
+})
+''', encoding='utf-8')
+
+          replace_once(
+              'scripts/transit-snapshot/validate.mjs',
+              '''  const patternStopCounts = new Map()\n  const patternStopRefs = new Set()\n  const patternStopIdentities = new Set()\n  for (const item of snapshot.patternStops) {\n    if (!patternIds.has(item.patternId)) issues.push(`pattern stop references missing pattern ${item.patternId}`)\n    if (!snapshot.stops.has(item.stopUid)) issues.push(`pattern stop references missing stop ${item.stopUid}`)\n    if (!snapshot.places.has(item.placeId)) issues.push(`pattern stop references missing place ${item.placeId}`)\n''',
+              '''  const patternStopCounts = new Map()\n  const patternStopRefs = new Set()\n  const patternStopIdentities = new Set()\n  const patternStopPlaceMismatches = new Map()\n  for (const item of snapshot.patternStops) {\n    if (!patternIds.has(item.patternId)) issues.push(`pattern stop references missing pattern ${item.patternId}`)\n    const canonicalStop = snapshot.stops.get(item.stopUid)\n    if (!canonicalStop) issues.push(`pattern stop references missing stop ${item.stopUid}`)\n    else if (canonicalStop.placeId !== item.placeId) {\n      const key = `${item.stopUid}\\0${item.placeId}\\0${canonicalStop.placeId}`\n      const mismatch = patternStopPlaceMismatches.get(key) ?? {\n        stopUid: item.stopUid, referencedPlaceId: item.placeId, canonicalPlaceId: canonicalStop.placeId, count: 0,\n      }\n      mismatch.count += 1\n      patternStopPlaceMismatches.set(key, mismatch)\n    }\n    if (!snapshot.places.has(item.placeId)) issues.push(`pattern stop references missing place ${item.placeId}`)\n''',
+          )
+          replace_once(
+              'scripts/transit-snapshot/validate.mjs',
+              '''  for (const patternId of patternIds) {\n    const stopCount = patternStopCounts.get(patternId) ?? 0\n    if (stopCount < 2) issues.push(`pattern ${patternId} has only ${stopCount} stop(s)`)\n  }\n\n  for (const routeUid of snapshot.routes.keys()) {\n''',
+              '''  for (const mismatch of patternStopPlaceMismatches.values()) {\n    issues.push(`stop ${mismatch.stopUid} has ${mismatch.count} pattern reference(s) to ${mismatch.referencedPlaceId}, but canonical place is ${mismatch.canonicalPlaceId}`)\n  }\n  for (const patternId of patternIds) {\n    const stopCount = patternStopCounts.get(patternId) ?? 0\n    if (stopCount < 2) issues.push(`pattern ${patternId} has only ${stopCount} stop(s)`)\n  }\n\n  for (const routeUid of snapshot.routes.keys()) {\n''',
+          )
+
+          replace_once(
+              'scripts/transit-snapshot/validate.test.mjs',
+              '''  it('rejects empty or geographically invalid data', () => {\n''',
+              '''  it('rejects pattern-stop places that differ from the canonical stop', () => {\n    const snapshot = validSnapshot()\n    snapshot.places.set('L2', { id: 'L2', lat: 23.41, lon: 120.41 })\n    snapshot.patternStops[0].placeId = 'L2'\n\n    expect(() => validateSnapshot(snapshot)).toThrow(\n      /stop S1 has 1 pattern reference\\(s\\) to L2, but canonical place is L1/,\n    )\n  })\n\n  it('rejects empty or geographically invalid data', () => {\n''',
+          )
+
+          replace_once(
+              'scripts/sync-transit-snapshot.mjs',
+              "import { validateSnapshot } from './transit-snapshot/validate.mjs'\n",
+              "import { validateSnapshot } from './transit-snapshot/validate.mjs'\nimport { createStopPlaceRegistry } from './transit-snapshot/stop-place-registry.mjs'\nimport { patternStopPlaceMismatchQuery } from './transit-snapshot/snapshot-invariants.mjs'\n",
+          )
+          replace_once(
+              'scripts/sync-transit-snapshot.mjs',
+              '''const patterns = []\nconst stops = new Map()\nconst places = new Map()\nconst patternStops = []\nconst usedShapes = new Map()\n// 站位合併用的網格索引:同名站牌只跟鄰近 3×3 格內的既有站位比距離,\n// 避免每個 stop 線性掃全部 places 的 O(n²)(台北規模會是數億次距離計算)。\n// 格邊長 0.002°(緯度 ~222m,台灣緯度的經度 ~201m)≥ 合併半徑 200m,鄰格掃描才涵蓋所有候選。\nconst PLACE_GRID_DEGREES = 0.002\nconst placeGrid = new Map()\nconst placeGridKey = (normalized, latCell, lonCell) => `${normalized}:${latCell}:${lonCell}`\nfunction findExistingPlace(normalized, lat, lon) {\n  const latCell = Math.floor(lat / PLACE_GRID_DEGREES)\n  const lonCell = Math.floor(lon / PLACE_GRID_DEGREES)\n  for (let dLat = -1; dLat <= 1; dLat += 1) {\n    for (let dLon = -1; dLon <= 1; dLon += 1) {\n      const bucket = placeGrid.get(placeGridKey(normalized, latCell + dLat, lonCell + dLon))\n      const match = bucket?.find((place) => distanceMeters(lat, lon, place.lat, place.lon) <= 200)\n      if (match) return match\n    }\n  }\n  return undefined\n}\nfunction indexPlace(place) {\n  const key = placeGridKey(place.normalized, Math.floor(place.lat / PLACE_GRID_DEGREES), Math.floor(place.lon / PLACE_GRID_DEGREES))\n  const bucket = placeGrid.get(key)\n  if (bucket) bucket.push(place)\n  else placeGrid.set(key, [place])\n}\n''',
+              '''const patterns = []\nconst stopPlaceRegistry = createStopPlaceRegistry({\n  city: CITY, normalizeName, hash, distanceMeters,\n})\nconst { stops, places, patternStops } = stopPlaceRegistry\nconst usedShapes = new Map()\n''',
+          )
+          replace_once(
+              'scripts/sync-transit-snapshot.mjs',
+              '''  for (const stop of validStops) {\n    const lat = stop.StopPosition.PositionLat\n    const lon = stop.StopPosition.PositionLon\n    const normalized = normalizeName(stop.StopName.Zh_tw)\n    const existingPlace = findExistingPlace(normalized, lat, lon)\n    const placeId = existingPlace?.id ?? `${CITY}:${hash(`${normalized}:${lat.toFixed(4)}:${lon.toFixed(4)}`)}`\n    stops.set(stop.StopUID, { uid: stop.StopUID, name: stop.StopName.Zh_tw, normalized, lat, lon, placeId })\n    if (!existingPlace) {\n      const place = { id: placeId, name: stop.StopName.Zh_tw, normalized, lat, lon }\n      places.set(placeId, place)\n      indexPlace(place)\n    }\n    patternStops.push({ patternId, stopUid: stop.StopUID, placeId, sequence: stop.StopSequence ?? 0 })\n  }\n}\n\nconst patternById = new Map(patterns.map((pattern) => [pattern.id, pattern]))\n''',
+              '''  for (const stop of validStops) stopPlaceRegistry.addOccurrence({ patternId, stop })\n}\nfor (const warning of stopPlaceRegistry.duplicateWarnings()) {\n  console.warn(JSON.stringify({ city: CITY, warning: 'duplicate-stop-observation', ...warning }))\n}\n\nconst patternById = new Map(patterns.map((pattern) => [pattern.id, pattern]))\n''',
+          )
+          replace_once(
+              'scripts/sync-transit-snapshot.mjs',
+              '''  // 7:manifest/state 加入品質指標，所有城市重跑新版 gate 後才可沿用 unchanged 快取。\n  const SNAPSHOT_FORMAT = 7\n''',
+              '''  // 7:manifest/state 加入品質指標，所有城市重跑新版 gate 後才可沿用 unchanged 快取。\n  // 8:StopUID 首次觀測決定 canonical place，後續 route occurrence 重用該 placeId。\n  const SNAPSHOT_FORMAT = 8\n''',
+          )
+          replace_once(
+              'scripts/sync-transit-snapshot.mjs',
+              '''    `SELECT COUNT(*) AS count FROM (\n      SELECT p.pattern_id FROM patterns p\n      LEFT JOIN pattern_stops ps ON ps.version=p.version AND ps.pattern_id=p.pattern_id\n      WHERE p.version=${sqlValue(targetVersion)} AND p.city_code=${sqlValue(CITY)}\n      GROUP BY p.pattern_id HAVING COUNT(ps.stop_uid) < 2\n    )`,\n  ].join(';'))\n''',
+              '''    `SELECT COUNT(*) AS count FROM (\n      SELECT p.pattern_id FROM patterns p\n      LEFT JOIN pattern_stops ps ON ps.version=p.version AND ps.pattern_id=p.pattern_id\n      WHERE p.version=${sqlValue(targetVersion)} AND p.city_code=${sqlValue(CITY)}\n      GROUP BY p.pattern_id HAVING COUNT(ps.stop_uid) < 2\n    )`,\n    patternStopPlaceMismatchQuery(targetVersion),\n  ].join(';'))\n''',
+          )
+          replace_once(
+              'scripts/sync-transit-snapshot.mjs',
+              '''  const shortPatterns = Number(result[6]?.results?.[0]?.count)\n  if (shortPatterns !== 0) throw new Error(`Remote D1 contains ${shortPatterns} patterns with fewer than two stops`)\n  if (r2) {\n''',
+              '''  const shortPatterns = Number(result[6]?.results?.[0]?.count)\n  if (shortPatterns !== 0) throw new Error(`Remote D1 contains ${shortPatterns} patterns with fewer than two stops`)\n  const placeMismatches = Number(result[7]?.results?.[0]?.count)\n  if (placeMismatches !== 0) {\n    throw new Error(`Remote D1 contains ${placeMismatches} pattern stop place mismatches`)\n  }\n  if (r2) {\n''',
+          )
+          PY
+      - run: npm ci
+      - name: Run targeted tests
+        run: npx vitest run scripts/transit-snapshot/stop-place-registry.test.mjs scripts/transit-snapshot/snapshot-invariants.test.mjs scripts/transit-snapshot/validate.test.mjs
+      - name: Run full checks
+        run: npm run check
+      - name: Commit verified hotfix
+        shell: bash
+        run: |
+          rm .github/workflows/apply-stopuid-hotfix.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add scripts/sync-transit-snapshot.mjs scripts/transit-snapshot/stop-place-registry.mjs scripts/transit-snapshot/stop-place-registry.test.mjs scripts/transit-snapshot/snapshot-invariants.mjs scripts/transit-snapshot/snapshot-invariants.test.mjs scripts/transit-snapshot/validate.mjs scripts/transit-snapshot/validate.test.mjs .github/workflows/apply-stopuid-hotfix.yml
+          git commit -m "fix(snapshot): canonicalize duplicate StopUID places"
+          git push origin HEAD:main
