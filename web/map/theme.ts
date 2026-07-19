@@ -4,12 +4,13 @@ import { readAppearancePreferences } from '../appearance/preferences'
 // 「地圖底圖」偏好走,不跟地圖介面或系統主題混在一起;切換後重開地圖頁套用。
 export const prefersDarkMap = readAppearancePreferences().mapTiles === 'dark'
 
-// 依路線名稱 hash 配色的色格。六槽固定色相(綠/藍/芥末金/磚紅/紫/玫瑰),
-// 兩組同槽同色相、長度一致,hash 對應的色格位置不變。色值經 OKLCH 驗證:
-// 明度落在該模式色帶內、彩度不低於灰感下限、相鄰兩色正常視覺 ΔE ≥ 15、
-// 色弱模擬 ΔE ≥ 8(線條另有襯線與 tooltip 作次要編碼)、對底圖對比 ≥ 3:1。
-const lightRoutePalette = ['#0f6e42', '#2a6da6', '#997107', '#963310', '#6a4fae', '#c04e68']
-const darkRoutePalette = ['#1e7a54', '#5f8fc9', '#ac942c', '#bd5034', '#8268c9', '#d8697e']
+// 依路線名稱 hash 配色的色格。兩組長度一致,hash 對應的色格位置不變。
+// 亮色版維持原始褪色紙感六色(米紙底圖寬容,以氛圍優先)。深色版是
+// 「霧面陶土・降彩」六色(陶土紅/赭金/苔綠/湖藍/鳶尾紫/玫瑰):色相拉開
+// 保辨識(相鄰色正常視覺 ΔE 14.3、色弱模擬 10.9、對深灰底圖對比 ≥ 3:1),
+// OKLCH 彩度整體壓到 ~0.085 讓色彩往灰走一步,貼近原始的褪色紙感。
+const lightRoutePalette = ['#b85f49', '#4f685b', '#8a674f', '#b08a47', '#765b78', '#6f7561']
+const darkRoutePalette = ['#9c5a4f', '#af9151', '#457a51', '#5f9abc', '#71659c', '#c37e93']
 export const routePalette = prefersDarkMap ? darkRoutePalette : lightRoutePalette
 
 // 路線折線下方的襯線:亮色時是米紙色暈,深色時改用畫布色,
