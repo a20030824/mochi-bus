@@ -1,0 +1,3 @@
+A6 production remediation marker.
+
+Adding this file triggers the one-shot main-branch workflow that republishes Taipei and Tainan with the corrected snapshot builder and reruns the 22-city public network probe.
