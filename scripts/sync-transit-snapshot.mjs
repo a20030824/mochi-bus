@@ -257,7 +257,7 @@ for (const item of stopOfRouteItems) {
   if (!shape) continue
   const validStops = item.Stops.filter((stop) => stop.StopUID && stop.StopName?.Zh_tw
     && Number.isFinite(stop.StopPosition?.PositionLat) && Number.isFinite(stop.StopPosition?.PositionLon))
-  if (!validStops.length) continue
+  if (validStops.length < 2) continue
   const patternId = `${item.SubRouteUID ?? item.RouteUID}:${item.Direction}:${shapeIndex}`
   const safeId = encodeURIComponent(patternId)
   const shapeKey = `snapshots/${version}/cities/${CITY}/shapes/${patternId}.json`
