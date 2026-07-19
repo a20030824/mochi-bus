@@ -21,7 +21,7 @@ describe('snapshot watchdog D1 store', () => {
     db.exec("INSERT INTO dataset_versions VALUES ('Taipei', 'v1')")
     const fetchImpl = vi.fn(async (_url, init) => {
       const body = JSON.parse(init.body)
-      const queries = Array.isArray(body) ? body : [body]
+      const queries = Array.isArray(body.batch) ? body.batch : [body]
       const result = []
       db.exec('BEGIN')
       try {
