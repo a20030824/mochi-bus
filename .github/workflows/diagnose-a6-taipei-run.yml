@@ -14,30 +14,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Summarize failed publisher log
+      - name: Download failed publisher log
         env:
           GH_TOKEN: ${{ github.token }}
           FAILED_JOB_ID: '88238189493'
         run: |
+          curl --fail --location --silent --show-error \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/a20030824/mochi-bus/actions/jobs/$FAILED_JOB_ID/logs" \
+            --output failed-job.log
+      - name: Summarize publisher error context
+        run: |
           python - <<'PY'
-          import os
           import re
-          import urllib.request
+          from pathlib import Path
 
-          job_id = os.environ['FAILED_JOB_ID']
-          request = urllib.request.Request(
-              f'https://api.github.com/repos/a20030824/mochi-bus/actions/jobs/{job_id}/logs',
-              headers={
-                  'Accept': 'application/vnd.github+json',
-                  'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
-                  'X-GitHub-Api-Version': '2022-11-28',
-                  'User-Agent': 'a6-diagnostic',
-              },
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              text = response.read().decode('utf-8-sig', errors='replace')
-
-          lines = text.splitlines()
+          lines = Path('failed-job.log').read_text(encoding='utf-8-sig', errors='replace').splitlines()
           pattern = re.compile(
               r'error|exception|failed|failure|quota|limit|exceed|too many|d1|sqlite|validation|snapshot publication|rollback|route-without-pattern',
               re.IGNORECASE,
