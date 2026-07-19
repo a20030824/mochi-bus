@@ -150,7 +150,7 @@ export async function probeActiveSnapshot({
     } catch {
       throw probeFailure('network_missing')
     }
-    if (!networkHead || !networkArtifact || Number(networkHead.size) !== Number(networkArtifact.bytes)) {
+    if (!artifactHeadMatches(networkHead, networkArtifact)) {
       throw probeFailure('network_missing')
     }
     hardChecksPassed += 1
@@ -258,6 +258,18 @@ export function deterministicSampleIndex(city, windowId, probeCaseVersion, candi
 
 export function deterministicSampleCaseId(city, windowId, probeCaseVersion) {
   return `case_${createHash('sha256').update(`${city}\n${windowId}\n${probeCaseVersion}`).digest('hex').slice(0, 12)}`
+}
+
+export function artifactHeadMatches(head, artifact) {
+  if (!head || !artifact) return false
+
+  const expectedBytes = Number(artifact.bytes)
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1) return false
+
+  if (head.size === null || head.size === undefined) return true
+
+  const observedBytes = Number(head.size)
+  return Number.isSafeInteger(observedBytes) && observedBytes === expectedBytes
 }
 
 export function networkPrefixMatches(prefix, city, version) {
@@ -385,9 +397,7 @@ async function probeDiagnostics({ city, activeVersion, state, sample, query, r2 
         && sameCoreCounts(manifest?.counts, counts)
         && Number(manifest?.counts?.placeBundles) > 0
         && manifestHasCoreArtifactClasses(manifest?.artifacts, prefix)
-        && network !== null
-        && networkArtifact !== undefined
-        && Number(network.size) === Number(networkArtifact.bytes)
+        && artifactHeadMatches(network, networkArtifact)
         && networkPrefixMatches(networkPrefix, city, previousVersion)
     } catch {
       rollbackAvailable = false

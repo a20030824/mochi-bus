@@ -65,7 +65,7 @@ npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, wind
 - D1 `dataset_versions.active_version` 存在且為權威。
 - active routes/patterns/stops/places/pattern stops 非零，且無 catalogue route 缺 pattern。
 - R2 manifest 的 city/version/counts 與 D1 一致，並宣告 network/shape/schedule/place 類 artifacts。
-- network HEAD size 符合 manifest，前 64 KiB metadata 宣告同一 city/version。
+- network HEAD 必須存在；若 R2 提供 `Content-Length`，size 必須與 manifest 完全一致。缺少該 optional metadata 時仍繼續執行前 64 KiB bounded prefix 驗證，確認 schema/city/version；真實 `0` bytes 不視為 unknown。
 - public routes schema/source/version/count 正確。
 - deterministic route detail 至少兩站。
 - deterministic place arrivals 實際使用 active `place-bundle`。
@@ -74,7 +74,7 @@ npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, wind
 
 State pointer mismatch、previous 不完整及非核心 rotating shape/schedule HEAD 失敗屬診斷 warning。Current active 全部 hard checks 健康時，window 仍為 `unchanged`，但 probe=`degraded`、`rollback_available=0`，summary 列入 `unchanged-rollback-degraded`。這代表目前服務可用，但復原能力不足，不得標成 active unavailable。
 
-Sample 使用 `SHA-256(city + windowId + probeCaseVersion) % candidateCount`；同 window rerun 可重現、跨週輪替。只保存 `sample_case_id`，不記 route/place/stop identity或 artifact key。雙北 network 只做 HEAD + 64 KiB Range/prefix；bounded reader 在 Range 被忽略時也會取消，不下載、parse 或 index 完整 network。
+Sample 使用 `SHA-256(city + windowId + probeCaseVersion) % candidateCount`；同 window rerun 可重現、跨週輪替。只保存 `sample_case_id`，不記 route/place/stop identity或 artifact key。Manifest 先以 HEAD 判斷可用讀取上限，再以 bounded GET 讀取；雙北 network 只做 HEAD + 64 KiB Range/prefix。bounded reader 在 Range 被忽略時也會取消，不下載、parse 或 index 完整 object。
 
 `network.json` schema v1 的序列化格式契約是頂層前三個欄位固定依序為 `schemaVersion`、`city`、`version`；publisher 以同一 object insertion order 產生 JSON，因此 metadata 必須在開頭數百 bytes 內完整出現。probe 對截斷 token、缺少 metadata 或在 metadata 前插入其他欄位一律 fail closed。若未來 network schema 無法維持此前綴契約，應先新增獨立小型 metadata object 並升級 probe schema，不可只放寬到搜尋任意 64 KiB 內容。
 
@@ -136,7 +136,7 @@ curl.exe -sS "https://bus.moc96336.com/api/v1/map/routes?city=Chiayi&snapshot=ma
 
 公開回應必須是 `source: "snapshot"`、`snapshotVersion` 等於 D1 active version，且 `routes` 非空。Production smoke 通過前，不得刪除 previous rows 或 objects。
 
-Manifest/state schema v2 會記錄 `counts` 與 `quality`（班表覆蓋、bundle route 數、network bytes／座標數）；任一有前版基準的核心數值下跌超過 40% 就停止在 local validation。Snapshot format 7 會讓每個城市在下一次排程分片各重建一次，確保新版 gate 實際跑過；仍維持每日 D1 寫入分片，不一次重匯全部城市。
+Manifest/state schema v2 會記錄 `counts` 與 `quality`（班表覆蓋、bundle route 數、network bytes／座標數）；任一有前版基準的核心數值下跌超過 40% 就停止在 local validation。Snapshot format 8 會讓每個城市在下一次排程分片各重建一次，確保新版 gate 實際跑過；仍維持每日 D1 寫入分片，不一次重匯全部城市。同一 StopUID 的第一次觀測決定 canonical stop/place，後續 City／InterCity route occurrence 必須重用相同 placeId，pattern stop 也必須與 canonical stop 一致。
 
 ## 8m geometry rollback（2026-07-13）
 
