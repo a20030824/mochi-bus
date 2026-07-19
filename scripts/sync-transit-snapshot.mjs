@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { validateSnapshot } from './transit-snapshot/validate.mjs'
 import { createStopPlaceRegistry } from './transit-snapshot/stop-place-registry.mjs'
 import { patternStopPlaceMismatchQuery } from './transit-snapshot/snapshot-invariants.mjs'
+import { manifestReadLimit } from './transit-snapshot/manifest-read-limit.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
 import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
@@ -734,7 +735,7 @@ async function validateRemoteSnapshot(targetVersion, expectedCounts, expectedQua
     throw new Error(`Remote D1 contains ${placeMismatches} pattern stop place mismatches`)
   }
   if (r2) {
-    const remoteManifest = await s3GetJson(manifestKey)
+    const remoteManifest = await s3GetJson(manifestKey, manifestReadLimit(expectedManifest))
     if (remoteManifest?.schemaVersion !== 2
       || remoteManifest?.version !== targetVersion
       || remoteManifest?.contentHash !== contentHash
@@ -843,7 +844,7 @@ async function verifyR2Artifact(artifact) {
   }
   assertArtifactIntegrity(artifact, await response.arrayBuffer())
 }
-async function s3GetJson(key) {
+async function s3GetJson(key, maximumBytes = 1024 * 1024) {
   const response = await r2.client.fetch(objectUrl(key))
   if (response.status === 404) {
     await response.arrayBuffer()
@@ -853,7 +854,7 @@ async function s3GetJson(key) {
     await response.arrayBuffer()
     throw new Error(`R2 GET ${key} failed (${response.status})`)
   }
-  return await readBoundedResponseJson(response, 1024 * 1024)
+  return await readBoundedResponseJson(response, maximumBytes)
 }
 async function s3HeadObject(key) {
   const response = await r2.client.fetch(objectUrl(key), { method: 'HEAD' })
