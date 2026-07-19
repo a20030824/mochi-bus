@@ -7,6 +7,8 @@ const city = {
   center: [25, 121] as [number, number],
 }
 
+const appearanceKey = 'mochi.bus.appearance.v2'
+
 async function mockMap(page: Page) {
   await page.route('**/api/v1/map/cities', async (route) => {
     await route.fulfill({ json: { cities: [city] } })
@@ -36,19 +38,18 @@ test.describe('map appearance preferences', () => {
   })
 
   test('lets the interface and basemap switch independently', async ({ page }) => {
-    await page.addInitScript(() => {
-      const key = 'mochi.bus.appearance.v1'
+    await page.addInitScript((key) => {
       // addInitScript runs before every navigation, including reload. Seed only an empty
       // context so the second half of this test can verify the persisted replacement.
       if (localStorage.getItem(key) === null) {
         localStorage.setItem(key, JSON.stringify({
-          version: 1,
-          home: 'dark',
+          version: 2,
+          general: 'dark',
           mapUi: 'dark',
           mapTiles: 'light',
         }))
       }
-    })
+    }, appearanceKey)
     await mockMap(page)
     await page.goto('/map')
 
@@ -58,14 +59,14 @@ test.describe('map appearance preferences', () => {
       .evaluate((pane) => getComputedStyle(pane).filter)
     expect(lightTileFilter).not.toContain('invert(1)')
 
-    await page.evaluate(() => {
-      localStorage.setItem('mochi.bus.appearance.v1', JSON.stringify({
-        version: 1,
-        home: 'dark',
+    await page.evaluate((key) => {
+      localStorage.setItem(key, JSON.stringify({
+        version: 2,
+        general: 'dark',
         mapUi: 'light',
         mapTiles: 'dark',
       }))
-    })
+    }, appearanceKey)
     await page.reload()
 
     const reloadedInk = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--ink').trim())
