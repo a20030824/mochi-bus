@@ -1,0 +1,201 @@
+name: Apply active probe manifest hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-active-probe-manifest-hotfix.yml
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-active-probe-manifest-hotfix
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Apply active probe manifest fix
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+          import re
+          from textwrap import dedent
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one replacement, found {count}: {old!r}')
+              file.write_text(text.replace(old, new), encoding='utf-8')
+
+          Path('scripts/transit-snapshot/manifest-read-limit.mjs').write_text(dedent('''\
+          const MEBIBYTE = 1024 * 1024
+          const MANIFEST_READ_SLACK_BYTES = 64 * 1024
+
+          export const DEFAULT_JSON_READ_LIMIT = MEBIBYTE
+          export const MAX_MANIFEST_READ_LIMIT = 16 * MEBIBYTE
+
+          export function manifestReadLimitFromBytes(expectedBytes) {
+            if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) {
+              throw new Error('Snapshot manifest size is unavailable')
+            }
+            const requestedBytes = Math.max(
+              DEFAULT_JSON_READ_LIMIT,
+              expectedBytes + MANIFEST_READ_SLACK_BYTES,
+            )
+            if (requestedBytes > MAX_MANIFEST_READ_LIMIT) {
+              throw new Error('Snapshot manifest exceeds the remote validation safety limit')
+            }
+            return requestedBytes
+          }
+
+          export function manifestReadLimit(expectedManifest) {
+            return manifestReadLimitFromBytes(Buffer.byteLength(JSON.stringify(expectedManifest)))
+          }
+
+          export async function readManifestJson({ key, head, getJson }) {
+            const metadata = await head(key)
+            if (!metadata) return null
+            return getJson(key, manifestReadLimitFromBytes(metadata.size))
+          }
+          '''), encoding='utf-8')
+
+          Path('scripts/transit-snapshot/manifest-read-limit.test.mjs').write_text(dedent('''\
+          import { describe, expect, it, vi } from 'vitest'
+          import {
+            DEFAULT_JSON_READ_LIMIT,
+            MAX_MANIFEST_READ_LIMIT,
+            manifestReadLimit,
+            manifestReadLimitFromBytes,
+            readManifestJson,
+          } from './manifest-read-limit.mjs'
+
+          describe('snapshot manifest remote read limit', () => {
+            it('keeps the existing one MiB floor for small JSON objects', () => {
+              expect(manifestReadLimit({ schemaVersion: 2, artifacts: [] })).toBe(DEFAULT_JSON_READ_LIMIT)
+            })
+
+            it('scales above one MiB from the locally generated expected manifest size', () => {
+              const manifest = { schemaVersion: 2, artifacts: [{ key: 'x'.repeat(1_100_000) }] }
+              const expectedBytes = Buffer.byteLength(JSON.stringify(manifest))
+              expect(manifestReadLimit(manifest)).toBe(expectedBytes + 64 * 1024)
+            })
+
+            it('sizes active probe reads from R2 HEAD metadata', async () => {
+              const head = vi.fn(async () => ({ size: 1_100_000 }))
+              const getJson = vi.fn(async () => ({ schemaVersion: 2 }))
+              await expect(readManifestJson({ key: 'manifest.json', head, getJson }))
+                .resolves.toEqual({ schemaVersion: 2 })
+              expect(getJson).toHaveBeenCalledWith('manifest.json', 1_100_000 + 64 * 1024)
+            })
+
+            it('returns null only when the manifest object is absent', async () => {
+              const getJson = vi.fn()
+              await expect(readManifestJson({
+                key: 'manifest.json',
+                head: vi.fn(async () => null),
+                getJson,
+              })).resolves.toBeNull()
+              expect(getJson).not.toHaveBeenCalled()
+            })
+
+            it('rejects unavailable or unsafe object sizes', () => {
+              expect(() => manifestReadLimitFromBytes(Number.NaN)).toThrow('Snapshot manifest size is unavailable')
+              expect(() => manifestReadLimitFromBytes(MAX_MANIFEST_READ_LIMIT)).toThrow('Snapshot manifest exceeds the remote validation safety limit')
+            })
+          })
+          '''), encoding='utf-8')
+
+          active = Path('scripts/transit-snapshot/active-probe.mjs')
+          text = active.read_text(encoding='utf-8')
+          text = text.replace("  'manifest_missing',\n", "  'manifest_missing',\n  'manifest_read_failed',\n", 1)
+          old = """    try {
+              manifest = await r2.getJson(`${prefix}manifest.json`)
+            } catch {
+              throw probeFailure('manifest_missing')
+            }
+            if (!manifest) throw probeFailure('manifest_missing')"""
+          new = """    try {
+              manifest = await r2.getManifest(`${prefix}manifest.json`)
+            } catch {
+              throw probeFailure('manifest_read_failed')
+            }
+            if (!manifest) throw probeFailure('manifest_missing')"""
+          if old not in text:
+              raise SystemExit('active-probe.mjs: active manifest block not found')
+          text = text.replace(old, new, 1)
+          text = text.replace("const manifest = await r2.getJson(`${prefix}manifest.json`)", "const manifest = await r2.getManifest(`${prefix}manifest.json`)", 1)
+          active.write_text(text, encoding='utf-8')
+
+          sync = Path('scripts/sync-transit-snapshot.mjs')
+          text = sync.read_text(encoding='utf-8')
+          text = text.replace(
+              "import { manifestReadLimit } from './transit-snapshot/manifest-read-limit.mjs'",
+              "import { manifestReadLimit, readManifestJson } from './transit-snapshot/manifest-read-limit.mjs'",
+              1,
+          )
+          text = text.replace(
+              "      r2: {\n        getJson: s3GetJson,",
+              "      r2: {\n        getManifest: s3GetManifest,\n        getJson: s3GetJson,",
+              1,
+          )
+          marker = "async function s3GetJson(key, maximumBytes = 1024 * 1024) {"
+          if text.count(marker) != 1:
+              raise SystemExit('sync-transit-snapshot.mjs: s3GetJson marker not found')
+          text = text.replace(marker, """async function s3GetManifest(key) {
+            return readManifestJson({ key, head: s3HeadObject, getJson: s3GetJson })
+          }
+          async function s3GetJson(key, maximumBytes = 1024 * 1024) {""", 1)
+          sync.write_text(text, encoding='utf-8')
+
+          test = Path('scripts/transit-snapshot/active-probe.test.mjs')
+          text = test.read_text(encoding='utf-8').replace('r2.getJson', 'r2.getManifest')
+          text = text.replace('    getJson: vi.fn(async (key) => key.includes(previousVersion)', '    getManifest: vi.fn(async (key) => key.includes(previousVersion)', 1)
+          needle = "    ['manifest_missing', (options) => { options.r2.getManifest = vi.fn(async () => null) }],\n"
+          if needle not in text:
+              raise SystemExit('active-probe.test.mjs: manifest missing case not found')
+          text = text.replace(needle, needle + "    ['manifest_read_failed', (options) => { options.r2.getManifest = vi.fn(async () => { throw new Error('oversized manifest') }) }],\n", 1)
+          test.write_text(text, encoding='utf-8')
+
+          replace_once(
+              'src/observability/telemetry-schema.ts',
+              "  'manifest_missing',\n  'manifest_version_mismatch',",
+              "  'manifest_missing',\n  'manifest_read_failed',\n  'manifest_version_mismatch',",
+          )
+          PY
+      - run: npm ci
+      - name: Run targeted checks
+        run: |
+          node --check scripts/sync-transit-snapshot.mjs
+          node --check scripts/transit-snapshot/active-probe.mjs
+          npx vitest run scripts/transit-snapshot/manifest-read-limit.test.mjs scripts/transit-snapshot/active-probe.test.mjs src/observability/telemetry.test.ts
+      - name: Run full checks
+        run: npm run check
+      - name: Commit verified hotfix and self-remove
+        shell: bash
+        run: |
+          rm .github/workflows/apply-active-probe-manifest-hotfix.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add scripts/sync-transit-snapshot.mjs scripts/transit-snapshot/active-probe.mjs scripts/transit-snapshot/active-probe.test.mjs scripts/transit-snapshot/manifest-read-limit.mjs scripts/transit-snapshot/manifest-read-limit.test.mjs src/observability/telemetry-schema.ts .github/workflows/apply-active-probe-manifest-hotfix.yml
+          git commit -m "fix(snapshot): bound active probe manifest reads by object size"
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
