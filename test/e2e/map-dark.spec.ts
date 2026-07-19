@@ -37,12 +37,17 @@ test.describe('map appearance preferences', () => {
 
   test('lets the interface and basemap switch independently', async ({ page }) => {
     await page.addInitScript(() => {
-      localStorage.setItem('mochi.bus.appearance.v1', JSON.stringify({
-        version: 1,
-        home: 'dark',
-        mapUi: 'dark',
-        mapTiles: 'light',
-      }))
+      const key = 'mochi.bus.appearance.v1'
+      // addInitScript runs before every navigation, including reload. Seed only an empty
+      // context so the second half of this test can verify the persisted replacement.
+      if (localStorage.getItem(key) === null) {
+        localStorage.setItem(key, JSON.stringify({
+          version: 1,
+          home: 'dark',
+          mapUi: 'dark',
+          mapTiles: 'light',
+        }))
+      }
     })
     await mockMap(page)
     await page.goto('/map')
