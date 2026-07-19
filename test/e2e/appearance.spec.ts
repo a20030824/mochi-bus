@@ -21,7 +21,7 @@ test.describe('appearance settings', () => {
     await mapUi.getByRole('radio', { name: '深色' }).check()
     await expect.poll(() => page.evaluate(() => JSON.parse(
       localStorage.getItem('mochi.bus.appearance.v1') ?? 'null',
-    ))).toMatchObject({ version: 1, home: 'dark', mapUI: 'dark', mapTiles: 'light' })
+    ))).toMatchObject({ version: 1, home: 'dark', mapUi: 'dark', mapTiles: 'light' })
 
     await page.reload()
     await page.locator('.advanced-panel > summary').click()
