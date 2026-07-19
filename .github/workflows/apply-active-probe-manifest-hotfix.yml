@@ -34,7 +34,6 @@ jobs:
         run: |
           python <<'PY'
           from pathlib import Path
-          import re
           from textwrap import dedent
 
           def replace_once(path, old, new):
@@ -199,3 +198,5 @@ jobs:
           git fetch origin main
           git rebase origin/main
           git push origin HEAD:main
+
+# trigger: workflow existed before this push
