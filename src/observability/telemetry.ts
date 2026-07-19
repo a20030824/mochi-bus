@@ -1,7 +1,7 @@
 import { supportedCities } from '../config'
 import type { ReleaseIdentity } from './release-identity'
 
-export const TELEMETRY_EVENT_SCHEMA = 3 as const
+export const TELEMETRY_EVENT_SCHEMA = 4 as const
 
 export const telemetryEvents = [
   'api_operation_completed',
@@ -91,6 +91,17 @@ export const telemetryFailureClasses = [
   'invalid_schema',
   'network_error',
   'circuit_open',
+  'snapshot_source_fetch',
+  'snapshot_source_compare',
+  'snapshot_active_pointer_read',
+  'snapshot_local_validation',
+  'snapshot_stage',
+  'snapshot_remote_validation',
+  'snapshot_activate',
+  'snapshot_smoke',
+  'snapshot_rollback',
+  'snapshot_finalize',
+  'snapshot_window_record_write',
   'unknown',
 ] as const
 
@@ -158,6 +169,7 @@ export const telemetryDataAgeBuckets = [
   'unknown',
   'not_applicable',
 ] as const
+export const telemetryWindowResults = ['published', 'unchanged', 'failed'] as const
 
 export type TelemetryEventName = typeof telemetryEvents[number]
 export type TelemetryOperation = typeof telemetryOperations[number]
@@ -175,6 +187,7 @@ export type TelemetryCredentialScope = typeof telemetryCredentialScopes[number]
 export type TelemetryResolution = typeof telemetryResolutions[number]
 export type TelemetryRetryCountBucket = typeof telemetryRetryCountBuckets[number]
 export type TelemetryDataAgeBucket = typeof telemetryDataAgeBuckets[number]
+export type TelemetryWindowResult = typeof telemetryWindowResults[number]
 export type TelemetryCity = typeof supportedCities[number][0]
 
 export type TelemetryEnvelope = Readonly<{
@@ -205,6 +218,11 @@ export type TelemetryEnvelope = Readonly<{
   dataAgeBucket?: TelemetryDataAgeBucket
   upstreamStatusClass?: TelemetryHttpStatusClass
   initialFailureClass?: TelemetryFailureClass
+  windowId?: string
+  windowResult?: TelemetryWindowResult
+  activeVersion?: string | null
+  previousVersion?: string | null
+  workflowRunId?: string | null
   errorFingerprint?: string
 }>
 
@@ -244,6 +262,11 @@ const allowedKeys = new Set<AllowedKey>([
   'dataAgeBucket',
   'upstreamStatusClass',
   'initialFailureClass',
+  'windowId',
+  'windowResult',
+  'activeVersion',
+  'previousVersion',
+  'workflowRunId',
   'errorFingerprint',
 ])
 
@@ -286,6 +309,7 @@ const credentialScopes = new Set<string>(telemetryCredentialScopes)
 const resolutions = new Set<string>(telemetryResolutions)
 const retryCountBuckets = new Set<string>(telemetryRetryCountBuckets)
 const dataAgeBuckets = new Set<string>(telemetryDataAgeBuckets)
+const windowResults = new Set<string>(telemetryWindowResults)
 const tdxUpstreamStatusClasses = new Set<string>(['2xx', '4xx', '5xx', 'none'])
 const tdxOnlyKeys = [
   'tdxOperation',
@@ -296,6 +320,7 @@ const tdxOnlyKeys = [
   'dataAgeBucket',
   'upstreamStatusClass',
 ] as const
+const windowOnlyKeys = ['windowId', 'windowResult', 'activeVersion', 'previousVersion', 'workflowRunId'] as const
 
 const safeIdentifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const safeReleaseSha = /^[a-f0-9]{40}$/
@@ -343,6 +368,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
     if ((value.result === 'success' || value.result === 'empty') && value.failureClass !== 'none') return undefined
     if (value.result === 'error' && value.failureClass === 'none') return undefined
     if (!validTdxFields(value)) return undefined
+    if (!validWindowFields(value)) return undefined
     if (value.errorFingerprint !== undefined && !identifier(value.errorFingerprint, safeErrorFingerprint)) return undefined
 
     return Object.freeze({
@@ -373,6 +399,11 @@ export function parseTelemetryEvent(input: unknown): TelemetryEnvelope | undefin
       ...(value.dataAgeBucket === undefined ? {} : { dataAgeBucket: value.dataAgeBucket as TelemetryDataAgeBucket }),
       ...(value.upstreamStatusClass === undefined ? {} : { upstreamStatusClass: value.upstreamStatusClass as TelemetryHttpStatusClass }),
       ...(value.initialFailureClass === undefined ? {} : { initialFailureClass: value.initialFailureClass as TelemetryFailureClass }),
+      ...(value.windowId === undefined ? {} : { windowId: value.windowId as string }),
+      ...(value.windowResult === undefined ? {} : { windowResult: value.windowResult as TelemetryWindowResult }),
+      ...(value.activeVersion === undefined ? {} : { activeVersion: value.activeVersion as string | null }),
+      ...(value.previousVersion === undefined ? {} : { previousVersion: value.previousVersion as string | null }),
+      ...(value.workflowRunId === undefined ? {} : { workflowRunId: value.workflowRunId as string | null }),
       ...(value.errorFingerprint === undefined ? {} : { errorFingerprint: value.errorFingerprint as string }),
     })
   } catch {
@@ -432,6 +463,29 @@ function validTdxFields(value: Record<string, unknown>): boolean {
   if (value.retryCountBucket !== '0'
     && (value.initialFailureClass === undefined || value.initialFailureClass === 'none')) return false
   return true
+}
+
+function validWindowFields(value: Record<string, unknown>): boolean {
+  const isWindowEvent = value.event === 'snapshot_window_completed'
+  if (!isWindowEvent) return !windowOnlyKeys.some((key) => Object.hasOwn(value, key))
+  if (!windowOnlyKeys.every((key) => Object.hasOwn(value, key))) return false
+  if (!identifier(value.windowId, safeIdentifier)) return false
+  if (!enumValue(value.windowResult, windowResults)) return false
+  if (!nullableIdentifier(value.activeVersion, safeIdentifier)) return false
+  if (!nullableIdentifier(value.previousVersion, safeIdentifier)) return false
+  if (!nullableIdentifier(value.workflowRunId, safeIdentifier)) return false
+  if (value.operation !== 'snapshot_publish'
+    || value.trafficClass !== 'snapshot_publish'
+    || value.sampleProbability !== 1
+    || value.httpStatusClass !== 'none'
+    || value.cacheResult !== 'not_applicable'
+    || value.emptyReason !== 'not_applicable'
+    || value.qualityBucket !== 'not_applicable') return false
+  if (value.snapshotVersion !== value.activeVersion) return false
+  if (value.windowResult === 'failed') {
+    return value.result === 'error' && value.source === 'none' && value.failureClass !== 'none'
+  }
+  return value.result === 'success' && value.source === 'snapshot' && value.failureClass === 'none'
 }
 
 export function createTelemetryEnvelope(

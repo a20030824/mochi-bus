@@ -22,6 +22,44 @@ npm run snapshot:city -- Chiayi
 
 排程 workflow 會讓同批城市全部嘗試完成，再以失敗城市清單結束 job，避免第一個城市失敗後遮蔽其他城市結果。
 
+## Snapshot window outcomes
+
+排程與手動 workflow 透過 `npm run snapshot:window -- <City>` 包裝既有 publisher。runner 不改變 publish gate；它只將 child 的固定 phase marker、terminal result，以及 child 結束後重新讀取的實際 D1 active pointer，寫入：
+
+- `snapshot_window_attempts`：每次 workflow attempt 的 start／terminal 事實。
+- `snapshot_windows`：每個 city/window 唯一的 canonical terminal outcome。
+- `snapshot_window_completed`：供短期 Workers／Actions Logs 查詢的隱私安全事件。
+- GitHub step summary：各城市 published／unchanged／failed 與 durable record write 狀態。
+
+排程 ID 為 `v1:<city>:<Asia/Taipei-date>:0317`，不使用 workflow run ID；GitHub rerun 會找回原 window。手動 dispatch 預設附著最近的 scheduled window，只有選擇 `window_type=manual` 才建立 `v1:<city>:<date>:manual`。`force_publish` 不改 window identity。
+
+時間欄位不可互換：
+
+- `last_source_check_at`：成功取得並判讀本次 TDX source 的時間；unchanged 也會更新。
+- `last_published_at`：active pointer 最後成功切換的時間；unchanged 不更新。
+- `completed_at`：本次 attempt 結束時間。
+- snapshot generated/imported time：artifact 自身年代，不代表本週已成功檢查 source。
+
+durable result 只允許 `published | unchanged | failed`。`missing` 由未來 watchdog 在 07:30 window close 後查無 terminal record 時推導，workflow 本身不可能證明「根本沒有執行」。較新的 failed attempt 可被 rerun 更新為 unchanged／published；已成功的 canonical result 不會被較舊或較低等級 attempt 降回 failed。
+
+### Window record failure runbook
+
+Window event／D1 outcome 寫入與產品 pointer 分離。寫入失敗不得 rollback 已通過 gate 的 snapshot，但該城市與整體 job 仍會標示 `window-record-write-failed`，因為 freshness 證據不完整。
+
+1. 先查 `dataset_versions` 與公開 routes API，確定實際 active version；不要從預期 version 推測。
+2. 查該 city/window 的 attempts 與 canonical row；若 attempt 已有 terminal、canonical 缺失，依 GitHub summary 的嚴格欄位重跑同一 workflow attempt，勿手填 raw error。
+3. 若 publisher 已成功而只有 record write 失敗，不要盲目 rollback；修復 D1 可用性後 rerun 同一 window，idempotent upsert 會保留成功且不降級。
+4. migration step 本身失敗時，本批 publisher 尚未開始，因此不會有 terminal record；保留 workflow failure，交由 A5b 之後的 watchdog 推導 missing 並重跑。
+
+驗證查詢：
+
+```powershell
+npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, window_id, result, last_source_check_at, last_published_at, active_version, previous_version, failure_class FROM snapshot_windows WHERE city_code='Chiayi' ORDER BY completed_at DESC LIMIT 5"
+npx wrangler d1 execute mochi-transit --remote --command "SELECT city_code, window_id, attempt_id, result, started_at, completed_at, failure_class FROM snapshot_window_attempts WHERE city_code='Chiayi' ORDER BY started_at DESC LIMIT 10"
+```
+
+Window state 只證明同步流程的 terminal 事實，不證明 active R2 artifacts 仍完整。unchanged path 的 D1/R2/public artifact probe 屬 A5b；本輪不得因 `result=unchanged` 單獨宣稱城市 Green。
+
 ## Rollback
 
 預設切回 state 中記錄的 previous version：

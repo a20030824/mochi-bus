@@ -6,6 +6,7 @@ import { validateSnapshot } from './transit-snapshot/validate.mjs'
 import { publishWithRollback } from './transit-snapshot/publish-gate.mjs'
 import { isSupportedBusDirection } from './transit-snapshot/direction.mjs'
 import { assertArtifactIntegrity, criticalArtifacts, sameArtifactManifest, sameMetrics } from './transit-snapshot/artifact-integrity.mjs'
+import { snapshotProgressMarker, snapshotTerminalMarker } from './transit-snapshot/window-contract.mjs'
 
 const CITY = process.argv[2] ?? 'Chiayi'
 const DATABASE = 'mochi-transit'
@@ -144,16 +145,31 @@ const LOCATION_CITY_CODES = {
 // 多數縣市的路線資料幾週才變一次,沒必要每次全量重匯。
 const stateKey = `snapshots/state/${CITY}.json`
 const contentHash = hashContent([routeItems, stopOfRouteItems, shapeItems, scheduleItems])
+const lastSourceCheckAt = new Date().toISOString()
+console.log(JSON.stringify(snapshotProgressMarker(CITY, 'source_compare', { lastSourceCheckAt })))
 const previousState = r2 ? await s3GetJson(stateKey) : null
+const previousPublishedAt = validSnapshotTimestamp(previousState?.publishedAt)
+console.log(JSON.stringify(snapshotProgressMarker(CITY, 'source_compare', {
+  lastSourceCheckAt,
+  lastPublishedAt: previousPublishedAt,
+})))
 if (previousState && process.env.SNAPSHOT_FORCE !== '1') {
   if (previousState?.contentHash === contentHash) {
+    console.log(JSON.stringify(snapshotTerminalMarker(CITY, 'unchanged', {
+      lastSourceCheckAt,
+      lastPublishedAt: previousPublishedAt,
+      activeVersion: previousState.version,
+      previousVersion: previousState.previousVersion,
+    })))
     console.log(JSON.stringify({ city: CITY, skipped: true, reason: 'unchanged', version: previousState.version }))
     process.exit(0)
   }
 }
 
 // 放在 hash 檢查之後:跳過未變更城市時不用花這次遠端 D1 查詢
+console.log(JSON.stringify(snapshotProgressMarker(CITY, 'active_pointer_read', { lastSourceCheckAt })))
 const existingRows = queryExistingSnapshots()
+console.log(JSON.stringify(snapshotProgressMarker(CITY, 'local_validation', { lastSourceCheckAt })))
 const version = new Date().toISOString().replace(/[-:.]/g, '')
 const shapeDir = join(outputRoot, 'shapes')
 const scheduleDir = join(outputRoot, 'schedules')
@@ -420,6 +436,12 @@ const smokeTarget = {
   patternId: smokePattern.id,
   placeId: patternStops.find((item) => item.patternId === smokePattern.id).placeId,
 }
+
+function validSnapshotTimestamp(value) {
+  if (typeof value !== 'string') return undefined
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString()
+}
 const importedAt = new Date().toISOString()
 const activationFile = join(outputRoot, 'activate.sql')
 await writeFile(activationFile,
@@ -454,20 +476,34 @@ await publishWithRollback({
   targetVersion: version,
   previousVersion,
   stage: async () => {
+    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'stage', { lastSourceCheckAt, previousVersion })))
     await putObjects(artifactTasks)
     for (const file of sqlFiles) await runD1(file)
   },
-  validate: () => validateRemoteSnapshot(version, validation.counts, validation.quality, manifestKey, manifest),
-  activate: () => runD1(activationFile),
-  smoke: () => smokePublishedSnapshot(version, smokeTarget),
+  validate: () => {
+    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'remote_validation', { lastSourceCheckAt, previousVersion })))
+    return validateRemoteSnapshot(version, validation.counts, validation.quality, manifestKey, manifest)
+  },
+  activate: () => {
+    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'activate', { lastSourceCheckAt, previousVersion })))
+    return runD1(activationFile)
+  },
+  smoke: () => {
+    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'smoke', { lastSourceCheckAt, previousVersion })))
+    return smokePublishedSnapshot(version, smokeTarget)
+  },
   rollback: async (targetVersion) => {
+    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'rollback', { lastSourceCheckAt, previousVersion })))
     const rollbackFile = join(outputRoot, 'rollback.sql')
     await writeFile(rollbackFile,
       `UPDATE dataset_versions SET active_version=${sqlValue(targetVersion)}, imported_at=${sqlValue(new Date().toISOString())} WHERE city_code=${sqlValue(CITY)};`)
     await runD1(rollbackFile)
     console.error(JSON.stringify({ city: CITY, version, phase: 'rollback', restoredVersion: targetVersion }))
+    // Rollback 成功後,terminal failure 的根因仍是 smoke,不是把恢復動作誤報成失敗原因。
+    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'smoke', { lastSourceCheckAt, previousVersion })))
   },
   cleanup: async () => {
+    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'finalize', { lastSourceCheckAt, previousVersion })))
     if (r2) {
       await s3Request('PUT', stateKey, JSON.stringify({
         schemaVersion: 2,
@@ -487,6 +523,11 @@ await publishWithRollback({
     await deleteObjects(obsoleteObjectKeys)
   },
 })
+console.log(JSON.stringify(snapshotTerminalMarker(CITY, 'published', {
+  lastSourceCheckAt,
+  activeVersion: version,
+  previousVersion,
+})))
 console.log(JSON.stringify({ city: CITY, version, previousVersion, phase: 'published', ...validation.counts }))
 
 function values(...items) { return items.map(sqlValue).join(', ') }

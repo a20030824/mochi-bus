@@ -54,6 +54,26 @@ function validResolutionEvent(overrides: Partial<TelemetryEnvelope> = {}): Telem
   })
 }
 
+function validWindowEvent(overrides: Partial<TelemetryEnvelope> = {}): TelemetryEnvelope {
+  return validEvent({
+    event: 'snapshot_window_completed',
+    operation: 'snapshot_publish',
+    result: 'success',
+    source: 'snapshot',
+    snapshotVersion: '20260719T031700000Z',
+    httpStatusClass: 'none',
+    cacheResult: 'not_applicable',
+    trafficClass: 'snapshot_publish',
+    sampleProbability: 1,
+    windowId: 'v1:Taipei:2026-07-20:0317',
+    windowResult: 'published',
+    activeVersion: '20260719T031700000Z',
+    previousVersion: '20260712T031700000Z',
+    workflowRunId: '29500000000',
+    ...overrides,
+  })
+}
+
 describe('telemetry contract', () => {
   it('accepts and freezes an allowlisted common envelope', () => {
     const event = parseTelemetryEvent(validEvent())
@@ -139,6 +159,21 @@ describe('telemetry contract', () => {
     expect(parseTelemetryEvent(validResolutionEvent({ operation: 'map_routes' }))).toBeUndefined()
     expect(parseTelemetryEvent(validResolutionEvent({ source: 'schedule' }))).toBeUndefined()
     expect(parseTelemetryEvent({ ...validEvent(), tdxOperation: 'vehicle_positions' })).toBeUndefined()
+  })
+
+  it('requires a strict snapshot window result mapping only on window events', () => {
+    expect(parseTelemetryEvent(validWindowEvent())).toEqual(validWindowEvent())
+    expect(parseTelemetryEvent(validWindowEvent({ windowResult: 'unchanged' }))).toBeDefined()
+    expect(parseTelemetryEvent(validWindowEvent({
+      result: 'error',
+      source: 'none',
+      windowResult: 'failed',
+      failureClass: 'snapshot_stage',
+    }))).toBeDefined()
+    expect(parseTelemetryEvent(validWindowEvent({ windowId: undefined }))).toBeUndefined()
+    expect(parseTelemetryEvent(validWindowEvent({ result: 'success', windowResult: 'failed' }))).toBeUndefined()
+    expect(parseTelemetryEvent(validWindowEvent({ snapshotVersion: 'other-version' }))).toBeUndefined()
+    expect(parseTelemetryEvent({ ...validEvent(), windowId: 'v1:Taipei:2026-07-20:0317' })).toBeUndefined()
   })
 })
 
