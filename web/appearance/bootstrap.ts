@@ -7,6 +7,7 @@ import {
   type AppearancePage,
 } from '../../src/domain/appearance'
 import {
+  clearAppearancePreferences,
   readAppearancePreferences,
   writeAppearancePreferences,
   type AppearancePreferences,
@@ -196,6 +197,9 @@ window.addEventListener('storage', (event) => {
     applyStoredAppearance()
   }
 })
-window.addEventListener(LOCAL_DATA_CLEARED_EVENT, applyStoredAppearance)
+window.addEventListener(LOCAL_DATA_CLEARED_EVENT, () => {
+  clearAppearancePreferences()
+  applyStoredAppearance()
+})
 
 applyStoredAppearance()
