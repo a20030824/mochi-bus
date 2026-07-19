@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   APPEARANCE_STORAGE_KEY,
   DEFAULT_APPEARANCE,
+  LEGACY_APPEARANCE_STORAGE_KEY,
   clearAppearancePreferences,
   normalizeAppearancePreferences,
   readAppearancePreferences,
@@ -20,38 +21,64 @@ class MemoryStorage implements Storage {
 }
 
 describe('appearance preferences', () => {
-  it('defaults to a dark homepage with a light map interface and basemap', () => {
+  it('defaults to a dark general interface with a light map interface and basemap', () => {
     expect(readAppearancePreferences(new MemoryStorage())).toEqual(DEFAULT_APPEARANCE)
   })
 
   it('repairs each malformed field independently', () => {
     expect(normalizeAppearancePreferences({
       version: 999,
-      home: 'light',
+      general: 'light',
       mapUi: 'sepia',
       mapTiles: 'dark',
     })).toEqual({
-      version: 1,
-      home: 'light',
+      version: 2,
+      general: 'light',
       mapUi: 'light',
       mapTiles: 'dark',
     })
   })
 
-  it('persists one versioned object and can clear it', () => {
+  it('migrates the legacy homepage preference into the general interface preference', () => {
     const storage = new MemoryStorage()
-    writeAppearancePreferences({ version: 1, home: 'light', mapUi: 'dark', mapTiles: 'dark' }, storage)
-
-    expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toEqual({
+    storage.setItem(LEGACY_APPEARANCE_STORAGE_KEY, JSON.stringify({
       version: 1,
       home: 'light',
       mapUi: 'dark',
+      mapTiles: 'light',
+    }))
+
+    expect(readAppearancePreferences(storage)).toEqual({
+      version: 2,
+      general: 'light',
+      mapUi: 'dark',
+      mapTiles: 'light',
+    })
+    expect(storage.getItem(LEGACY_APPEARANCE_STORAGE_KEY)).toBeNull()
+    expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toEqual({
+      version: 2,
+      general: 'light',
+      mapUi: 'dark',
+      mapTiles: 'light',
+    })
+  })
+
+  it('persists one versioned object and clears current and legacy copies', () => {
+    const storage = new MemoryStorage()
+    storage.setItem(LEGACY_APPEARANCE_STORAGE_KEY, '{}')
+    writeAppearancePreferences({ version: 2, general: 'light', mapUi: 'dark', mapTiles: 'dark' }, storage)
+
+    expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toEqual({
+      version: 2,
+      general: 'light',
+      mapUi: 'dark',
       mapTiles: 'dark',
     })
-    expect(readAppearancePreferences(storage).mapUi).toBe('dark')
+    expect(storage.getItem(LEGACY_APPEARANCE_STORAGE_KEY)).toBeNull()
 
     clearAppearancePreferences(storage)
     expect(storage.getItem(APPEARANCE_STORAGE_KEY)).toBeNull()
+    expect(storage.getItem(LEGACY_APPEARANCE_STORAGE_KEY)).toBeNull()
   })
 
   it('removes corrupted JSON instead of throwing during page bootstrap', () => {
