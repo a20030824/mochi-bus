@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { validateWindowOutcome } from './window-contract.mjs'
-import { createD1WindowStore, queryD1 } from './window-d1.mjs'
+import { createD1WindowStore, queryD1, queryD1Batch } from './window-d1.mjs'
 
 const migration = [
   readFileSync(new URL('../../migrations/0003_snapshot_window_outcomes.sql', import.meta.url), 'utf8'),
@@ -71,7 +71,7 @@ describe('snapshot window D1 store', () => {
     db.exec("INSERT INTO dataset_versions VALUES ('Taipei', 'v1', '2026-07-12T19:27:00.000Z')")
     fetchImpl = vi.fn(async (_url, init) => {
       const body = JSON.parse(init.body)
-      const queries = Array.isArray(body) ? body : [body]
+      const queries = Array.isArray(body?.batch) ? body.batch : [body]
       const result = []
       db.exec('BEGIN')
       try {
@@ -173,7 +173,7 @@ describe('snapshot window D1 store', () => {
   it('does not leave an unchanged canonical window when the atomic probe record batch fails', async () => {
     const baseFetch = fetchImpl
     const failingBatchFetch = vi.fn(async (url, init) => {
-      if (Array.isArray(JSON.parse(init.body))) {
+      if (Array.isArray(JSON.parse(init.body)?.batch)) {
         return Response.json({ success: false, result: [] }, { status: 500 })
       }
       return baseFetch(url, init)
@@ -281,6 +281,38 @@ describe('snapshot window D1 store', () => {
     expect(init.headers.Authorization).toBe('Bearer private-token')
     expect(init.body).not.toContain('private-token')
     expect(JSON.parse(init.body)).toMatchObject({ params: ['Taipei'] })
+  })
+
+  it('uses the Cloudflare batch request envelope and preserves statement order', async () => {
+    const queries = [
+      { sql: 'SELECT ? AS value', params: ['first'] },
+      { sql: 'SELECT ? AS value', params: ['second'] },
+    ]
+    const batchFetch = vi.fn(async (_url, init) => {
+      expect(JSON.parse(init.body)).toEqual({ batch: queries })
+      return Response.json({
+        success: true,
+        result: [
+          { success: true, results: [{ value: 'first' }] },
+          { success: true, results: [{ value: 'second' }] },
+        ],
+      })
+    })
+
+    await expect(queryD1Batch({
+      accountId: 'account', apiToken: 'private-token', databaseId: 'database', fetchImpl: batchFetch, queries,
+    })).resolves.toEqual([
+      [{ value: 'first' }],
+      [{ value: 'second' }],
+    ])
+  })
+
+  it('rejects an empty batch before making a network request', async () => {
+    const emptyFetch = vi.fn()
+    await expect(queryD1Batch({
+      accountId: 'account', apiToken: 'private-token', databaseId: 'database', fetchImpl: emptyFetch, queries: [],
+    })).rejects.toThrow('D1 window batch must not be empty')
+    expect(emptyFetch).not.toHaveBeenCalled()
   })
 
   it('returns a fixed error instead of exposing D1 response bodies', async () => {
