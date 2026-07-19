@@ -24,7 +24,5 @@ jobs:
           -H 'X-GitHub-Api-Version: 2022-11-28'
           'https://api.github.com/repos/a20030824/mochi-bus/actions/jobs/88238189493/logs'
           --output failed-job.log
-      - name: Show publisher failure
-        run: >-
-          grep -Ei 'error|exception|failed|failure|quota|limit|exceed|too many|d1|sqlite|validation|snapshot publication|rollback|routes-without-pattern'
-          failed-job.log | tail -n 30
+      - name: Show snapshot validation failure
+        run: grep -B 2 -A 35 'SnapshotValidationError' failed-job.log
