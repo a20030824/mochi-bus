@@ -10,7 +10,7 @@ const APPEARANCE_SCRIPT_SRC = '/assets/appearance.js'
 
 export function applyAppearanceShell(response: Response): Response {
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-  if (!contentType.includes('text/html')) return response
+  if (!contentType.includes('text/html') || typeof HTMLRewriter === 'undefined') return response
 
   const headMarkup = `<style id="${APPEARANCE_STYLE_ID}">${appearanceStyles}</style><script>${appearancePrepaintScript()}</script>`
   const bodyMarkup = `<script type="module" src="${APPEARANCE_SCRIPT_SRC}"></script>`
