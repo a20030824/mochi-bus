@@ -206,7 +206,8 @@ export async function queryD1({ accountId, apiToken, databaseId, fetchImpl, sql,
 }
 
 export async function queryD1Batch({ accountId, apiToken, databaseId, fetchImpl, queries }) {
-  return requestD1({ accountId, apiToken, databaseId, fetchImpl, body: queries })
+  if (!Array.isArray(queries) || queries.length === 0) throw new Error('D1 window batch must not be empty')
+  return requestD1({ accountId, apiToken, databaseId, fetchImpl, body: { batch: queries } })
 }
 
 async function requestD1({ accountId, apiToken, databaseId, fetchImpl, body }) {
