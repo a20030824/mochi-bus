@@ -1,6 +1,11 @@
 name: Execute StopUID hotfix once
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/execute-stopuid-hotfix.yml
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
