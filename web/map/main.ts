@@ -1212,6 +1212,9 @@ function openSearchedPlace(place: SearchPlace) {
 function tripModeButton(): HTMLButtonElement {
   const button = document.createElement('button')
   button.className = 'trip-mode-button map-feature-button'
+  // 按鈕每次 render 重建,建立當下的模式就是它的 active 狀態:
+  // 描邊=可進入規劃,實心=正在規劃中。
+  if (interactionMode === 'trip' || interactionMode === 'trip-results') button.classList.add('active')
   button.title = '路線規劃'
   button.setAttribute('aria-label', '路線規劃：選擇出發位置與目的地')
   decorateMapFeatureButton(button, 'trip', '↗', '規劃')

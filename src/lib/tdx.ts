@@ -160,6 +160,10 @@ export type StopRouteSuggestion = ResolvedBusQuery & {
   directionLabel: string
 }
 
+// 「estimated 淡墨」保留給未來的時刻表 fallback;目前 Route 只查即時 ETA,
+// 空白不可解讀為已過站(可能是缺漏、支線對應或尚未發車)。
+export type RouteEtaTone = 'live' | 'urgent' | 'muted'
+
 export type RouteDetail = {
   routeName: string
   direction: Direction
@@ -170,6 +174,7 @@ export type RouteDetail = {
     sequence: number
     selected: boolean
     etaLabel: string | null
+    etaTone: RouteEtaTone
   }>
 }
 
@@ -901,17 +906,16 @@ export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Prom
     label: group.label,
     stops: group.stops.map((stop) => {
       const eta = etaByStop.get(stop.stopUid)
+      const seconds = typeof eta?.EstimateTime === 'number' ? Math.max(0, eta.EstimateTime) : null
       return {
         stopUid: stop.stopUid,
         stopName: stop.stopName,
         sequence: stop.sequence,
         selected: stop.stopUid === query.stopUid,
         etaLabel: eta
-          ? formatETALabel(
-              typeof eta.EstimateTime === 'number' ? Math.ceil(Math.max(0, eta.EstimateTime) / 60) : null,
-              eta.StopStatus ?? 0,
-            )
+          ? formatETALabel(seconds === null ? null : Math.ceil(seconds / 60), eta.StopStatus ?? 0)
           : null,
+        etaTone: (seconds === null ? 'muted' : seconds <= 180 ? 'urgent' : 'live') as RouteEtaTone,
       }
     }),
   }

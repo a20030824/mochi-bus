@@ -1,5 +1,5 @@
 :root {
-  /* 品牌色共用；地圖頁的材質 token 保留製圖／票根人格。詳見 docs/design-system.md。 */
+  /* 品牌色與字體全站共用;地圖頁的製圖／票根人格改由材質 token、小圓角與緊湊排版表達。詳見 docs/design-system.md。 */
   --ink: #29251f;
   --paper: #f4efe4;
   --paper-strong: #fffaf0;
@@ -32,7 +32,7 @@
   --motion-ease-out: cubic-bezier(.2, .7, .2, 1);
   --motion-enter-distance: 4px;
   --paper-grain-opacity: .025;
-  font-family: Inter, "SF Pro Display", "PingFang TC", system-ui, sans-serif;
+  font-family: ui-rounded, "SF Pro Rounded", "PingFang TC", system-ui, sans-serif;
   color: var(--ink);
   background: var(--canvas);
 }
@@ -330,8 +330,10 @@ button { cursor: pointer; }
   background-repeat: no-repeat;
   color: var(--ink);
 }
-.map-search:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgba(79, 104, 91, .14); }
+.map-search:focus-visible { border-color: var(--green); box-shadow: 0 0 0 3px rgba(79, 104, 91, .15); }
 .map-route-search { margin-top: 4px; }
+/* 兩顆圓形功能鈕分層:▦ 實心=地圖主要探索,↗ 描邊=另一條工作流程的入口,
+   ↗ 實心(active)=正在規劃行程。避免與 network-toggle 讀成同一組功能。 */
 .trip-mode-button {
   --feature-expanded-width: 84px;
   position: absolute;
@@ -340,12 +342,14 @@ button { cursor: pointer; }
   z-index: 2;
   margin: 0;
   border: 1px solid var(--green);
-  background: var(--green);
-  color: var(--paper-strong);
+  background: var(--paper-strong);
+  color: var(--green-deep);
   font-size: 20px;
   font-weight: var(--weight-display);
 }
-.trip-mode-button:hover { background: var(--green-deep); }
+.trip-mode-button:hover { background: var(--surface); }
+.trip-mode-button.active { border-color: var(--green-deep); background: var(--green); color: var(--paper-strong); }
+.trip-mode-button.active:hover { background: var(--green-deep); }
 .map-categories { display: flex; gap: 4px; margin-bottom: 8px; overflow-x: auto; }
 .map-chip {
   flex: none;
@@ -565,7 +569,9 @@ button { cursor: pointer; }
   background: var(--surface);
 }
 .direct-route-card + .direct-route-card { margin-top: 8px; }
-.direct-route-card.selected { border-color: var(--line-strong); border-left-color: var(--route-color); background: var(--paper); outline: 2px solid var(--line-strong); outline-offset: -1px; }
+/* 選中卡不用第二圈 outline:左側 5px 路線色條已經很重,雙框顯得厚。
+   改用陰影浮起 + 邊框加深,不改變版面尺寸。 */
+.direct-route-card.selected { border-color: var(--line-strong); border-left-color: var(--route-color); background: var(--paper); box-shadow: 0 4px 14px rgba(48, 45, 38, .1); }
 .direct-route-select {
   display: grid;
   gap: 5px;
@@ -607,7 +613,7 @@ button { cursor: pointer; }
 }
 /* 銜接緊用文字警示上色,不整卡降透明:變淡讀起來像 disabled,也犧牲可讀性。 */
 .transfer-plan.connection-tight .transfer-title span { color: var(--accent-deep); font-weight: var(--weight-display); }
-.transfer-plan.selected { border-color: var(--line-strong); background: var(--paper); outline: 2px solid var(--line-strong); outline-offset: -1px; }
+.transfer-plan.selected { border-color: var(--line-strong); background: var(--paper); box-shadow: 0 4px 14px rgba(48, 45, 38, .1); }
 .transfer-plan:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .transfer-title { display: flex; justify-content: space-between; gap: 10px; padding: 10px 12px; }
 .transfer-title span { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -705,7 +711,7 @@ button { cursor: pointer; }
 .timetable-panel { display: grid; gap: 11px; }
 .timetable-stop-field { display: grid; gap: 4px; color: var(--text-muted); font-size: 11px; font-weight: 800; letter-spacing: .04em; }
 .timetable-stop-field select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-control); outline: 0; background: var(--paper-strong); color: var(--ink); font-size: 13px; font-weight: var(--weight-body); }
-.timetable-stop-field select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgba(79, 104, 91, .14); }
+.timetable-stop-field select:focus-visible { border-color: var(--green); box-shadow: 0 0 0 3px rgba(79, 104, 91, .15); }
 /* 換行而不是水平捲動:tab 被切一半看起來像破版,而且捲動沒有暗示。 */
 .timetable-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 .timetable-tab { flex: none; min-height: 34px; padding: 6px 12px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 800; }
@@ -735,6 +741,34 @@ button { cursor: pointer; }
 .trip-nearby-candidate:focus-visible {
   outline: 2px solid var(--green);
   outline-offset: -2px;
+}
+
+/* 一般控制項的 hover/active 節奏。只列色彩類屬性:有自己幾何動畫的元件
+   (.map-feature-button 的展開寬度、.map-chip)保留各自完整的 transition。 */
+:is(
+  .quiet-button,
+  .drawer-back,
+  .selection-grid button,
+  .map-route-button,
+  .locate-button,
+  .variant-button,
+  .nearby-place-button,
+  .place-route-button,
+  .favorite-direction-button,
+  .direct-route-select,
+  .direct-route-detail,
+  .transfer-leg-button,
+  .trip-matched-summary,
+  .trip-nearby-candidate,
+  .endpoint-button,
+  .route-service-summary,
+  .timetable-tab
+) {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 @media (min-width: 641px) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderMapPage } from './map-page'
 import { siteSearchDescription, siteSocialDescription, siteSocialImage, siteTitle } from './seo'
-import { renderETAPage, renderSetupPage } from './ui'
+import { renderETAPage, renderRoutePage, renderSetupPage } from './ui'
 
 const query = {
   city: 'Taipei',
@@ -122,6 +122,43 @@ describe('SEO metadata', () => {
 
     const mapDefault = renderMapPage({ heading: '台灣公車地圖' })
     expect(mapDefault).toContain('<link rel="canonical" href="https://bus.moc96336.com/map">')
+  })
+})
+
+describe('route page', () => {
+  const detail = {
+    routeName: '307',
+    direction: 0 as const,
+    label: '板橋 → 撫遠街',
+    stops: [
+      { stopUid: 'TPE1', stopName: '板橋公車站', sequence: 1, selected: false, etaLabel: '12 分', etaTone: 'live' as const },
+      { stopUid: 'TPE213044', stopName: '捷運西門站', sequence: 2, selected: true, etaLabel: '即將進站', etaTone: 'urgent' as const },
+      { stopUid: 'TPE3', stopName: '撫遠街', sequence: 3, selected: false, etaLabel: null, etaTone: 'muted' as const },
+    ],
+  }
+
+  it('states the direction once instead of repeating the badge route number', () => {
+    const html = renderRoutePage(query, detail, requestUrl)
+
+    expect(html).toContain('<span class="route-badge">307</span>')
+    expect(html).toContain('<h1>板橋 → 撫遠街</h1>')
+    expect(html).not.toContain('<h1>307 · 板橋 → 撫遠街</h1>')
+  })
+
+  it('goes back to the shareable cover page without a JavaScript URL', () => {
+    const html = renderRoutePage(query, detail, requestUrl)
+
+    expect(html).not.toContain('javascript:history.back()')
+    expect(html).toMatch(/<a class="back-link" href="\/bus\?[^"]*route=307[^"]*">/)
+  })
+
+  it('keeps selection and ETA tones on separate visual planes', () => {
+    const html = renderRoutePage(query, detail, requestUrl)
+
+    expect(html).toContain('<span class="route-eta live">12 分</span>')
+    expect(html).toContain('<span class="route-eta urgent">即將進站</span>')
+    expect(html).toContain('<span class="route-eta muted"></span>')
+    expect(html).toContain('<em>你的站牌</em>')
   })
 })
 

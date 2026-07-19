@@ -118,7 +118,10 @@ test.describe('direct journey candidate selection', () => {
     const journeyLabels = page.locator('.leaflet-tooltip').filter({ hasText: /^(上車|下車) · / })
     await expect(journeyLabels).toHaveCount(2)
     await expect(page.locator('.preview-stop-dot')).toHaveCount(3)
-    await expect.poll(() => cards.nth(0).evaluate((card) => getComputedStyle(card).boxShadow)).toBe('none')
+    // 選中卡以柔和陰影+邊框加深表達,不再疊第二圈 outline(雙框)。
+    await expect.poll(() => cards.nth(0).evaluate((card) => getComputedStyle(card).outlineStyle)).toBe('none')
+    await expect.poll(() => cards.nth(0).evaluate((card) => getComputedStyle(card).boxShadow)).not.toBe('none')
+    await expect.poll(() => cards.nth(1).evaluate((card) => getComputedStyle(card).boxShadow)).toBe('none')
     await expect.poll(async () => {
       const selectedBackground = await cards.nth(0).evaluate((card) => getComputedStyle(card).backgroundColor)
       const candidateBackground = await cards.nth(1).evaluate((card) => getComputedStyle(card).backgroundColor)
@@ -143,7 +146,8 @@ test.describe('direct journey candidate selection', () => {
     await expect(journeyLabels).toHaveCount(2)
     await expect(page.locator('.preview-stop-dot')).toHaveCount(3)
     await expect(page.locator('.direct-route-selected-note')).toHaveCount(0)
-    await expect.poll(() => cards.nth(1).evaluate((card) => getComputedStyle(card).boxShadow)).toBe('none')
+    await expect.poll(() => cards.nth(1).evaluate((card) => getComputedStyle(card).outlineStyle)).toBe('none')
+    await expect.poll(() => cards.nth(0).evaluate((card) => getComputedStyle(card).boxShadow)).toBe('none')
 
     const zoomIn = page.getByRole('button', { name: 'Zoom in', exact: true })
     await expect(zoomIn).toHaveCount(1)

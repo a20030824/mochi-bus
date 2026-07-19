@@ -142,8 +142,11 @@ export function renderSetupPage(cities: ReadonlyArray<readonly [string, string]>
 }
 
 export function renderRoutePage(query: ResolvedBusQuery, detail: RouteDetail, requestUrl: string): string {
-  const stops = detail.stops.map((stop) => `<li class="route-stop${stop.selected ? ' selected' : ''}"><span class="dot"></span><div><strong>${escapeHTML(stop.stopName)}</strong>${stop.selected ? '<em>你的站牌</em>' : ''}</div><span>${escapeHTML(stop.etaLabel ?? '')}</span></li>`).join('')
-  return pageShell(`${query.routeName} 路線｜Mochi Bus`, `<main class="route-page"><header class="topbar"><a class="icon-link" href="javascript:history.back()">返回</a><a class="brand" href="/">${brandWordmark}</a></header><section class="route-head"><span class="route-badge">${escapeHTML(query.routeName)}</span><h1>${escapeHTML(`${query.routeName} · ${detail.label}`)}</h1><p>你等車的位置已經標好</p></section><ol class="route-timeline">${stops}</ol></main>`, { description: `${query.routeName}(${detail.label})的完整站序與各站到站時間`, canonical: canonicalUrl(requestUrl) })
+  const stops = detail.stops.map((stop) => `<li class="route-stop${stop.selected ? ' selected' : ''}"><span class="dot"></span><div><strong>${escapeHTML(stop.stopName)}</strong>${stop.selected ? '<em>你的站牌</em>' : ''}</div><span class="route-eta ${stop.etaTone}">${escapeHTML(stop.etaLabel ?? '')}</span></li>`).join('')
+  // 返回鍵連到這班車的封面頁:比 history.back() 可靠(直接分享進來也有地方可去),
+  // 且不需要在這個零 script 的頁面引入 JavaScript URL。
+  const backHref = `/bus?${escapeHTML(toBusSearchParams(query).toString())}`
+  return pageShell(`${query.routeName} 路線｜Mochi Bus`, `<main class="route-page"><header class="topbar"><a class="back-link" href="${backHref}"><span aria-hidden="true">←</span> 返回</a><a class="brand" href="/">${brandWordmark}</a></header><section class="route-head"><span class="route-badge">${escapeHTML(query.routeName)}</span><h1>${escapeHTML(detail.label)}</h1><p>你等車的位置已經標好</p></section><ol class="route-timeline">${stops}</ol></main>`, { description: `${query.routeName}(${detail.label})的完整站序與各站到站時間`, canonical: canonicalUrl(requestUrl) })
 }
 
 export type ErrorPageView = {
@@ -267,6 +270,16 @@ const designRefinementStyles = `
 .item-actions .board-delete-action:hover,.item-actions .board-delete-action:focus-visible{background:var(--danger-soft);color:var(--danger)}
 .board-item.deleted{display:flex;padding:12px 14px;border:0;border-radius:12px}
 .add-board-button.empty-state{border-style:solid;border-color:#29251f;background:#29251f;color:#fffaf0}
+.back-link{display:inline-flex;min-height:44px;align-items:center;gap:5px;margin-left:-4px;padding:0 4px;color:var(--green-deep);font-size:14px;font-weight:750;text-decoration:none}
+.back-link:hover,.back-link:focus-visible{color:var(--ink)}
+.back-link span{font-size:16px;line-height:1}
+.route-stop.selected{margin:0 -12px;padding:0 12px;border-radius:14px;background:rgba(184,95,73,.055)}
+.route-stop.selected:before{left:20px}
+.route-stop.selected strong{font-weight:850}
+.route-stop.selected em{color:var(--accent-deep)}
+.route-stop .route-eta{font-variant-numeric:tabular-nums}
+.route-stop .route-eta.live{color:var(--ink-live);font-weight:800}
+.route-stop .route-eta.urgent{color:var(--ink-urgent);font-weight:800}
 @media(min-width:900px){
   .setup-page{width:min(100%,664px)}
   .onboard-sign{width:min(100%,560px);margin-right:auto;margin-left:auto}
@@ -280,6 +293,9 @@ const designRefinementStyles = `
 }
 @media(prefers-color-scheme:dark){
   :root{--ink-live:#f8f0e3;--ink-estimated:#aaa197;--ink-urgent:#f09b80;--danger:#ff9a8d;--danger-soft:rgba(255,154,141,.1)}
+  .back-link{color:#a9c0b2}
+  .back-link:hover,.back-link:focus-visible{color:#f8f0e3}
+  .route-stop.selected{background:rgba(223,115,87,.09)}
   .bus-direction{color:var(--text-muted)}
   .advanced-panel>summary,.glossary summary{color:var(--text-muted)}
   .footer-action{border-color:#4d473e}

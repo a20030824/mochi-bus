@@ -144,6 +144,7 @@ async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQue
         sequence: stop.properties.sequence,
         selected: stop.properties.stopUid === query.stopUid,
         etaLabel: null,
+        etaTone: 'muted' as const,
       })),
   }
   return { resolved, detail }
