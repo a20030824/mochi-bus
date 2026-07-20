@@ -29,12 +29,20 @@ jobs:
         run: npm ci
       - name: Run focused tests
         run: npm test -- src/lib/tdx-resolution.test.ts src/lib/tdx.test.ts
-      - name: Run full project check
-        run: npm run check
+      - name: Check generated Cloudflare types
+        run: npm run cf-typegen:check
+      - name: Run complete test suite
+        run: npm run test
+      - name: Run TypeScript check
+        run: npm run typecheck
+      - name: Build Map client
+        run: npm run build:map
+      - name: Run Wrangler dry-run
+        run: npx wrangler deploy --dry-run
       - name: Publish clean merge
         run: |
           rm .github/workflows/sync-pr110-main.yml
           git add -A
           git commit --amend --no-edit
           git push origin HEAD:agent/tdx-body-singleflight
-# trigger: sync-main-v1
+# trigger: sync-main-v2
