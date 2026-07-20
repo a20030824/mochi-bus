@@ -41,14 +41,14 @@ export function applyRouteTimelineFallback<T extends RouteTimelineStopPresentati
       : null
 
     if (scheduledLabel) {
-      return { ...stop, etaLabel: scheduledLabel, etaTone: 'muted' }
+      return { ...stop, etaLabel: scheduledLabel, etaTone: 'muted' } as T
     }
 
     return {
       ...stop,
       etaLabel: stop.etaLabel === '尚未發車' ? stop.etaLabel : ROUTE_UNKNOWN_ETA_LABEL,
       etaTone: 'muted',
-    }
+    } as T
   })
 }
 
