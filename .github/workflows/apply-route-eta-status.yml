@@ -1,5 +1,6 @@
 name: Apply route ETA status model
 
+# The workflow now exists on the branch; this follow-up push triggers the migration.
 on:
   push:
     branches:
