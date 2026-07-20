@@ -4,18 +4,33 @@ import {
   LEGACY_APPEARANCE_STORAGE_KEYS,
 } from '../../src/domain/appearance'
 import {
+  activeBoardId,
+  clearHomeBoard,
   clearLocalData,
   clearTdxAuth,
   consumeTdxAuthMigrationNotice,
   getTdxAuthState,
+  isHomeDirection,
+  migrateBoards,
+  readBoards,
+  readHomeBoard,
   resetTdxAuthMemoryForTests,
+  resolveHomeBoard,
+  saveHomeBoardToFavorites,
+  setActiveBoard,
   setTdxAuth,
+  toggleHomeDirection,
+  writeBoards,
+  writeHomeBoard,
+  type FavoriteBoard,
+  type FavoriteBus,
   type TdxAuth,
 } from './store'
 
 const LEGACY_KEY = 'mochi.bus.tdxAuth.v1'
 const SESSION_KEY = 'mochi.bus.tdxAuth.session.v2'
 const DEVICE_KEY = 'mochi.bus.tdxAuth.device.v2'
+const HOME_KEY = 'mochi.bus.homeBoard.v1'
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
@@ -37,6 +52,110 @@ class DeniedStorage extends MemoryStorage {
 class RemoveDeniedStorage extends MemoryStorage {
   override removeItem(): void { throw new DOMException('denied', 'SecurityError') }
 }
+
+const now = '2026-07-20T00:00:00.000Z'
+const bus = (routeName: string, routeUid: string, direction: 0 | 1 = 0): FavoriteBus => ({
+  city: 'Taipei',
+  routeName,
+  routeUid,
+  patternId: `${routeUid}-pattern`,
+  stopName: '公館',
+  stopUid: `${routeUid}-stop`,
+  direction,
+})
+const board = (id: string, placeId: string, buses: FavoriteBus[]): FavoriteBoard => ({
+  version: 2,
+  id,
+  title: placeId === 'P1' ? '公館' : '西門站',
+  city: 'Taipei',
+  placeId,
+  latitude: 25,
+  longitude: 121,
+  buses,
+  createdAt: now,
+  updatedAt: now,
+})
+
+describe('home board lifecycle', () => {
+  let local: MemoryStorage
+  let session: MemoryStorage
+
+  beforeEach(() => {
+    local = new MemoryStorage()
+    session = new MemoryStorage()
+    vi.stubGlobal('localStorage', local)
+    vi.stubGlobal('sessionStorage', session)
+    resetTdxAuthMemoryForTests()
+  })
+
+  afterEach(() => {
+    resetTdxAuthMemoryForTests()
+    vi.unstubAllGlobals()
+  })
+
+  it('changes the cover without deleting saved favorites', () => {
+    const saved = board('saved', 'P1', [bus('307', 'R1')])
+    writeBoards([saved])
+    setActiveBoard(saved.id)
+
+    const selected = toggleHomeDirection('Taipei', {
+      placeId: 'P2', name: '西門站', latitude: 25.04, longitude: 121.51,
+    }, { ...bus('藍1', 'R2'), stopName: '西門站' })
+
+    expect(selected).toBe(true)
+    expect(readBoards()).toEqual([saved])
+    expect(readHomeBoard()?.placeId).toBe('P2')
+    expect(resolveHomeBoard(readBoards())?.title).toBe('西門站')
+    expect(isHomeDirection('Taipei', 'P2', { ...bus('藍1', 'R2'), stopName: '西門站' })).toBe(true)
+  })
+
+  it('collapses an exact temporary cover into the matching saved board', () => {
+    const saved = board('saved', 'P1', [bus('307', 'R1')])
+    writeBoards([saved])
+    writeHomeBoard({ ...saved, id: 'draft', updatedAt: '2026-07-20T01:00:00.000Z' })
+
+    expect(migrateBoards()).toEqual([saved])
+    expect(readHomeBoard()).toBeNull()
+    expect(activeBoardId()).toBe(saved.id)
+  })
+
+  it('merges a temporary cover into an existing place when added to favorites', () => {
+    const first = bus('307', 'R1')
+    const second = bus('藍1', 'R2', 1)
+    const saved = board('saved', 'P1', [first])
+    writeBoards([saved])
+    writeHomeBoard(board('draft', 'P1', [first, second]))
+
+    const result = saveHomeBoardToFavorites()
+
+    expect(result?.id).toBe(saved.id)
+    expect(readBoards()).toHaveLength(1)
+    expect(readBoards()[0].buses).toHaveLength(2)
+    expect(readHomeBoard()).toBeNull()
+    expect(activeBoardId()).toBe(saved.id)
+  })
+
+  it('selecting a saved board clears the temporary cover', () => {
+    const saved = board('saved', 'P1', [bus('307', 'R1')])
+    writeBoards([saved])
+    writeHomeBoard(board('draft', 'P2', [bus('藍1', 'R2')]))
+
+    setActiveBoard(saved.id)
+
+    expect(readHomeBoard()).toBeNull()
+    expect(resolveHomeBoard(readBoards())?.id).toBe(saved.id)
+  })
+
+  it('clears temporary cover data with the rest of local state', () => {
+    writeHomeBoard(board('draft', 'P2', [bus('藍1', 'R2')]))
+    clearHomeBoard()
+    expect(local.getItem(HOME_KEY)).toBeNull()
+
+    writeHomeBoard(board('draft', 'P2', [bus('藍1', 'R2')]))
+    clearLocalData()
+    expect(local.getItem(HOME_KEY)).toBeNull()
+  })
+})
 
 describe('TDX browser credential lifecycle', () => {
   const auth: TdxAuth = { clientId: 'client-id', clientSecret: 'client-secret' }
