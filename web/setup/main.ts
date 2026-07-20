@@ -152,10 +152,21 @@ function renderBoards() {
       status.textContent = '封面'
       titleLine.appendChild(status)
     }
-    const detail = document.createElement('span')
-    detail.className = 'favorite-route-number'
+    const detail = document.createElement('div')
+    detail.className = 'board-route-chips'
     const ambiguous = board.buses.some((bus) => bus.identityStatus === 'legacy-ambiguous')
-    detail.textContent = board.buses.map((bus) => bus.routeName).join('、') + (ambiguous ? ' · 需重新選擇路線' : '')
+    for (const bus of board.buses) {
+      const chip = document.createElement('span')
+      chip.className = 'favorite-route-number'
+      chip.textContent = bus.routeName
+      detail.appendChild(chip)
+    }
+    if (ambiguous) {
+      const note = document.createElement('span')
+      note.className = 'route-chip-note'
+      note.textContent = '需重新選擇路線'
+      detail.appendChild(note)
+    }
     copy.replaceChildren(titleLine, detail)
     const actions = document.createElement('div')
     actions.className = 'item-actions'
