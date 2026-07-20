@@ -9,6 +9,7 @@ import {
 } from '../domain/bus-query'
 import { embedRoutePageIdentity } from '../domain/route-page-identity'
 import { buildRouteDetailWithoutEta, getRoutePageDetail } from '../domain/route-page-detail'
+import { selectUniqueSnapshotRouteVariant } from '../domain/snapshot-route-selection'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
@@ -122,16 +123,9 @@ bus.get('/route', async (c) => {
 async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQuery) {
   if (!query.stopUid) return null
   const variants = await getSnapshotRouteVariants(env, query.city, query.routeName)
-  const matchingVariants = variants.filter((candidate) =>
-    candidate.direction === query.direction
-    && (!query.routeUid || candidate.routeUid === query.routeUid)
-    && (!query.subRouteUid || candidate.subRouteUid === query.subRouteUid)
-    && candidate.stops.features.some((stop) => stop.properties.stopUid === query.stopUid),
-  )
-  // 舊網址缺少支線身分時，只有唯一結果才能安全回退，禁止任意挑第一條。
-  if (matchingVariants.length !== 1) return null
-  const variant = matchingVariants[0]
-  const selectedStop = variant.stops.features.find((stop) => stop.properties.stopUid === query.stopUid)!
+  const selection = selectUniqueSnapshotRouteVariant(variants, query)
+  if (!selection) return null
+  const { variant, selectedStop } = selection
   const resolved = {
     ...query,
     routeUid: query.routeUid ?? variant.routeUid,
