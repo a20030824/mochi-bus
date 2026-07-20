@@ -31,6 +31,13 @@ import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import { createMapFeatureDiscovery, type MapFeature } from './feature-discovery'
 import { createCityNetworkController } from './city-network-controller'
 import { bindTextTooltip } from './leaflet-tooltip'
+import {
+  canonicalMapHistoryState,
+  historyRecord,
+  mapViewFromUrl,
+  planInitialMapHistory,
+  readMapView,
+} from './history-state'
 import { routeCasingColor, routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './theme'
 import {
   mapApi,
@@ -95,9 +102,6 @@ const TAIWAN_OVERVIEW_BOUNDS: L.LatLngBoundsExpression = [
 ]
 const desktopMapLayout = window.matchMedia('(min-width: 641px)')
 
-// 舊 renderer 的呼叫點暫留為 migration seam；history 不再建立或補推 sentinel。
-function setViewBack(_back?: () => void) {}
-
 function overviewMaxZoom(baseZoom: number): number {
   // 桌機抽屜在側邊，不會吃掉地圖高度；四分之三級能善用多出的工作區，
   // 手機底部抽屜仍維持原本的地理尺度。
@@ -117,45 +121,6 @@ type TripResultsHistorySnapshot = {
   selectedDirectIndex: number
   selectedTransferIndex: number
   warning?: TDXWarning
-}
-
-type MapView = 'overview' | 'region' | 'catalogue' | 'route' | 'nearby' | 'place' | 'trip-select' | 'trip-results'
-const mapViews = new Set<MapView>(['overview', 'region', 'catalogue', 'route', 'nearby', 'place', 'trip-select', 'trip-results'])
-
-function historyRecord(): Record<string, unknown> {
-  return history.state && typeof history.state === 'object' && !Array.isArray(history.state)
-    ? history.state as Record<string, unknown>
-    : {}
-}
-
-function readMapView(state: unknown): MapView | undefined {
-  if (!state || typeof state !== 'object' || Array.isArray(state)) return
-  const view = (state as { mapView?: unknown }).mapView
-  return typeof view === 'string' && mapViews.has(view as MapView) ? view as MapView : undefined
-}
-
-function mapViewFromUrl(params = new URLSearchParams(location.search)): MapView {
-  if (params.get('region')) return 'region'
-  if (!params.get('city')) return 'overview'
-  if (params.has('route')) return 'route'
-  if (params.has('place') || params.has('stopUid')) return 'place'
-  if (params.has('lat') && params.has('lon')) return 'nearby'
-  if (params.get('trip') === 'results') return 'trip-results'
-  if (params.get('trip') === 'select') return 'trip-select'
-  return 'catalogue'
-}
-
-function canonicalizeMapHistoryState(params = new URLSearchParams(location.search)): MapView {
-  const view = mapViewFromUrl(params)
-  const current = historyRecord()
-  const parent = readMapView({ mapView: current.mapParent })
-    ?? (view === 'region' ? 'overview' : view === 'catalogue' ? 'region' : view === 'overview' ? undefined : 'catalogue')
-  if (readMapView(current) !== view || current.mapParent !== parent) {
-    const next = { ...current, mapView: view, ...(parent ? { mapParent: parent } : {}) }
-    if (!parent) delete next.mapParent
-    history.replaceState(next, '', location.href)
-  }
-  return view
 }
 
 const mapNode = requiredElement('map')
@@ -426,36 +391,25 @@ async function initialise() {
 }
 
 function seedInitialMapHistory() {
-  if (readMapView(history.state)) return
-  const originalUrl = `${location.pathname}${location.search}`
-  const params = new URLSearchParams(location.search)
-  const cityCode = params.get('city')
-  const regionCode = params.get('region') as RegionCode | null
-  history.replaceState({ mapView: 'overview' }, '', '/map')
-  if (regionCode && regions.some((region) => region.code === regionCode)) {
-    history.pushState({ mapView: 'region', mapParent: 'overview' }, '', originalUrl)
-    return
+  const mutations = planInitialMapHistory({
+    state: history.state,
+    params: new URLSearchParams(location.search),
+    cities,
+    validRegions: new Set(regions.map((region) => region.code)),
+    originalUrl: `${location.pathname}${location.search}`,
+  })
+  for (const mutation of mutations) {
+    if (mutation.mode === 'replace') history.replaceState(mutation.state, '', mutation.url)
+    else history.pushState(mutation.state, '', mutation.url)
   }
-  if (!cityCode) return
-  const city = cities.find((candidate) => candidate.code === cityCode)
-  if (!city) return
-  history.pushState({ mapView: 'region', mapParent: 'overview' }, '', `/map?region=${city.region}`)
-  history.pushState({ mapView: 'catalogue', mapParent: 'region' }, '', `/map?city=${encodeURIComponent(city.code)}`)
-  const mapView = params.has('route')
-    ? 'route'
-    : params.has('place') || params.has('stopUid')
-      ? 'place'
-      : params.has('lat') && params.has('lon')
-        ? 'nearby'
-        : params.get('trip') === 'results'
-          ? 'trip-results'
-          : params.get('trip') === 'select' ? 'trip-select' : undefined
-  if (mapView) history.pushState({ mapView, mapParent: 'catalogue' }, '', originalUrl)
 }
 
 async function hydrateMapLocation() {
   const params = new URLSearchParams(location.search)
-  canonicalizeMapHistoryState(params)
+  const canonicalHistory = canonicalMapHistoryState(history.state, params)
+  if (canonicalHistory.changed) {
+    history.replaceState(canonicalHistory.state, '', location.href)
+  }
   const hydration = locationHydrations.begin()
   const hydrationIsStale = () => hydration.signal.aborted
     || locationHydrations.isStale(hydration.requestId)
@@ -530,7 +484,6 @@ function renderBootstrapError() {
     footer: [retry],
   })
   setDocumentTitle('地圖初始化失敗')
-  setViewBack(undefined)
 }
 
 networkButton.addEventListener('click', () => {
@@ -607,7 +560,6 @@ function showTaiwan() {
   camera.focusBounds(TAIWAN_OVERVIEW_BOUNDS, { maxZoom: () => overviewMaxZoom(7.5) })
   history.replaceState({ mapView: 'overview' }, '', '/map')
   setDocumentTitle()
-  setViewBack(undefined)
 }
 
 // 「跳到你所在的縣市」用 Cloudflare 依連線 IP 推估的粗略位置(縣市級),
@@ -733,7 +685,6 @@ function showRegion(regionCode: RegionCode) {
     ],
   })
   fitRegionCities(region, regionCities)
-  setViewBack(returnToOverview)
 }
 
 function openCity(city: MapCity) {
@@ -790,7 +741,6 @@ async function chooseCity(city: MapCity) {
     content: [drawerBack('返回區域', returnToRegion), heading(city.name, '正在載入路線…')],
   })
   camera.focusPoint(city.center, 11)
-  setViewBack(returnToRegion)
 
   try {
     const loadedRoutes = await mapApi.routes(city.code, signal)
@@ -839,7 +789,6 @@ function renderRoutePicker() {
         heading(activeCity.name, '正在載入路線…'),
       ],
     })
-    setViewBack(returnToRegion)
     const cityCode = activeCity.code
     const { requestId, signal } = beginNavRequest()
     void (async () => {
@@ -972,7 +921,6 @@ function renderRoutePicker() {
   listRegion.scrollTop = routeScrollTop
   saveRouteCatalogueState('/map?city=' + encodeURIComponent(activeCity.code))
   clearStatus()
-  setViewBack(returnToRegion)
 }
 
 function saveRouteCatalogueState(url = location.href) {
@@ -1109,7 +1057,6 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
     footer: [createReselectTripEndpointButton(kind, () => resumeTripEndpointSelection(kind))],
   })
   setStatus(`${kind === 'from' ? '出發' : '目的地'} · ${pending.candidates.length} 個附近站牌`)
-  setViewBack(backAction)
 }
 
 function renderTripSelectionStep(nextKind: TripSelectionKind) {
@@ -1142,7 +1089,6 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   })
   drawerSession.onDispose(searchBox.dispose)
   clearStatus()
-  setViewBack(cancelTripMode)
 }
 
 async function applyTripSelection(
@@ -1439,7 +1385,6 @@ async function loadRoute(
     mode: 'compact',
     content: [drawerBack(loading.label, loadingBack), heading(routeName, '正在拼起路線與站牌…')],
   })
-  setViewBack(loadingBack)
   try {
     const variants = await mapApi.routeVariants(activeCity.code, routeName, signal)
     if (isStaleNav(requestId)) return
@@ -1544,7 +1489,6 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
   })
   if (bounds.isValid()) camera.focusBounds(bounds)
   clearStatus()
-  setViewBack(variantBack)
   history.replaceState(history.state, '', `/map?city=${encodeURIComponent(activeCity!.code)}&route=${encodeURIComponent(routeName)}`)
 }
 
@@ -1591,7 +1535,6 @@ async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
     content: [paragraph('正在整理表定班次…')],
   })
   setStatus(`${variant.routeName} · 正在讀取時刻`)
-  setViewBack(back)
   try {
     const data = await mapApi.timetable(activeCity.code, variant, stopUid, signal)
     if (isStaleNav(requestId)) return
@@ -1639,7 +1582,6 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
       content: [panel],
     })
     setStatus(`${variant.routeName} · 無公開時刻資料`)
-    setViewBack(back)
     return
   }
 
@@ -1659,7 +1601,6 @@ function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetabl
     selectionLayer.clearLayers()
   }
   clearStatus()
-  setViewBack(back)
 }
 
 
@@ -1727,7 +1668,6 @@ function drawVariant(variant: RouteMapVariant) {
   if (bounds.isValid()) camera.focusBounds(bounds)
   const summaryRequest = ++timetableRequest
   void hydrateRouteTimetableSummary(variant, timetableSummary, summaryRequest)
-  setViewBack(goBack)
   const params = new URLSearchParams({
     city: activeCity!.code,
     route: variant.routeName,
@@ -1883,7 +1823,6 @@ async function findNearbyPlaces(
     ],
     content: [loadingList],
   })
-  setViewBack(renderRoutePicker)
   nearbyLayer.clearLayers()
   lastNearbyOrigin = [latitude, longitude]
   const city = activeCity
@@ -1973,7 +1912,6 @@ function renderNearbyPlaces() {
   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
   history.replaceState({ ...currentState, mapView: 'nearby' }, '', `/map?city=${activeCity.code}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`)
   setDocumentTitle(`${activeCity.name}公車地圖`)
-  setViewBack(nearbyBack)
 }
 
 async function selectTripCoordinate(latitude: number, longitude: number) {
@@ -2053,7 +1991,6 @@ async function loadDirectRoutes() {
         degradedNotice(message, () => void loadDirectRoutes(), credentialRejected),
       ],
     })
-    setViewBack(resumeDestinationSelection)
   }
 }
 
@@ -2230,7 +2167,6 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     footer: [reset],
   })
   clearStatus()
-  setViewBack(resumeDestinationSelection)
 }
 
 function renderTransferPlans(plans: TransferPlan[]) {
@@ -2337,7 +2273,6 @@ function renderTransferPlans(plans: TransferPlan[]) {
     footer: [tripModeButton()],
   })
   clearStatus()
-  setViewBack(resumeDestinationSelection)
 }
 
 function resumeDestinationSelection() {
@@ -2849,7 +2784,6 @@ async function showPlaceRoutes(place: NearbyPlace) {
     ],
     content: [loadingList],
   })
-  setViewBack(returnToNearbyPlaces)
   setStatus(`正在讀取 ${place.name} 的路線…`)
   const { requestId, signal } = beginNavRequest()
   try {
