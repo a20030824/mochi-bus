@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest'
 import mainSource from './main.ts?raw'
 import journeyPreviewSource from './journey-preview-controller.ts?raw'
 import journeyPreviewMapSource from './journey-preview-map.ts?raw'
+import previewMapPrimitivesSource from './preview-map-primitives.ts?raw'
+import routeDetailSurfaceSource from './route-detail-surface.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 1997
+const MAP_MAIN_LINE_LIMIT = 1950
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -46,6 +48,22 @@ describe('map main architecture boundary', () => {
     expect(mainSource).not.toContain('getJourneySegmentCoordinates')
     for (const dependency of ['mapApi.', 'history.', 'camera.', 'trip.', 'document.', 'window.', 'loadVariant']) {
       expect(journeyPreviewMapSource).not.toContain(dependency)
+    }
+  })
+
+  it('shares low-level preview lines and stop dots through preview map primitives', () => {
+    expect(mainSource).toContain('createSelectablePreviewLineRenderer')
+    expect(mainSource).toContain('createPreviewStopDotManager')
+    expect(mainSource).not.toContain('function bindSelectableLine(')
+    expect(mainSource).not.toContain('function addPreviewStopDots(')
+    expect(mainSource).not.toContain('new Set<L.CircleMarker>()')
+    expect(journeyPreviewMapSource).not.toContain('function bindSelectableLine(')
+    expect(journeyPreviewMapSource).not.toContain('function addStopDots(')
+    expect(journeyPreviewMapSource).not.toContain('previewDotStyleForZoom')
+    expect(routeDetailSurfaceSource).toContain('SelectablePreviewLineRenderer')
+    expect(routeDetailSurfaceSource).toContain('PreviewStopDotManager')
+    for (const dependency of ['mapApi.', 'history.', 'camera.', 'trip.', 'document.', 'window.', 'loadVariant']) {
+      expect(previewMapPrimitivesSource).not.toContain(dependency)
     }
   })
 

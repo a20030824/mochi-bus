@@ -8,6 +8,7 @@ import type {
 } from './map-api-client'
 import { tooltipText } from './leaflet-tooltip'
 import { createTimetablePanel } from './timetable-view'
+import type { PreviewStopDotManager, SelectablePreviewLineRenderer } from './preview-map-primitives'
 import {
   initialRouteStopMarkerMetrics,
   normalizedVehicleAzimuth,
@@ -30,13 +31,6 @@ type BindHoverTooltip = <T extends L.Layer>(
   options?: L.TooltipOptions,
 ) => T
 
-type BindSelectableLine = (
-  shape: RouteMapVariant['shape'],
-  pane: string,
-  layerGroup: L.LayerGroup,
-  style: L.PathOptions,
-) => { line: LeafletGeoJSON; target: LeafletGeoJSON }
-
 type RouteDetailSurfaceOptions = {
   map: L.Map
   routeLayer: L.LayerGroup
@@ -47,8 +41,8 @@ type RouteDetailSurfaceOptions = {
   focusBounds: (bounds: L.LatLngBounds) => void
   focusPoint: (position: L.LatLngExpression, zoom: number) => void
   bindHoverTooltip: BindHoverTooltip
-  bindSelectableLine: BindSelectableLine
-  addPreviewStopDots: (stops: RouteMapVariant['stops'], color: string, layer: L.LayerGroup) => void
+  selectablePreviewLine: SelectablePreviewLineRenderer
+  previewStopDots: PreviewStopDotManager
   drawerBack: (label: string, onClick: () => void) => HTMLButtonElement
   heading: (title: string, description: string) => HTMLElement
   paragraph: (text: string) => HTMLElement
@@ -187,6 +181,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
   }
 
   function showVariantPicker(view: VariantPickerOptions): void {
+    options.previewStopDots.reset()
     options.previewLayer.clearLayers()
     clearRoute()
     const bounds = L.latLngBounds([])
@@ -195,8 +190,8 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
     view.variants.map((variant, index) => ({ variant, index })).reverse().forEach(({ variant, index }) => {
       const color = routePalette[index % routePalette.length]
       const style = routeVariantPreviewStyle(color, index)
-      const { line, target } = options.bindSelectableLine(variant.shape, 'routePreviewPane', options.previewLayer, style)
-      options.addPreviewStopDots(variant.stops, color, options.previewLayer)
+      const { line, target } = options.selectablePreviewLine(variant.shape, 'routePreviewPane', options.previewLayer, style)
+      options.previewStopDots.add(variant.stops, color, options.previewLayer)
       options.bindHoverTooltip(target, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
       target.on('mouseover', () => {
         line.setStyle({ ...style, weight: 8, opacity: .9 })

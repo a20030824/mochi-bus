@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('leaflet', () => ({ default: {} }))
 import type { RouteMapVariant } from './map-api-client'
-import { previewDotStyleForZoom, resolveJourneyPreviewGeometry } from './journey-preview-map'
+import { resolveJourneyPreviewGeometry } from './journey-preview-map'
 
 function variant(): RouteMapVariant {
   return {
@@ -80,10 +80,4 @@ describe('Journey preview map geometry', () => {
     expect(geometry.focusCoordinates).toEqual([[25.0100, 121.0100]])
   })
 
-  it('preserves the existing preview-dot zoom scale', () => {
-    expect(previewDotStyleForZoom(11)).toEqual({ radius: 1.8, weight: 1 })
-    expect(previewDotStyleForZoom(12)).toEqual({ radius: 2.4, weight: 1 })
-    expect(previewDotStyleForZoom(14)).toEqual({ radius: 3.5, weight: 1.2 })
-    expect(previewDotStyleForZoom(16)).toEqual({ radius: 5, weight: 1.4 })
-  })
 })
