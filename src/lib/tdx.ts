@@ -249,7 +249,7 @@ export function resetTDXRateLimitTracking(): void {
 // TDX 的 429 body 會說明是頻率超限還是額度用盡,記進 log 供事後判讀;內容絕不回給使用者。
 // isShared 只有共用憑證的請求才是 true,決定這次結果要不要更新額度追蹤狀態。
 async function tdxResponseError(context: string, response: Response, isShared: boolean): Promise<TDXServiceError> {
-  const body = await response.text().catch(() => '')
+  const body = await readTextResponse(response, TDX_ERROR_MAX_RESPONSE_BYTES, true).catch(() => '')
   const warning = classifyTDXWarning(response.status, body)
   if (isShared && (response.status === 429 || warning === 'tdx-rate-limit' || warning === 'tdx-quota')) {
     sharedRateLimitedSince ??= Date.now()
@@ -294,14 +294,33 @@ type CircuitState = {
 
 // 共用憑證的 cache key 是 source + client_id + client_secret 的 SHA-256 指紋；
 // Map 裡不保留原始 secret，同一 client_id 更換 secret 也不會誤用舊 token。
+type TDXUpstreamOutcome =
+  | {
+      ok: true
+      data: unknown
+      status: number
+      retryCount: number
+      initialFailureClass?: TelemetryFailureClass
+    }
+  | {
+      ok: false
+      error: TDXServiceError
+      retryCount: number
+      initialFailureClass?: TelemetryFailureClass
+    }
+
 const tokenCache = new Map<string, TokenCache>()
 const tdxCircuits = new Map<string, CircuitState>()
+const tokenFlights = new Map<string, Promise<string>>()
+const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
 
 // 測試用：模擬 isolate 重建，避免模組層快取讓案例彼此污染。
 export function resetTDXTestState(): void {
   sharedRateLimitedSince = null
   tokenCache.clear()
   tdxCircuits.clear()
+  tokenFlights.clear()
+  dataFlights.clear()
 }
 
 const ETA_CACHE_SECONDS = 12
@@ -315,6 +334,10 @@ const CIRCUIT_FAILURE_WINDOW_MS = 60 * 1000
 const TRANSIENT_CIRCUIT_OPEN_MS = 30 * 1000
 const QUOTA_CIRCUIT_OPEN_MS = 5 * 60 * 1000
 const MAX_RETRY_AFTER_MS = 5 * 60 * 1000
+const DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+const TDX_ERROR_MAX_RESPONSE_BYTES = 32 * 1024
+const TDX_TOKEN_MAX_RESPONSE_BYTES = 16 * 1024
+const MAX_TDX_SINGLEFLIGHT_ENTRIES = 128
 // 公路客運(公路總局)的資源掛在 /InterCity 底下,沒有 /City/{city} 路徑段;
 // RouteUID 固定 THB 開頭。凡是「按路線」的即時/時刻表/站序/線形查詢都要據此換端點。
 export function tdxRouteScope(city: string, routeUid?: string): string {
@@ -502,10 +525,17 @@ async function tokenFor(
   credentialKey: string,
   isShared: boolean,
 ): Promise<string> {
+  const existing = tokenFlights.get(credentialKey)
+  if (existing) return existing
+
   assertTDXCircuitClosed(tokenCircuitKey(credentialKey))
   const cached = cachedToken(credentialKey)
   if (cached) return cached
-  return fetchTDXToken(clientId, clientSecret, credentialKey, isShared)
+  return joinSingleflight(
+    tokenFlights,
+    credentialKey,
+    () => fetchTDXToken(clientId, clientSecret, credentialKey, isShared),
+  ).promise
 }
 
 async function fetchTDXToken(
@@ -548,12 +578,17 @@ async function fetchTDXToken(
   if (isShared) sharedRateLimitedSince = null
   let data: { access_token?: string; expires_in?: number }
   try {
-    data = await response.json() as { access_token?: string; expires_in?: number }
+    data = await readJsonResponse(response, TDX_TOKEN_MAX_RESPONSE_BYTES) as {
+      access_token?: string
+      expires_in?: number
+    }
   } catch (error) {
-    const serviceError = new TDXServiceError('TDX token response is invalid JSON', 502, {
-      cause: error,
-      failureKind: 'invalid_json',
-    })
+    const serviceError = error instanceof TDXPayloadTooLargeError
+      ? error
+      : new TDXServiceError('TDX token response is invalid JSON', 502, {
+          cause: error,
+          failureKind: 'invalid_json',
+        })
     recordTDXCircuitFailure(circuitKey, serviceError)
     throw serviceError
   }
@@ -964,7 +999,7 @@ export async function resolveTDXJson<T>(
   options: TDXResolutionOptions<T> = {},
 ): Promise<TDXResolvedData<T>> {
   const now = telemetryNow(env)
-  const maxResponseBytes = normalizedResponseByteLimit(options.maxResponseBytes)
+  const maxResponseBytes = responseByteLimit(options.maxResponseBytes)
   const credentialScope = env.TDX_USER_ACCESS_TOKEN ? 'byok' as const : 'shared' as const
   const tracker = options.operation ? beginTDXResolutionTelemetry({
     tdxOperation: options.operation,
@@ -1087,11 +1122,88 @@ export async function resolveTDXJson<T>(
   }
   const { token, isShared, credentialKey } = tokenInfo
   const circuitKey = dataCircuitKey(credentialKey)
-  try {
-    assertTDXCircuitClosed(circuitKey)
-  } catch (error) {
-    return finishFailure(asTDXServiceError(error), false)
+  const flightKey = dataFlightKey(credentialKey, url, maxResponseBytes, options.operation)
+  const existingFlight = dataFlights.get(flightKey)
+  if (!existingFlight) {
+    try {
+      assertTDXCircuitClosed(circuitKey)
+    } catch (error) {
+      return finishFailure(asTDXServiceError(error), false)
+    }
   }
+
+  const { promise: upstreamPromise, leader } = joinSingleflight(
+    dataFlights,
+    flightKey,
+    () => fetchTDXUpstream(url, maxResponseBytes, options.operation, token, isShared, circuitKey),
+  )
+  const upstream = await upstreamPromise
+  retryCount = upstream.retryCount
+  initialFailureClass = upstream.initialFailureClass
+  if (!upstream.ok) return finishFailure(upstream.error, true)
+
+  if (!validPayload(upstream.data, options.validate)) {
+    const serviceError = new TDXServiceError('TDX response has an invalid schema', 502, {
+      failureKind: 'invalid_schema',
+    })
+    if (leader) recordTDXCircuitFailure(circuitKey, serviceError)
+    return finishFailure(serviceError, true)
+  }
+
+  const data = upstream.data as T
+  if (leader) recordTDXCircuitSuccess(circuitKey)
+  const cachedAt = now()
+  memoryCacheSet(memoryKey, { data, cachedAt }, ttlSeconds)
+  const resolved = completeData(data, 'upstream', 0, upstream.status)
+  if (leader) {
+    await cachePutFailOpen(edgeCache, cacheKey, new Response(JSON.stringify(data), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': `public, max-age=${ttlSeconds}`,
+        'X-Mochi-Cached-At': String(cachedAt),
+      },
+    }), 'tdx', env.TDX_BACKGROUND_TASKS)
+  }
+  return resolved
+}
+
+function dataFlightKey(
+  credentialKey: string,
+  url: URL,
+  maxResponseBytes: number,
+  operation?: TelemetryTdxOperation,
+): string {
+  return `${credentialKey}\0${operation ?? 'default'}\0${maxResponseBytes}\0${url.toString()}`
+}
+
+function joinSingleflight<T>(
+  flights: Map<string, Promise<T>>,
+  key: string,
+  create: () => Promise<T>,
+): { promise: Promise<T>; leader: boolean } {
+  const existing = flights.get(key)
+  if (existing) return { promise: existing, leader: false }
+
+  const promise = create()
+  if (flights.size < MAX_TDX_SINGLEFLIGHT_ENTRIES) {
+    flights.set(key, promise)
+    void promise.finally(() => {
+      if (flights.get(key) === promise) flights.delete(key)
+    }).catch(() => undefined)
+  }
+  return { promise, leader: true }
+}
+
+async function fetchTDXUpstream(
+  url: URL,
+  maxResponseBytes: number,
+  operation: TelemetryTdxOperation | undefined,
+  token: string,
+  isShared: boolean,
+  circuitKey: string,
+): Promise<TDXUpstreamOutcome> {
+  let retryCount = 0
+  let initialFailureClass: TelemetryFailureClass | undefined
 
   while (true) {
     let response: Response
@@ -1105,29 +1217,30 @@ export async function resolveTDXJson<T>(
         cause: error,
         failureKind: transportFailureClass(error),
       })
-      if (shouldRetryResolution(serviceError, options.operation, retryCount)) {
+      if (shouldRetryResolution(serviceError, operation, retryCount)) {
         retryCount += 1
         initialFailureClass = serviceError.failureKind
         continue
       }
       recordTDXCircuitFailure(circuitKey, serviceError)
-      return finishFailure(serviceError, true)
+      return { ok: false, error: serviceError, retryCount, initialFailureClass }
     }
+
     if (!response.ok) {
       const error = await tdxResponseError('TDX request failed', response, isShared)
-      if (shouldRetryResolution(error, options.operation, retryCount)) {
+      if (shouldRetryResolution(error, operation, retryCount)) {
         retryCount += 1
         initialFailureClass = error.failureKind
         continue
       }
       recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
-      return finishFailure(error, true)
+      return { ok: false, error, retryCount, initialFailureClass }
     }
     if (isShared) sharedRateLimitedSince = null
 
-    let unvalidated: unknown
     try {
-      unvalidated = await readJsonResponse(response, maxResponseBytes)
+      const data = await readJsonResponse(response, maxResponseBytes)
+      return { ok: true, data, status: response.status, retryCount, initialFailureClass }
     } catch (error) {
       const serviceError = error instanceof TDXPayloadTooLargeError
         ? error
@@ -1145,29 +1258,8 @@ export async function resolveTDXJson<T>(
       } else {
         recordTDXCircuitFailure(circuitKey, serviceError)
       }
-      return finishFailure(serviceError, true)
+      return { ok: false, error: serviceError, retryCount, initialFailureClass }
     }
-    if (!validPayload(unvalidated, options.validate)) {
-      const serviceError = new TDXServiceError('TDX response has an invalid schema', 502, {
-        failureKind: 'invalid_schema',
-      })
-      recordTDXCircuitFailure(circuitKey, serviceError)
-      return finishFailure(serviceError, true)
-    }
-
-    const data = unvalidated as T
-    recordTDXCircuitSuccess(circuitKey)
-    const cachedAt = now()
-    memoryCacheSet(memoryKey, { data, cachedAt }, ttlSeconds)
-    const resolved = completeData(data, 'upstream', 0, response.status)
-    await cachePutFailOpen(edgeCache, cacheKey, new Response(JSON.stringify(data), {
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': `public, max-age=${ttlSeconds}`,
-        'X-Mochi-Cached-At': String(cachedAt),
-      },
-    }), 'tdx', env.TDX_BACKGROUND_TASKS)
-    return resolved
   }
 }
 
@@ -1189,15 +1281,29 @@ function normalizedResponseByteLimit(value: number | undefined): number | undefi
     : undefined
 }
 
-async function readJsonResponse(response: Response, maxBytes?: number): Promise<unknown> {
-  if (maxBytes === undefined) return response.json()
+function responseByteLimit(value: number | undefined): number {
+  return normalizedResponseByteLimit(value) ?? DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES
+}
 
+async function readJsonResponse(
+  response: Response,
+  maxBytes = DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES,
+): Promise<unknown> {
+  return JSON.parse(await readTextResponse(response, maxBytes, false))
+}
+
+async function readTextResponse(
+  response: Response,
+  maxBytes: number,
+  truncateOnLimit: boolean,
+): Promise<string> {
+  const safeMaxBytes = Math.max(1, Math.floor(maxBytes))
   const declaredLength = parsedContentLength(response.headers.get('Content-Length'))
-  if (declaredLength !== undefined && declaredLength > maxBytes) {
+  if (!truncateOnLimit && declaredLength !== undefined && declaredLength > safeMaxBytes) {
     await response.body?.cancel().catch(() => undefined)
-    throw new TDXPayloadTooLargeError(maxBytes, declaredLength)
+    throw new TDXPayloadTooLargeError(safeMaxBytes, declaredLength)
   }
-  if (!response.body) return response.json()
+  if (!response.body) return ''
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -1208,18 +1314,29 @@ async function readJsonResponse(response: Response, maxBytes?: number): Promise<
       const { done, value } = await reader.read()
       if (done) break
       if (!value) continue
-      receivedBytes += value.byteLength
-      if (receivedBytes > maxBytes) {
+
+      const remainingBytes = safeMaxBytes - receivedBytes
+      if (value.byteLength > remainingBytes) {
+        if (remainingBytes > 0) {
+          body += decoder.decode(value.subarray(0, remainingBytes), { stream: true })
+        }
+        receivedBytes += value.byteLength
         await reader.cancel().catch(() => undefined)
-        throw new TDXPayloadTooLargeError(maxBytes, receivedBytes)
+        if (!truncateOnLimit) {
+          throw new TDXPayloadTooLargeError(safeMaxBytes, receivedBytes)
+        }
+        body += decoder.decode()
+        return body
       }
+
+      receivedBytes += value.byteLength
       body += decoder.decode(value, { stream: true })
     }
     body += decoder.decode()
+    return body
   } finally {
     reader.releaseLock()
   }
-  return JSON.parse(body)
 }
 
 function parsedContentLength(value: string | null): number | undefined {
