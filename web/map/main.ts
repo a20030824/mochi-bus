@@ -31,6 +31,7 @@ import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import { createMapFeatureDiscovery, type MapFeature } from './feature-discovery'
 import { createCityNetworkController } from './city-network-controller'
+import { createRouteDetailSurface } from './route-detail-surface'
 import { bindTextTooltip } from './leaflet-tooltip'
 import {
   canonicalMapHistoryState,
@@ -41,7 +42,7 @@ import {
 } from './history-state'
 import { createTimetableSummaryController } from './timetable-summary-controller'
 import { createVehicleRefreshController } from './vehicle-refresh-controller'
-import { routeCasingColor, routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './theme'
+import { routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './theme'
 import {
   mapApi,
   type DirectRoute,
@@ -52,14 +53,12 @@ import {
   type RegionCode,
   type RouteItem,
   type RouteMapVariant,
-  type RouteTimetable,
   type RouteTimetableResponse,
   type SearchPlace,
-  type TimetableStop,
   type TransferPlan,
   type VehiclePositionsResponse,
 } from './map-api-client'
-import { createTimetablePanel, renderTimetableSummary, timetableSummaryText } from './timetable-view'
+import { renderTimetableSummary, timetableSummaryText } from './timetable-view'
 import {
   createPlaceSearchBox,
   createPlaceSearchResultButton,
@@ -198,7 +197,6 @@ let routesCityCode: string | undefined
 let category = '全部'
 let routeSearchQuery = ''
 let routeScrollTop = 0
-let stopMarkers: L.CircleMarker[] = []
 let lastNearbyPlaces: NearbyPlace[] = []
 let lastNearbyOrigin: [number, number] | undefined
 let selectedFrom: NearbyPlace | undefined
@@ -265,12 +263,30 @@ const cityNetwork = createCityNetworkController({
   clearStatus,
 })
 
+const routeDetailSurface = createRouteDetailSurface({
+  map,
+  routeLayer,
+  previewLayer,
+  selectionLayer,
+  vehicleLayer,
+  renderDrawer,
+  focusBounds: (bounds) => camera.focusBounds(bounds),
+  focusPoint: (position, zoom) => camera.focusPoint(position, zoom),
+  bindHoverTooltip,
+  bindSelectableLine,
+  addPreviewStopDots,
+  drawerBack,
+  heading,
+  paragraph,
+  retryButton,
+})
+
 const vehicleRefresh = createVehicleRefreshController<RouteMapVariant, VehiclePositionsResponse>({
   load: (cityCode, variant, signal) => mapApi.vehicles(cityCode, variant, signal),
   isActive: ({ cityCode }) => activeCity?.code === cityCode && interactionMode === 'route',
   onResponse: renderVehiclePositions,
   onError: renderVehicleRefreshError,
-  onStop: () => vehicleLayer.clearLayers(),
+  onStop: () => routeDetailSurface.clearVehicles(),
 })
 
 const routeTimetableSummary = createTimetableSummaryController<
@@ -560,7 +576,7 @@ function showTaiwan() {
   activeCity = undefined
   networkButton.hidden = true
   cityNetwork.hide()
-  routeLayer.clearLayers()
+  routeDetailSurface.clearRoute()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
@@ -684,7 +700,7 @@ function showRegion(regionCode: RegionCode) {
     mapView: 'region',
     mapParent: currentState.mapView === 'region' ? currentState.mapParent : 'overview',
   }, '', `/map?region=${regionCode}`)
-  routeLayer.clearLayers()
+  routeDetailSurface.clearRoute()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
@@ -751,7 +767,7 @@ async function chooseCity(city: MapCity) {
   networkButton.hidden = false
   cityNetwork.hide()
   selectionLayer.clearLayers()
-  routeLayer.clearLayers()
+  routeDetailSurface.clearRoute()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
   selectedFrom = undefined
@@ -803,10 +819,9 @@ function renderRoutePicker() {
   routeReturnsToTrip = false
   routeBackAction = undefined
   clearTripState()
-  routeLayer.clearLayers()
+  routeDetailSurface.clearRoute()
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
-  stopMarkers = []
   if (!routes.length || routesCityCode !== activeCity.code) {
     // 深連結直接進路線(沒經過 chooseCity)後按返回會走到這:目錄還沒載,
     // 先補抓再重畫,不然會看到一片空白的路線選單。
@@ -1216,7 +1231,7 @@ function tripModeButton(): HTMLButtonElement {
     interactionMode = 'trip'
     // 全路網開著就留著:小站點正好當選點的瞄準參考,等終點選完才收
     previewLayer.clearLayers()
-    routeLayer.clearLayers()
+    routeDetailSurface.clearRoute()
     nearbyLayer.clearLayers()
     renderTripSelectionStep('from')
   })
@@ -1295,8 +1310,7 @@ function returnToTripResults() {
   routeReturnsToTrip = false
   // 選中的路線畫在 routeLayer、車輛有自己的計時器,回候選清單時一併收掉
   stopVehicleRefresh()
-  routeLayer.clearLayers()
-  stopMarkers = []
+  routeDetailSurface.clearRoute()
   nearbyLayer.clearLayers()
   void (async () => {
     if (lastDirectRoutes.length) renderDirectRoutes(lastDirectRoutes)
@@ -1437,203 +1451,67 @@ async function loadRoute(
     })
   }
 }
-
 function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
-  // 支線選擇要能在地圖上比較走向:全部畫出來,列表與線用同色對應。
-  // 這裡的顏色是「支線區分色」,刻意不用 routeColor(同一條路線的支線會全部同色)。
   previewRequest += 1
   stopVehicleRefresh()
-  previewLayer.clearLayers()
-  routeLayer.clearLayers()
   nearbyLayer.clearLayers()
-  stopMarkers = []
-  const bounds = L.latLngBounds([])
-  const previewsByKey = new Map<string, { line: LeafletGeoJSON; style: L.PathOptions }>()
-  // 支線常常走同一條走廊、幾何幾乎重疊:反序繪製讓列表第一項壓在最上,
-  // 其餘降透明度,地圖上看到的顏色才對得上列表的第一個色帶。
-  variants.map((variant, index) => ({ variant, index })).reverse().forEach(({ variant, index }) => {
-    const color = routePalette[index % routePalette.length]
-    const style = { color, weight: 5.5, opacity: index === 0 ? .62 : .3, lineCap: 'round' as const, lineJoin: 'round' as const }
-    const { line, target } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, style)
-    addPreviewStopDots(variant.stops, color, previewLayer)
-    bindHoverTooltip(target, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
-    target.on('mouseover', () => {
-      line.setStyle({ ...style, weight: 8, opacity: .9 })
-      line.bringToFront()
-    })
-    target.on('mouseout', () => {
-      line.setStyle(style)
-      if (index !== 0) previewsByKey.get(variants[0].variantKey)?.line.bringToFront()
-    })
-    target.on('click', (event) => {
-      L.DomEvent.stopPropagation(event)
-      drawVariant(variant)
-    })
-    previewsByKey.set(variant.variantKey, { line, style })
-    bounds.extend(line.getBounds())
-  })
-  const list = document.createElement('div')
-  list.className = 'variant-list'
-  list.replaceChildren(...variants.map((variant, index) => {
-    const button = document.createElement('button')
-    button.className = 'variant-button'
-    button.style.setProperty('--route-color', routePalette[index % routePalette.length])
-    const strong = document.createElement('strong')
-    strong.textContent = variant.label
-    button.appendChild(strong)
-    if (variant.subRouteName && variant.subRouteName !== variant.routeName) {
-      const small = document.createElement('span')
-      small.textContent = variant.subRouteName
-      button.appendChild(small)
-    }
-    button.addEventListener('click', () => drawVariant(variant))
-    button.addEventListener('mouseenter', () => {
-      const preview = previewsByKey.get(variant.variantKey)
-      preview?.line.setStyle({ ...preview.style, weight: 8, opacity: .9 })
-      preview?.line.bringToFront()
-    })
-    button.addEventListener('mouseleave', () => {
-      const preview = previewsByKey.get(variant.variantKey)
-      preview?.line.setStyle(preview.style)
-      if (variant.variantKey !== variants[0].variantKey) previewsByKey.get(variants[0].variantKey)?.line.bringToFront()
-    })
-    return button
-  }))
-  // 行程候選帶著過期的 variantKey 進來時會落到這裡,退路一樣要回候選清單
   const decision = routeLoadingBack({ returnToTrip: routeReturnsToTrip, hasStopBackAction: Boolean(routeBackAction) })
   const variantBack = backActionFor(decision.target)
-  renderDrawer({
-    key: `route-variants:${activeCity!.code}:${routeName}`,
-    mode: 'map-list',
-    header: [
-      drawerBack(decision.label, variantBack),
-      heading(routeName, '同一路線可能穿過不同街廓，點線或點列表選一條。'),
-    ],
-    content: [list],
+  routeDetailSurface.showVariantPicker({
+    cityCode: activeCity!.code,
+    routeName,
+    variants,
+    backLabel: decision.label,
+    onBack: variantBack,
+    onSelect: drawVariant,
   })
-  if (bounds.isValid()) camera.focusBounds(bounds)
   clearStatus()
   history.replaceState(history.state, '', `/map?city=${encodeURIComponent(activeCity!.code)}&route=${encodeURIComponent(routeName)}`)
 }
 
-
 async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
   if (!activeCity) return
   stopVehicleRefresh()
+  const cityCode = activeCity.code
   const back = () => drawVariant(variant)
   const { requestId, signal } = beginNavRequest()
   routeTimetableSummary.stop()
-  renderDrawer({
-    key: `timetable:${activeCity.code}:${variant.variantKey}:${stopUid ?? ''}`,
-    mode: 'timetable',
-    header: [
-      drawerBack(`返回 ${variant.routeName}`, back),
-      heading(variant.routeName, `時刻 · ${variant.label}`),
-    ],
-    content: [paragraph('正在整理表定班次…')],
-  })
+  routeDetailSurface.showTimetableLoading(cityCode, variant, stopUid, back)
   setStatus(`${variant.routeName} · 正在讀取時刻`)
   try {
-    const data = await mapApi.timetable(activeCity.code, variant, stopUid, signal)
+    const data = await mapApi.timetable(cityCode, variant, stopUid, signal)
     if (isStaleNav(requestId)) return
-    renderRouteTimetable(variant, data.timetable)
+    const result = routeDetailSurface.showTimetable({
+      cityCode,
+      variant,
+      timetable: data.timetable,
+      onBack: back,
+      onSelectStop: (nextStopUid) => void openRouteTimetable(variant, nextStopUid),
+    })
+    if (result.available) clearStatus()
+    else setStatus(`${variant.routeName} · 無公開時刻資料`)
   } catch (error) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error ? error.message : '目前無法取得時刻表'
-    renderDrawer({
-      key: `timetable:${activeCity.code}:${variant.variantKey}:${stopUid ?? ''}`,
-      mode: 'timetable',
-      header: [
-        drawerBack(`返回 ${variant.routeName}`, back),
-        heading(variant.routeName, message),
-      ],
-      content: [retryButton(() => void openRouteTimetable(variant, stopUid))],
-    })
+    routeDetailSurface.showTimetableError(
+      cityCode,
+      variant,
+      stopUid,
+      message,
+      back,
+      () => void openRouteTimetable(variant, stopUid),
+    )
     setStatus(message, true)
   }
 }
 
-function focusTimetableStop(variant: RouteMapVariant, stop: Omit<TimetableStop, 'hasTimes'>) {
-  selectionLayer.clearLayers()
-  const feature = variant.stops.features.find((candidate) => candidate.properties.stopUid === stop.stopUid)
-  if (!feature) return
-  const [longitude, latitude] = feature.geometry.coordinates
-  camera.focusPoint([latitude, longitude], 15)
-  const marker = unifiedStopMarker([latitude, longitude], true, stopFillAccent).addTo(selectionLayer)
-  marker.getElement()?.classList.add('timetable-stop-focus')
-  marker.getElement()?.setAttribute('data-stop-uid', stop.stopUid)
-}
-
-function renderRouteTimetable(variant: RouteMapVariant, timetable: RouteTimetable) {
-  const back = () => drawVariant(variant)
-  if (timetable.mode === 'none' || !timetable.services.length) {
-    const panel = document.createElement('div')
-    panel.className = 'timetable-panel'
-    panel.appendChild(paragraph('這個方向目前沒有公開的表定班次資料。'))
-    renderDrawer({
-      key: `timetable:${activeCity!.code}:${variant.variantKey}:${timetable.selectedStop?.stopUid ?? ''}`,
-      mode: 'timetable',
-      header: [
-        drawerBack(`返回 ${variant.routeName}`, back),
-        heading(variant.routeName, `時刻 · ${variant.label}`),
-      ],
-      content: [panel],
-    })
-    setStatus(`${variant.routeName} · 無公開時刻資料`)
-    return
-  }
-
-  const panel = createTimetablePanel(timetable, (stopUid) => void openRouteTimetable(variant, stopUid))
-  renderDrawer({
-    key: `timetable:${activeCity!.code}:${variant.variantKey}:${timetable.selectedStop?.stopUid ?? ''}`,
-    mode: 'timetable',
-    header: [
-      drawerBack(`返回 ${variant.routeName}`, back),
-      heading(variant.routeName, `時刻 · ${variant.label}`),
-    ],
-    content: [panel],
-  })
-  if (timetable.mode === 'stop' && timetable.selectedStop) {
-    queueMicrotask(() => focusTimetableStop(variant, timetable.selectedStop!))
-  } else {
-    selectionLayer.clearLayers()
-  }
-  clearStatus()
-}
 
 
 function drawVariant(variant: RouteMapVariant) {
   interactionMode = 'route'
   if (!routeReturnsToTrip) clearTripState()
-  routeLayer.clearLayers()
-  selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
-  stopMarkers = []
-  const casing = L.geoJSON(variant.shape, {
-    pane: 'routePane',
-    style: { color: routeCasingColor, weight: 11, opacity: 0.95, lineCap: 'round', lineJoin: 'round' },
-  }).addTo(routeLayer)
-  L.geoJSON(variant.shape, {
-    pane: 'routePane',
-    style: { color: activeRouteColor, weight: 5, opacity: 1, lineCap: 'round', lineJoin: 'round' },
-  }).addTo(routeLayer)
-  L.geoJSON(variant.stops, {
-    pointToLayer: (feature, latlng) => {
-      const marker = bindHoverTooltip(unifiedStopMarker(latlng), `${feature.properties.sequence}. ${feature.properties.stopName}`, {
-        direction: 'top',
-        offset: [0, -5],
-      })
-        .on('click', (event) => {
-          L.DomEvent.stopPropagation(event)
-          void findNearbyPlaces(latlng.lat, latlng.lng, true)
-        })
-      stopMarkers.push(marker)
-      return marker
-    },
-  }).addTo(routeLayer)
-
-  const bounds = casing.getBounds()
   clearStatus()
   const canReturnToVariantPicker = !routeReturnsToTrip
     && variantPickerUsed
@@ -1645,25 +1523,15 @@ function drawVariant(variant: RouteMapVariant) {
     canReturnToVariantPicker,
     hasStopBackAction: Boolean(routeBackAction),
   })
-  // 目標在按下時才決定:行程候選可能在停留期間被丟棄,要退到降級後的那一層。
   const goBack = () => backActionFor(routeViewBack(backContext()).target)()
-  const timetableSummary = document.createElement('button')
-  timetableSummary.type = 'button'
-  timetableSummary.className = 'route-service-summary pending'
-  timetableSummary.textContent = '正在讀取時刻…'
-  timetableSummary.disabled = true
-  renderDrawer({
-    key: `route:${activeCity!.code}:${variant.routeName}`,
-    mode: 'compact',
-    content: [
-      drawerBack(routeViewBack(backContext()).label, goBack),
-      heading(variant.routeName, `${variant.label} · ${variant.stops.features.length} 站`),
-      // 支線名和路線編號相同時(單支線路線很常見)就別再唸一次。
-      ...(variant.subRouteName && variant.subRouteName !== variant.routeName ? [paragraph(variant.subRouteName)] : []),
-      timetableSummary,
-    ],
+  const timetableSummary = routeDetailSurface.showRoute({
+    cityCode: activeCity!.code,
+    variant,
+    color: activeRouteColor,
+    backLabel: routeViewBack(backContext()).label,
+    onBack: goBack,
+    onStopSelect: (latitude, longitude) => void findNearbyPlaces(latitude, longitude, true),
   })
-  if (bounds.isValid()) camera.focusBounds(bounds)
   routeTimetableSummary.start({
     cityCode: activeCity!.code,
     variant,
@@ -1686,17 +1554,15 @@ function drawVariant(variant: RouteMapVariant) {
   startVehicleRefresh(variant)
 }
 
+
 function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
   if (zoom >= 16) return { radius: 8, weight: 1.8 }
   if (zoom >= 13) return { radius: 5, weight: 1.4 }
   return { radius: 2, weight: 1 }
 }
-
 function updateStopMarkerSize() {
-  const style = stopStyleForZoom(map.getZoom())
-  stopMarkers.forEach((marker) => marker.setStyle(style))
+  routeDetailSurface.resizeStopMarkers()
   cityNetwork.resizeStopMarkers()
-  // 預覽小點由 previewLayer.clearLayers() 收掉,這裡順手把已離場的踢出集合。
   const previewStyle = previewDotStyleForZoom(map.getZoom())
   previewStopDots.forEach((dot) => {
     if (!map.hasLayer(dot)) {
@@ -1706,6 +1572,7 @@ function updateStopMarkerSize() {
     dot.setStyle(previewStyle)
   })
 }
+
 
 function startVehicleRefresh(variant: RouteMapVariant) {
   if (!activeCity) {
@@ -1718,22 +1585,8 @@ function startVehicleRefresh(variant: RouteMapVariant) {
 function stopVehicleRefresh() {
   vehicleRefresh.stop()
 }
-
 function renderVehiclePositions(response: VehiclePositionsResponse) {
-  vehicleLayer.clearLayers()
-  response.vehicles.forEach((vehicle) => {
-    const azimuth = Number.isFinite(vehicle.azimuth) ? vehicle.azimuth as number : 0
-    const marker = L.marker([vehicle.latitude, vehicle.longitude], {
-      pane: 'vehiclePane',
-      icon: L.divIcon({
-        className: 'vehicle-marker-wrap',
-        html: `<span class="vehicle-marker" style="transform:rotate(${azimuth}deg)"></span>`,
-        iconSize: [26, 32],
-        iconAnchor: [13, 16],
-      }),
-    })
-    bindHoverTooltip(marker, `${vehicle.plate ?? '公車'}${vehicle.speed === null ? '' : ` · ${Math.round(vehicle.speed)} km/h`}`).addTo(vehicleLayer)
-  })
+  routeDetailSurface.renderVehicles(response.vehicles)
   drawer.querySelector('.vehicle-degraded-notice')?.remove()
   if (response.warning) {
     const message = tdxWarningMessages[response.warning]
@@ -1743,6 +1596,7 @@ function renderVehiclePositions(response: VehiclePositionsResponse) {
     drawer.appendChild(notice)
   }
 }
+
 
 function renderVehicleRefreshError(error: unknown) {
   // 車輛定位是輔助資訊，失敗時保留主路線，但不能把授權失效誤裝成「沒有車」。
@@ -1786,8 +1640,7 @@ async function findNearbyPlaces(
   routeReturnsToTrip = false
   previewRequest += 1
   previewLayer.clearLayers()
-  routeLayer.clearLayers()
-  stopMarkers = []
+  routeDetailSurface.clearRoute()
   const loadingList = document.createElement('div')
   loadingList.className = 'place-route-loading'
   for (let index = 0; index < 3; index += 1) {
@@ -2747,8 +2600,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
   if (!activeCity) return
   const placeRequest = ++previewRequest
   previewLayer.clearLayers()
-  routeLayer.clearLayers()
-  stopMarkers = []
+  routeDetailSurface.clearRoute()
   const loadingList = document.createElement('div')
   loadingList.className = 'place-route-loading'
   for (let index = 0; index < 3; index += 1) {
