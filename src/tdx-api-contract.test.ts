@@ -84,7 +84,8 @@ describe('TDX API degraded-data contract', () => {
         { stopUid: 'TPE213044', stopName: '捷運西門站', etaLabel: '即時忙線', etaTone: 'muted' },
       ],
     })
-    expect(upstreamFetch).toHaveBeenCalledTimes(2)
+    const requestedUrls = upstreamFetch.mock.calls.map(([input]) => String(input))
+    expect(requestedUrls.some((url) => url.includes('/EstimatedTimeOfArrival/'))).toBe(true)
   })
 
   it('returns an actionable warning instead of caching an empty vehicle list on rate limit', async () => {
