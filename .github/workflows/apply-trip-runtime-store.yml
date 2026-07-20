@@ -1,0 +1,37 @@
+name: Apply trip runtime store
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.head_ref == 'agent/use-trip-runtime-store'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/apply-trip-runtime-store.mjs
+      - run: npx vitest run web/map/trip-state.test.ts web/map/trip-runtime-store.test.ts web/map/trip-results-snapshot.test.ts
+      - run: npx tsc --noEmit
+      - run: npm run check
+      - run: git diff --check
+      - name: Commit clean runtime migration
+        run: |
+          rm scripts/apply-trip-runtime-store.mjs
+          rm .github/workflows/apply-trip-runtime-store.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add web/map/main.ts web/map/main-size.test.ts web/map/trip-state.ts web/map/trip-runtime-store.ts web/map/trip-runtime-store.test.ts scripts/apply-trip-runtime-store.mjs .github/workflows/apply-trip-runtime-store.yml
+          git commit -m "refactor(map): use trip runtime store"
+          git push origin HEAD:${{ github.head_ref }}
