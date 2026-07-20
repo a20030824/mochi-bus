@@ -2,13 +2,18 @@ import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
+import {
+  createTripResultsState,
+  hasTripResultsState,
+  type TripPendingSelection,
+} from './trip-state'
+import { createTripResultsSnapshot, parseTripResultsSnapshot } from './trip-results-snapshot'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
 import {
   describeTransferEstimate,
   estimateTransfer,
   transferEstimateSortKey,
-  type TransferEstimate,
 } from '../../src/domain/map/transfer-estimate'
 import {
   isFavoriteDirection,
@@ -77,13 +82,6 @@ type JourneyPreviewOptions = {
   fitCamera: boolean
 }
 
-type PendingTripSelection = {
-  kind: TripSelectionKind
-  coordinate: [number, number]
-  candidates: NearbyPlace[]
-  selected: NearbyPlace
-}
-
 type JourneyEtaValue = Omit<JourneyEtaEstimate, 'key'> & { source: EtaSource }
 
 const regions: Array<{
@@ -109,21 +107,6 @@ function overviewMaxZoom(baseZoom: number): number {
   // 桌機抽屜在側邊，不會吃掉地圖高度；四分之三級能善用多出的工作區，
   // 手機底部抽屜仍維持原本的地理尺度。
   return baseZoom + (desktopMapLayout.matches ? .75 : 0)
-}
-
-type TripResultsHistorySnapshot = {
-  version: 1
-  savedAt: number
-  city: string
-  from: NearbyPlace
-  to: NearbyPlace
-  fromCoordinate?: [number, number]
-  toCoordinate?: [number, number]
-  directRoutes: DirectRoute[]
-  transferPlans: TransferPlan[]
-  selectedDirectIndex: number
-  selectedTransferIndex: number
-  warning?: TDXWarning
 }
 
 const mapNode = requiredElement('map')
@@ -236,8 +219,8 @@ function cancelLocationHydration(): void {
 }
 let selectedTransferIndex = 0
 let selectedDirectIndex = 0
-let pendingFromSelection: PendingTripSelection | undefined
-let pendingToSelection: PendingTripSelection | undefined
+let pendingFromSelection: TripPendingSelection | undefined
+let pendingToSelection: TripPendingSelection | undefined
 
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 
@@ -1060,11 +1043,11 @@ async function searchPlaces(query: string, signal?: AbortSignal): Promise<Search
   }
 }
 
-function pendingTripSelection(kind: TripSelectionKind): PendingTripSelection | undefined {
+function pendingTripSelection(kind: TripSelectionKind): TripPendingSelection | undefined {
   return kind === 'from' ? pendingFromSelection : pendingToSelection
 }
 
-function setPendingTripSelection(selection: PendingTripSelection) {
+function setPendingTripSelection(selection: TripPendingSelection) {
   if (selection.kind === 'from') pendingFromSelection = selection
   else pendingToSelection = selection
 }
@@ -1442,10 +1425,6 @@ function openRouteDetail(
     stopBackAction,
   })
 }
-
-
-
-
 
 
 function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
@@ -2237,24 +2216,19 @@ async function openPlaceById(
   interactionMode = 'nearby'
   await showPlaceRoutes(place)
 }
-
 function writeTripResultsUrl() {
   if (!activeCity || !selectedFrom || !selectedTo) return
   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
-  const snapshot: TripResultsHistorySnapshot = {
-    version: 1,
-    savedAt: Date.now(),
-    city: activeCity.code,
-    from: selectedFrom,
-    to: selectedTo,
-    fromCoordinate,
-    toCoordinate,
+  const tripState = createTripResultsState({
+    from: { place: selectedFrom, coordinate: fromCoordinate },
+    to: { place: selectedTo, coordinate: toCoordinate },
     directRoutes: lastDirectRoutes,
     transferPlans: lastTransferPlans,
     selectedDirectIndex,
     selectedTransferIndex,
     warning: journeyWarning,
-  }
+  })
+  const snapshot = createTripResultsSnapshot(activeCity.code, tripState)
   history.replaceState({
     ...currentState,
     mapView: 'trip-results',
@@ -2263,113 +2237,28 @@ function writeTripResultsUrl() {
   setDocumentTitle(`${selectedFrom?.name ?? '出發地'} → ${selectedTo?.name ?? '目的地'}`)
 }
 
-function isHistoryPlace(value: unknown): value is NearbyPlace {
-  if (!value || typeof value !== 'object') return false
-  const place = value as Partial<NearbyPlace>
-  return typeof place.placeId === 'string'
-    && typeof place.name === 'string'
-    && typeof place.latitude === 'number' && Number.isFinite(place.latitude)
-    && typeof place.longitude === 'number' && Number.isFinite(place.longitude)
-}
-
-function isHistoryLeg(value: unknown): value is TransferPlan['first'] {
-  if (!value || typeof value !== 'object') return false
-  const leg = value as Partial<TransferPlan['first']>
-  return typeof leg.routeName === 'string'
-    && typeof leg.variantKey === 'string'
-    && typeof leg.label === 'string'
-    && typeof leg.boardSequence === 'number'
-    && typeof leg.alightSequence === 'number'
-    && typeof leg.stopCount === 'number'
-}
-
-function isHistoryEtaSource(value: unknown): boolean {
-  return value === undefined || value === 'none' || value === 'realtime'
-    || value === 'stale-realtime' || value === 'schedule'
-}
-
-function isHistoryMinute(value: unknown): boolean {
-  return value === undefined || value === null
-    || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
-}
-
-function isHistoryHeadway(value: unknown): boolean {
-  return value === undefined || value === null || (Array.isArray(value)
-    && value.length === 2
-    && value.every((minute) => typeof minute === 'number' && Number.isFinite(minute) && minute >= 0))
-}
-
-function isHistoryDirectRoute(value: unknown): value is DirectRoute {
-  if (!isHistoryLeg(value)) return false
-  const route = value as Partial<DirectRoute>
-  return isHistoryMinute(route.etaMinutes)
-    && isHistoryEtaSource(route.etaSource)
-    && isHistoryHeadway(route.etaHeadwayMinutes)
-}
-
-function isHistoryTransferEstimate(value: unknown): value is TransferEstimate {
-  if (!value || typeof value !== 'object') return false
-  const estimate = value as Partial<TransferEstimate>
-  const validRange = (range: unknown) => Boolean(range
-    && typeof range === 'object'
-    && typeof (range as { min?: unknown }).min === 'number'
-    && Number.isFinite((range as { min: number }).min)
-    && typeof (range as { max?: unknown }).max === 'number'
-    && Number.isFinite((range as { max: number }).max))
-  return validRange(estimate.travelMinutes)
-    && (estimate.totalMinutes === null || validRange(estimate.totalMinutes))
-    && (estimate.connectionStatus === 'likely' || estimate.connectionStatus === 'tight'
-      || estimate.connectionStatus === 'missed' || estimate.connectionStatus === 'unknown')
-}
-
-function isHistoryTransferPlan(value: unknown): value is TransferPlan {
-  if (!value || typeof value !== 'object') return false
-  const plan = value as Partial<TransferPlan>
-  return typeof plan.transferPlaceId === 'string'
-    && typeof plan.transferName === 'string'
-    && typeof plan.totalStops === 'number'
-    && isHistoryLeg(plan.first)
-    && isHistoryLeg(plan.second)
-    && isHistoryMinute(plan.firstEtaMinutes)
-    && isHistoryMinute(plan.secondEtaMinutes)
-    && isHistoryEtaSource(plan.firstEtaSource)
-    && isHistoryEtaSource(plan.secondEtaSource)
-    && isHistoryHeadway(plan.firstEtaHeadwayMinutes)
-    && isHistoryHeadway(plan.secondEtaHeadwayMinutes)
-    && (plan.transferEstimate === undefined || isHistoryTransferEstimate(plan.transferEstimate))
-}
-
 function restoreTripResultsState(params?: URLSearchParams): boolean {
   if (!activeCity) return false
-  const snapshot = history.state?.tripResults as TripResultsHistorySnapshot | undefined
-  if (!snapshot
-    || snapshot.version !== 1
-    || typeof snapshot.savedAt !== 'number'
-    || Date.now() - snapshot.savedAt >= 15 * 60 * 1000
-    || snapshot.city !== activeCity.code
-    || !isHistoryPlace(snapshot.from)
-    || !isHistoryPlace(snapshot.to)
-    || !Array.isArray(snapshot.directRoutes)
-    || snapshot.directRoutes.length > 30
-    || !snapshot.directRoutes.every(isHistoryDirectRoute)
-    || !Array.isArray(snapshot.transferPlans)
-    || snapshot.transferPlans.length > 10
-    || !snapshot.transferPlans.every(isHistoryTransferPlan)
-    || (params?.get('from') && params.get('from') !== snapshot.from.placeId)
-    || (params?.get('to') && params.get('to') !== snapshot.to.placeId)) return false
-  selectedFrom = snapshot.from
-  selectedTo = snapshot.to
-  fromCoordinate = snapshot.fromCoordinate
-  toCoordinate = snapshot.toCoordinate
-  lastDirectRoutes = snapshot.directRoutes
-  lastTransferPlans = snapshot.transferPlans
-  selectedDirectIndex = Number.isInteger(snapshot.selectedDirectIndex) ? snapshot.selectedDirectIndex : 0
-  selectedTransferIndex = Number.isInteger(snapshot.selectedTransferIndex) ? snapshot.selectedTransferIndex : 0
-  journeyWarning = snapshot.warning && snapshot.warning in tdxWarningMessages ? snapshot.warning : undefined
+  const restored = parseTripResultsSnapshot(history.state?.tripResults, {
+    city: activeCity.code,
+    fromPlaceId: params?.get('from'),
+    toPlaceId: params?.get('to'),
+  })
+  if (!restored) return false
+  selectedFrom = restored.from.place
+  selectedTo = restored.to.place
+  fromCoordinate = restored.from.coordinate
+  toCoordinate = restored.to.coordinate
+  lastDirectRoutes = restored.directRoutes
+  lastTransferPlans = restored.transferPlans
+  selectedDirectIndex = restored.selectedDirectIndex
+  selectedTransferIndex = restored.selectedTransferIndex
+  journeyWarning = restored.warning
   tripStage = 'idle'
   interactionMode = 'trip-results'
-  return Boolean(lastDirectRoutes.length || lastTransferPlans.length)
+  return hasTripResultsState(restored)
 }
+
 
 async function restoreSharedTripResults(
   params: URLSearchParams,
