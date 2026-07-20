@@ -9,13 +9,11 @@ import {
   type BusQuery,
 } from '../domain/bus-query'
 import { embedRoutePageIdentity } from '../domain/route-page-identity'
-import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
   getRouteCatalog,
   getRouteStopGroups,
   getStopRouteSuggestions,
-  isRejectedUserTdxToken,
   QueryResolutionError,
   resolveBusQuery,
   TDXServiceError,
@@ -27,6 +25,7 @@ import {
   type TDXWarning,
 } from '../lib/tdx'
 import { appIcon, renderAmbiguousPage, renderErrorPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
+import { presentBusApiError } from '../presentation/api-error'
 import { presentPageError, publicErrorMessage } from '../presentation/page-error'
 import {
   getSnapshotRouteCatalog,
@@ -36,8 +35,6 @@ import {
 import { mapCities } from '../config/map-cities'
 import { siteSearchDescription } from '../seo'
 import {
-  ApiInputError,
-  apiInputErrorBody,
   optionalQueryString,
   parseTdxAccessToken,
   requiredQueryString,
@@ -357,23 +354,9 @@ function renderPageError(c: Context<Env>, error: unknown) {
 }
 
 function jsonError(c: Context<Env>, error: unknown) {
-  if (error instanceof ApiInputError) {
-    return c.json(apiInputErrorBody(error), error.status, noStoreHeaders)
-  }
-  if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) {
-    return c.json({
-      code: TDX_ACCESS_TOKEN_REJECTED_CODE,
-      error: TDX_ACCESS_TOKEN_REJECTED_MESSAGE,
-    }, 401, noStoreHeaders)
-  }
-  if (!(error instanceof QueryValidationError || error instanceof QueryResolutionError)) {
-    console.error('bus_api_failed', error)
-  }
-  const status = error instanceof QueryValidationError
-    ? 400
-    : error instanceof QueryResolutionError ? 404
-      : error instanceof TDXServiceError && error.rateLimited ? 429 : 502
-  return c.json({ error: toPublicError(error) }, status, noStoreHeaders)
+  const presentation = presentBusApiError(error, c.req.header('Authorization'))
+  if (presentation.shouldLog) console.error('bus_api_failed', error)
+  return c.json(presentation.body, presentation.status, noStoreHeaders)
 }
 
 function toPublicError(error: unknown): string {
