@@ -2,7 +2,6 @@ import type {
   ScheduleFrequency,
   ScheduleItem,
   ScheduleStopTime,
-  ScheduleTimetable,
 } from './schedule'
 
 export type RouteScheduleArrival = {
@@ -123,19 +122,35 @@ function collectServiceDay(
   for (const { item, relevantStopUids } of indexedSchedules) {
     const timetables = (item.Timetables ?? [])
       .filter((timetable) => timetable.ServiceDay?.[weekday] === 1)
+    let hasUpcomingDeparture = false
 
     for (const timetable of timetables) {
-      for (const stop of timetable.StopTimes ?? []) {
+      const stopTimes = timetable.StopTimes ?? []
+      let earliestStop: ScheduleStopTime | undefined
+      let earliestSequence = Infinity
+
+      for (const stop of stopTimes) {
+        const sequence = stop.StopSequence ?? 0
+        if (!earliestStop || sequence < earliestSequence) {
+          earliestStop = stop
+          earliestSequence = sequence
+        }
+
         const stopUid = stop.StopUID
         if (!stopUid || !eligibleStopUids.has(stopUid) || !relevantStopUids.has(stopUid)) continue
         const scheduledMinutes = timeToMinutes(stop.ArrivalTime ?? stop.DepartureTime)
         if (scheduledMinutes === null || scheduledMinutes < nowMinutes) continue
         recordMinimum(arrivals, stopUid, scheduledMinutes - nowMinutes)
       }
+
+      if (trackFallbackBlockers && earliestStop) {
+        const departure = timeToMinutes(earliestStop.ArrivalTime ?? earliestStop.DepartureTime)
+        if (departure !== null && departure >= nowMinutes) hasUpcomingDeparture = true
+      }
     }
 
     if (!trackFallbackBlockers) continue
-    const blocksTomorrow = hasUpcomingDeparture(timetables, nowMinutes)
+    const blocksTomorrow = hasUpcomingDeparture
       || hasFrequencyEstimate(item.Frequencys ?? [], weekday, nowMinutes)
     if (!blocksTomorrow) continue
     for (const stopUid of relevantStopUids) {
@@ -144,14 +159,6 @@ function collectServiceDay(
   }
 
   return { arrivals, blockedFromTomorrow }
-}
-
-function hasUpcomingDeparture(timetables: readonly ScheduleTimetable[], nowMinutes: number): boolean {
-  return timetables.some((timetable) => {
-    const stop = earliestStopTime(timetable)
-    const departure = timeToMinutes(stop?.ArrivalTime ?? stop?.DepartureTime)
-    return departure !== null && departure >= nowMinutes
-  })
 }
 
 function hasFrequencyEstimate(
@@ -174,19 +181,6 @@ function hasFrequencyEstimate(
     const start = timeToMinutes(frequency.StartTime)
     return start !== null && start >= nowMinutes
   })
-}
-
-function earliestStopTime(timetable: ScheduleTimetable): ScheduleStopTime | undefined {
-  let earliest: ScheduleStopTime | undefined
-  let earliestSequence = Infinity
-  for (const stop of timetable.StopTimes ?? []) {
-    const sequence = stop.StopSequence ?? 0
-    if (!earliest || sequence < earliestSequence) {
-      earliest = stop
-      earliestSequence = sequence
-    }
-  }
-  return earliest
 }
 
 function recordMinimum(target: Map<string, number>, key: string, value: number): void {
