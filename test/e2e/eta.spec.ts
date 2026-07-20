@@ -94,7 +94,7 @@ test.describe('ETA page', () => {
     const estimatedColors = await page.locator('.eta-copy:not(.eta-copy-exit)').evaluate((copy) =>
       ['.eta-prefix', '.eta-value', '.eta-suffix'].map((selector) =>
         getComputedStyle(copy.querySelector(selector)!).color))
-    expect(new Set(estimatedColors)).toEqual(new Set(['rgb(107, 99, 89)']))
+    expect(new Set(estimatedColors)).toEqual(new Set(['rgb(170, 161, 151)']))
     await expect(page.locator('#notice')).toContainText('即時查詢暫時受限')
     await expect(page.locator('#notice').getByRole('link', { name: '檢查 TDX 設定' })).toHaveAttribute('href', '/setup')
     await expect(page.getByRole('button', { name: '重新整理' })).toBeEnabled()
