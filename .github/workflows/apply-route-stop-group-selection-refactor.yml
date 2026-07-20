@@ -1,22 +1,21 @@
 name: Apply route stop-group selection refactor
 
 on:
-  push:
-    branches:
-      - agent/unify-route-stop-group-selection
+  pull_request:
+    types: [synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'agent/unify-route-stop-group-selection' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.head_ref }}
           fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
@@ -41,4 +40,4 @@ jobs:
             scripts/apply-route-stop-group-selection-refactor.mjs \
             .github/workflows/apply-route-stop-group-selection-refactor.yml
           git commit -m "refactor(route): unify stop group selection"
-          git push origin HEAD:${{ github.ref_name }}
+          git push origin HEAD:${{ github.head_ref }}
