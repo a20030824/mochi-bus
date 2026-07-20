@@ -9,11 +9,10 @@ import { createJourneyPreviewController } from './journey-preview-controller'
 import { createJourneyPreviewMap } from './journey-preview-map'
 import {
   createPlaceRoutesController,
-  type PlaceRouteFailure,
   type PlaceRoutePreview,
   type PlaceRoutesPresentation,
-  type PlaceRouteStart,
 } from './place-routes-controller'
+import { createPlaceRoutesView } from './place-routes-view'
 import { createPreviewStopDotManager, createSelectablePreviewLineRenderer } from './preview-map-primitives'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
@@ -24,7 +23,6 @@ import {
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
-import { splitEtaLabel } from '../../src/domain/eta-presentation'
 import { tdxWarningMessages } from '../../src/domain/tdx-warning'
 import { isTdxTokenRejectedError } from '../tdx/api-client'
 import { splitRouteDisplayName } from '../lib/route-display'
@@ -246,6 +244,18 @@ const journeyPreview = createJourneyPreviewController({
   onSelectDirect: (index) => void tripController.selectDirect(index),
   onOpenRoute: openTripRoute,
 })
+const placeRoutesView = createPlaceRoutesView({
+  renderDrawer,
+  createBackButton: drawerBack,
+  createHeading: heading,
+  createDegradedNotice: degradedNotice,
+  backLabel: placeBackLabel,
+  onBack: returnToNearbyPlaces,
+  onRetry: (place) => void placeRoutes.open(place),
+  onOpenRoute: openChildRoute,
+  createFavoriteControl: directionFavoriteControl,
+  isCredentialRecovery: isTdxTokenRejectedError,
+})
 const placeRoutes = createPlaceRoutesController({
   currentCityCode: () => activeCity?.code,
   beginRequest: beginNavRequest,
@@ -261,11 +271,15 @@ const placeRoutes = createPlaceRoutesController({
     previewStopDots.reset()
   },
   invalidateOtherPreviews: () => journeyPreview.cancel(),
-  onStart: renderPlaceRoutesLoading,
-  onRoutes: renderPlaceRoutes,
+  onStart: (start) => {
+    routeDetail.close()
+    placeRoutesView.renderLoading(start)
+    setStatus(`正在讀取 ${start.place.name} 的路線…`)
+  },
+  onRoutes: placeRoutesView.renderRoutes,
   renderPreview: renderPlaceRoutePreview,
   onComplete: completePlaceRoutes,
-  onError: renderPlaceRoutesError,
+  onError: (failure) => setStatus(placeRoutesView.renderError(failure), true),
 })
 cancelPlaceRoutes = () => placeRoutes.cancel()
 
@@ -1688,85 +1702,6 @@ function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLBu
   return control
 }
 
-function renderPlaceRoutesLoading({ cityCode, place }: PlaceRouteStart): void {
-  routeDetail.close()
-  const loadingList = document.createElement('div')
-  loadingList.className = 'place-route-loading'
-  for (let index = 0; index < 3; index += 1) {
-    const skeleton = document.createElement('div')
-    skeleton.className = 'place-route-skeleton'
-    loadingList.appendChild(skeleton)
-  }
-  renderDrawer({
-    key: `place:${cityCode}:${place.placeId}`,
-    mode: 'map-list',
-    header: [
-      drawerBack(placeBackLabel(), returnToNearbyPlaces),
-      heading(place.name, '正在取得路線與到站時間'),
-    ],
-    content: [loadingList],
-  })
-  setStatus(`正在讀取 ${place.name} 的路線…`)
-}
-
-function renderPlaceRoutes({ cityCode, place, routes, warning }: PlaceRoutesPresentation): void {
-  const list = document.createElement('div')
-  list.className = 'place-route-list'
-  for (const { route, color } of routes) {
-    const row = document.createElement('div')
-    row.className = 'place-route-row'
-    const button = document.createElement('button')
-    button.className = 'place-route-button'
-    row.style.setProperty('--route-color', color)
-    const tick = document.createElement('span')
-    tick.className = 'route-color-tick'
-    tick.setAttribute('aria-hidden', 'true')
-    const line = document.createElement('span')
-    line.className = 'place-route-main'
-    const routeName = document.createElement('strong')
-    routeName.textContent = route.routeName
-    const eta = etaPresentationNode(route.etaLabel)
-    eta.classList.add('place-route-eta')
-    if (route.source === 'schedule') eta.classList.add('estimated')
-    if ((route.source === 'realtime' || route.source === 'stale-realtime')
-      && route.estimateSeconds !== null
-      && route.estimateSeconds <= 180) {
-      eta.classList.add('urgent')
-    }
-    if (route.source === 'stale-realtime') {
-      const freshness = document.createElement('small')
-      freshness.className = 'eta-freshness'
-      freshness.textContent = '稍早'
-      eta.appendChild(freshness)
-    }
-    line.appendChild(routeName)
-    line.appendChild(eta)
-    const detail = document.createElement('small')
-    detail.textContent = route.label
-    button.appendChild(tick)
-    button.appendChild(line)
-    button.appendChild(detail)
-    button.addEventListener('click', () => openChildRoute(route.routeName, route.variantKey, color))
-    row.appendChild(button)
-    row.appendChild(directionFavoriteControl(place, route))
-    list.appendChild(row)
-  }
-  renderDrawer({
-    key: `place:${cityCode}:${place.placeId}`,
-    mode: 'map-list',
-    header: [
-      drawerBack(placeBackLabel(), returnToNearbyPlaces),
-      heading(place.name, `${place.distanceMeters > 0 ? `${Math.round(place.distanceMeters)} 公尺 · ` : ''}${routes.length} 個行車方向`),
-    ],
-    content: [
-      ...(warning
-        ? [degradedNotice(tdxWarningMessages[warning], () => void placeRoutes.open(place))]
-        : []),
-      list,
-    ],
-  })
-}
-
 function completePlaceRoutes({ cityCode, place }: PlaceRoutesPresentation): void {
   drawTripEndpoints()
   camera.focusPoint([place.latitude, place.longitude], map.getZoom())
@@ -1774,21 +1709,6 @@ function completePlaceRoutes({ cityCode, place }: PlaceRoutesPresentation): void
   history.replaceState({ ...currentState, mapView: 'place' }, '', `/map?city=${cityCode}&place=${encodeURIComponent(place.placeId)}`)
   setDocumentTitle(`${place.name} 到站時間`)
   clearStatus()
-}
-
-function renderPlaceRoutesError({ cityCode, place, error }: PlaceRouteFailure): void {
-  const message = error instanceof Error && error.message ? error.message : '站牌路線讀取失敗'
-  const credentialRejected = isTdxTokenRejectedError(error)
-  setStatus(message, true)
-  renderDrawer({
-    key: `place:${cityCode}:${place.placeId}`,
-    mode: 'map-list',
-    header: [
-      drawerBack(placeBackLabel(), returnToNearbyPlaces),
-      heading(place.name, message),
-    ],
-    content: [degradedNotice(message, () => void placeRoutes.open(place), credentialRejected)],
-  })
 }
 
 function degradedNotice(message: string, onRetry: () => void, credentialRecovery = false): HTMLElement {
@@ -1825,28 +1745,6 @@ function paragraph(text: string): HTMLElement {
   const node = document.createElement('p')
   node.className = 'drawer-copy'
   node.textContent = text
-  return node
-}
-
-function etaPresentationNode(label: string): HTMLSpanElement {
-  const parts = splitEtaLabel(label)
-  const node = document.createElement('span')
-  if (parts.prefix) {
-    const prefix = document.createElement('small')
-    prefix.className = 'eta-prefix'
-    prefix.textContent = parts.prefix
-    node.appendChild(prefix)
-  }
-  const value = document.createElement('b')
-  value.className = 'eta-value'
-  value.textContent = parts.value
-  node.appendChild(value)
-  if (parts.suffix) {
-    const suffix = document.createElement('small')
-    suffix.className = 'eta-suffix'
-    suffix.textContent = parts.suffix
-    node.appendChild(suffix)
-  }
   return node
 }
 
