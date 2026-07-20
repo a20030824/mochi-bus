@@ -1,0 +1,79 @@
+name: A6 final production audit
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/a6-final-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+
+      - name: Verify durable D1 acceptance evidence
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_tables="'snapshot_watchdog_runs','snapshot_watchdog_city_attempts','snapshot_watchdog_city_results','public_probe_runs','public_probe_city_attempts','public_probe_city_results'"
+          tables_json="$(npx wrangler d1 execute mochi-transit --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN (${required_tables}) ORDER BY name;")"
+          echo "$tables_json" | jq .
+          table_count="$(echo "$tables_json" | jq '.[0].results | length')"
+          test "$table_count" -eq 6
+
+          watchdog_json="$(npx wrangler d1 execute mochi-transit --remote --json --command "SELECT schedule_date, COUNT(*) AS city_count, SUM(CASE WHEN status IN ('published','unchanged_healthy') THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN status NOT IN ('published','unchanged_healthy') THEN 1 ELSE 0 END) AS rejected FROM snapshot_watchdog_city_results WHERE schedule_date=(SELECT MAX(schedule_date) FROM snapshot_watchdog_city_results) GROUP BY schedule_date;")"
+          echo "$watchdog_json" | jq .
+          watchdog_count="$(echo "$watchdog_json" | jq -r '.[0].results[0].city_count // 0')"
+          watchdog_rejected="$(echo "$watchdog_json" | jq -r '.[0].results[0].rejected // 999')"
+          test "$watchdog_count" -gt 0
+          test "$watchdog_rejected" -eq 0
+
+          probe_json="$(npx wrangler d1 execute mochi-transit --remote --json --command "SELECT probe_date, COUNT(*) AS city_count, SUM(CASE WHEN status IN ('healthy','realtime_degraded') THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN status NOT IN ('healthy','realtime_degraded') THEN 1 ELSE 0 END) AS rejected FROM public_probe_city_results WHERE probe_date=(SELECT MAX(probe_date) FROM public_probe_city_results) GROUP BY probe_date;")"
+          echo "$probe_json" | jq .
+          probe_count="$(echo "$probe_json" | jq -r '.[0].results[0].city_count // 0')"
+          probe_accepted="$(echo "$probe_json" | jq -r '.[0].results[0].accepted // 0')"
+          probe_rejected="$(echo "$probe_json" | jq -r '.[0].results[0].rejected // 999')"
+          test "$probe_count" -eq 22
+          test "$probe_accepted" -eq 22
+          test "$probe_rejected" -eq 0
+
+          {
+            echo "### A6 durable evidence"
+            echo "- Required migration tables: ${table_count}/6"
+            echo "- Latest watchdog cities: ${watchdog_count}, rejected: ${watchdog_rejected}"
+            echo "- Latest public probe cities: ${probe_count}, accepted: ${probe_accepted}, rejected: ${probe_rejected}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify production Worker release ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(curl --fail --silent --show-error "https://bus.moc96336.com/api/v1/health/release?a6-final-audit=${GITHUB_RUN_ID}")"
+          echo "$release_json" | jq .
+          release_sha="$(echo "$release_json" | jq -r '.releaseSha // empty')"
+          test -n "$release_sha"
+          git fetch --no-tags origin "$release_sha"
+          git merge-base --is-ancestor 614ad0 "$release_sha"
+          git merge-base --is-ancestor 2e9cb9ac04405657b7179f73f206d340b7418c62 "$release_sha"
+          git merge-base --is-ancestor e2786c3143037c1b9083281ad266e74ed428861b "$release_sha"
+          {
+            echo "### Production Worker"
+            echo "- releaseSha: \`${release_sha}\`"
+            echo "- Contains A6b, orphan-route fix, and one-stop-pattern fix"
+          } >> "$GITHUB_STEP_SUMMARY"
