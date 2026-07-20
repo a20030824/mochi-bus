@@ -27,7 +27,16 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run check
+      - name: Check generated bindings
+        run: npm run cf-typegen:check
+      - name: Run unit tests
+        run: npm run test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build browser assets
+        run: npm run build:map
+      - name: Dry-run Worker bundle
+        run: wrangler deploy --dry-run
 
   map-ui:
     name: Map UI regression
