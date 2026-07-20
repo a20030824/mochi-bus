@@ -75,8 +75,12 @@ describe('map place arrivals batching', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = requestUrl(input)
       expect(url.pathname).toBe('/api/basic/v2/Bus/EstimatedTimeOfArrival/City/Taipei')
-      expect(url.searchParams.get('$filter')).toBe("StopUID eq 'STOP1' or StopUID eq 'STOP2'")
-      expect(url.searchParams.get('$select')).toContain('RouteUID,SubRouteUID,StopUID,Direction,EstimateTime')
+      expect(url.searchParams.get('$filter')).toBe(
+        "(StopUID eq 'STOP1' or StopUID eq 'STOP2') and (RouteUID eq 'TPE1' or RouteUID eq 'TPE2')",
+      )
+      expect(url.searchParams.get('$select')).toBe(
+        'RouteUID,SubRouteUID,StopUID,Direction,EstimateTime,StopStatus',
+      )
       return new Response(JSON.stringify([
         { RouteUID: 'TPE1', StopUID: 'STOP1', Direction: 0, EstimateTime: 120, StopStatus: 0 },
         { RouteUID: 'TPE2', StopUID: 'STOP2', Direction: 1, EstimateTime: 300, StopStatus: 0 },
