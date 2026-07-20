@@ -1,0 +1,50 @@
+name: Apply Place routes controller extraction
+
+on:
+  pull_request:
+    types: [synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/extract-place-routes-controller'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply reviewed Place routes controller patch
+        run: |
+          base64 -d .github/patches/place-routes-controller.patch.gz.b64 | gzip -d > /tmp/place-routes-controller.patch
+          git apply --check /tmp/place-routes-controller.patch
+          git apply /tmp/place-routes-controller.patch
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Run focused Place route tests
+        run: npx vitest run web/map/place-routes-controller.test.ts web/map/journey-preview-controller.test.ts web/map/main-size.test.ts
+      - name: Run full check
+        run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Test desktop and touch interaction flows
+        run: npx playwright test --project=desktop-chromium --project=mobile-touch
+      - name: Run git diff check
+        run: git diff --check
+      - name: Commit clean product diff
+        run: |
+          rm -f .github/patches/place-routes-controller.patch.gz.b64
+          rm -f .github/workflows/apply-place-routes-controller.yml
+          rm -f .github/workflows/export-place-routes-controller.yml
+          rmdir .github/patches 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/map/main.ts web/map/main-size.test.ts web/map/place-routes-controller.ts web/map/place-routes-controller.test.ts
+          git add -u .github
+          git commit -m "refactor(map): extract Place routes controller"
+          git push origin HEAD:${{ github.head_ref }}
