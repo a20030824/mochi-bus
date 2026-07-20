@@ -37,23 +37,56 @@ export type TripLoadingState = {
   pending: TripPendingSelections
 }
 
-export type TripResultsState = {
+type TripResultsBase = {
   phase: 'results'
   from: TripEndpoint
   to: TripEndpoint
-  directRoutes: DirectRoute[]
-  transferPlans: TransferPlan[]
-  selectedDirectIndex: number
-  selectedTransferIndex: number
   warning?: TDXWarning
   pending: TripPendingSelections
 }
 
+export type TripDirectResultsState = TripResultsBase & {
+  resultKind: 'direct'
+  directRoutes: DirectRoute[]
+  transferPlans: []
+  selectedDirectIndex: number
+  selectedTransferIndex: 0
+}
+
+export type TripTransferResultsState = TripResultsBase & {
+  resultKind: 'transfer'
+  directRoutes: []
+  transferPlans: TransferPlan[]
+  selectedDirectIndex: 0
+  selectedTransferIndex: number
+}
+
+export type TripEmptyResultsState = TripResultsBase & {
+  resultKind: 'empty'
+  directRoutes: []
+  transferPlans: []
+  selectedDirectIndex: 0
+  selectedTransferIndex: 0
+}
+
+export type TripResultsState =
+  | TripDirectResultsState
+  | TripTransferResultsState
+  | TripEmptyResultsState
+
 export type TripState = TripIdleState | TripSelectingState | TripLoadingState | TripResultsState
 
-export type TripResultsInput = Omit<TripResultsState, 'phase' | 'selectedDirectIndex' | 'selectedTransferIndex' | 'pending'> & {
+export type TripResultCollectionsInput = {
+  directRoutes: DirectRoute[]
+  transferPlans: TransferPlan[]
   selectedDirectIndex?: number
   selectedTransferIndex?: number
+  warning?: TDXWarning
+}
+
+export type TripResultsInput = TripResultCollectionsInput & {
+  from: TripEndpoint
+  to: TripEndpoint
   pending?: TripPendingSelections
 }
 
@@ -70,16 +103,43 @@ export function startTripSelection(): TripSelectingState {
 }
 
 export function createTripResultsState(input: TripResultsInput): TripResultsState {
-  return {
-    phase: 'results',
+  const base = {
+    phase: 'results' as const,
     from: input.from,
     to: input.to,
-    directRoutes: input.directRoutes,
-    transferPlans: input.transferPlans,
-    selectedDirectIndex: normalizeTripResultIndex(input.selectedDirectIndex, input.directRoutes.length),
-    selectedTransferIndex: normalizeTripResultIndex(input.selectedTransferIndex, input.transferPlans.length),
     warning: input.warning,
     pending: input.pending ?? {},
+  }
+
+  // The live workflow queries transfers only when no direct route exists. When a
+  // legacy or malformed snapshot contains both, preserve the existing direct-first UI rule.
+  if (input.directRoutes.length) {
+    return {
+      ...base,
+      resultKind: 'direct',
+      directRoutes: input.directRoutes,
+      transferPlans: [],
+      selectedDirectIndex: normalizeTripResultIndex(input.selectedDirectIndex, input.directRoutes.length),
+      selectedTransferIndex: 0,
+    }
+  }
+  if (input.transferPlans.length) {
+    return {
+      ...base,
+      resultKind: 'transfer',
+      directRoutes: [],
+      transferPlans: input.transferPlans,
+      selectedDirectIndex: 0,
+      selectedTransferIndex: normalizeTripResultIndex(input.selectedTransferIndex, input.transferPlans.length),
+    }
+  }
+  return {
+    ...base,
+    resultKind: 'empty',
+    directRoutes: [],
+    transferPlans: [],
+    selectedDirectIndex: 0,
+    selectedTransferIndex: 0,
   }
 }
 
@@ -150,10 +210,7 @@ export function resumeTripEndpoint(
 
 export function completeTripResults(
   state: TripLoadingState | TripResultsState,
-  input: Pick<
-    TripResultsState,
-    'directRoutes' | 'transferPlans' | 'selectedDirectIndex' | 'selectedTransferIndex' | 'warning'
-  >,
+  input: TripResultCollectionsInput,
 ): TripResultsState {
   return createTripResultsState({
     from: state.from,
@@ -207,6 +264,7 @@ export function clearTripPendingSelections(state: TripState): TripState {
 }
 
 export function selectDirectTripResult(state: TripResultsState, index: number): TripResultsState {
+  if (state.resultKind !== 'direct') return state
   return {
     ...state,
     selectedDirectIndex: normalizeTripResultIndex(index, state.directRoutes.length),
@@ -214,15 +272,15 @@ export function selectDirectTripResult(state: TripResultsState, index: number): 
 }
 
 export function selectTransferTripResult(state: TripResultsState, index: number): TripResultsState {
+  if (state.resultKind !== 'transfer') return state
   return {
     ...state,
     selectedTransferIndex: normalizeTripResultIndex(index, state.transferPlans.length),
   }
 }
 
-export function hasTripResultsState(state: TripState): state is TripResultsState {
-  return state.phase === 'results'
-    && Boolean(state.directRoutes.length || state.transferPlans.length)
+export function hasTripResultsState(state: TripState): state is TripDirectResultsState | TripTransferResultsState {
+  return state.phase === 'results' && state.resultKind !== 'empty'
 }
 
 export function normalizeTripResultIndex(index: number | undefined, length: number): number {
