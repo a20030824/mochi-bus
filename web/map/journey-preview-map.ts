@@ -1,7 +1,11 @@
-import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
+import L from 'leaflet'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { bindTextTooltip } from './leaflet-tooltip'
 import { stopHaloColor } from './theme'
+import {
+  createPreviewStopDotManager,
+  createSelectablePreviewLineRenderer,
+} from './preview-map-primitives'
 import type { JourneyPreviewLeg, JourneyPreviewRenderResult } from './journey-preview-controller'
 import type { RouteMapVariant } from './map-api-client'
 import type { TripCoordinate } from './trip-state'
@@ -34,53 +38,12 @@ export function createJourneyPreviewMap(options: JourneyPreviewMapOptions): Jour
   const routePane = options.routePane ?? 'routePreviewPane'
   const dotPane = options.dotPane ?? 'previewDotPane'
   const stopPane = options.stopPane ?? 'stopPane'
-  const stopDots = new Set<L.CircleMarker>()
+  const selectablePreviewLine = createSelectablePreviewLineRenderer({ hoverCapable: options.hoverCapable })
+  const stopDots = createPreviewStopDotManager({ map: options.map, pane: dotPane })
 
   function bindHoverTooltip<T extends L.Layer>(layer: T, content: string, tooltipOptions?: L.TooltipOptions): T {
     if (options.hoverCapable) bindTextTooltip(layer, content, tooltipOptions)
     return layer
-  }
-
-  // Touch uses a transparent wide hit target; hover-capable pointers keep events on
-  // the visible line so mouseover/mouseout follows the cursor precisely.
-  function bindSelectableLine(
-    shape: RouteMapVariant['shape'],
-    style: L.PathOptions,
-  ): LeafletGeoJSON {
-    if (options.hoverCapable) {
-      return L.geoJSON(shape, { pane: routePane, style }).addTo(options.layer)
-    }
-    L.geoJSON(shape, {
-      pane: routePane,
-      style: { ...style, interactive: false },
-    }).addTo(options.layer)
-    return L.geoJSON(shape, {
-      pane: routePane,
-      style: { color: '#000', opacity: 0, weight: 26, lineCap: 'round', lineJoin: 'round' },
-    }).addTo(options.layer)
-  }
-
-  // Only the selected Trip leg receives stop dots. Track them separately from the
-  // shared Place/route-detail dots so each surface can resize its own markers.
-  function addStopDots(stops: RouteMapVariant['stops'], color: string): void {
-    const { radius, weight } = previewDotStyleForZoom(options.map.getZoom())
-    L.geoJSON(stops, {
-      pane: dotPane,
-      pointToLayer: (_feature, latlng) => {
-        const dot = L.circleMarker(latlng, {
-          pane: dotPane,
-          radius,
-          weight,
-          color: stopHaloColor,
-          fillColor: color,
-          fillOpacity: .6,
-          className: 'preview-stop-dot',
-          interactive: false,
-        })
-        stopDots.add(dot)
-        return dot
-      },
-    }).addTo(options.layer)
   }
 
   function addEndpointLabel(
@@ -113,7 +76,7 @@ export function createJourneyPreviewMap(options: JourneyPreviewMapOptions): Jour
     selected,
     onSelect,
   }: JourneyPreviewLeg): JourneyPreviewRenderResult {
-    const fullLineTarget = bindSelectableLine(variant.shape, {
+    const { target: fullLineTarget } = selectablePreviewLine(variant.shape, routePane, options.layer, {
       color,
       weight: selected ? 3.5 : 2.5,
       opacity: selected ? .18 : .08,
@@ -157,7 +120,7 @@ export function createJourneyPreviewMap(options: JourneyPreviewMapOptions): Jour
     }
 
     if (geometry.board && geometry.alight && selected) {
-      addStopDots(variant.stops, color)
+      stopDots.add(variant.stops, color, options.layer)
       addEndpointLabel(geometry.board, labels[0], color)
       addEndpointLabel(geometry.alight, labels[1], color)
     }
@@ -170,19 +133,8 @@ export function createJourneyPreviewMap(options: JourneyPreviewMapOptions): Jour
 
   return {
     renderLeg,
-    resizeStopMarkers() {
-      const style = previewDotStyleForZoom(options.map.getZoom())
-      for (const dot of stopDots) {
-        if (!options.map.hasLayer(dot)) {
-          stopDots.delete(dot)
-          continue
-        }
-        dot.setStyle(style)
-      }
-    },
-    reset() {
-      stopDots.clear()
-    },
+    resizeStopMarkers: stopDots.resize,
+    reset: stopDots.reset,
   }
 }
 
@@ -218,11 +170,4 @@ export function resolveJourneyPreviewGeometry(
     segmentCoordinates: segmentCoordinates ?? undefined,
     focusCoordinates,
   }
-}
-
-export function previewDotStyleForZoom(zoom: number): { radius: number; weight: number } {
-  if (zoom >= 16) return { radius: 5, weight: 1.4 }
-  if (zoom >= 14) return { radius: 3.5, weight: 1.2 }
-  if (zoom >= 12) return { radius: 2.4, weight: 1 }
-  return { radius: 1.8, weight: 1 }
 }
