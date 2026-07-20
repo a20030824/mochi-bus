@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  initialRouteStopMarkerMetrics,
   normalizedVehicleAzimuth,
   routeStopMarkerMetrics,
   routeVariantPreviewStyle,
@@ -23,6 +24,12 @@ describe('route detail presentation policies', () => {
     expect(routeStopMarkerMetrics(16)).toEqual({ radius: 8, weight: 1.8 })
     expect(routeStopMarkerMetrics(15, true)).toEqual({ radius: 9, weight: 2.4 })
     expect(routeStopMarkerMetrics(16, true)).toEqual({ radius: 11, weight: 2.4 })
+  })
+
+  it('preserves the existing initial stroke before zoom resizing takes ownership', () => {
+    expect(initialRouteStopMarkerMetrics(12)).toEqual({ radius: 2, weight: 1.4 })
+    expect(initialRouteStopMarkerMetrics(16)).toEqual({ radius: 8, weight: 1.4 })
+    expect(initialRouteStopMarkerMetrics(15, true)).toEqual({ radius: 9, weight: 2.4 })
   })
 
   it('normalizes missing or non-finite vehicle headings without changing valid headings', () => {
