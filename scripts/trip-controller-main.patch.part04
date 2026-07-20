@@ -1,0 +1,20 @@
+   )
+-  interactionMode = 'trip-results'
+   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
+   history.replaceState({ ...currentState, mapView: 'trip-results', mapParent: 'catalogue' }, '', location.href)
+-  await loadDirectRoutes()
++  await tripController.loadPlan()
+   return true
+ }
+ 
+--- a/web/map/main-size.test.ts
++++ b/web/map/main-size.test.ts
+@@ -2,7 +2,7 @@
+ import { describe, expect, it } from 'vitest'
+ import mainSource from './main.ts?raw'
+ 
+-const MAP_MAIN_LINE_LIMIT = 2424
++const MAP_MAIN_LINE_LIMIT = 2291
+ 
+ describe('map main architecture boundary', () => {
+   it('does not grow without extracting another responsibility', () => {
