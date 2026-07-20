@@ -35,6 +35,20 @@ jobs:
           path.write_text(source)
           PY
       - run: npx vitest run web/map/route-detail-controller.test.ts web/map/route-detail-presentation.test.ts
+      - name: Capture typecheck
+        id: typecheck
+        continue-on-error: true
+        run: npx tsc --noEmit > route-controller-typecheck.log 2>&1
+      - uses: actions/upload-artifact@v4
+        if: steps.typecheck.outcome == 'failure'
+        with:
+          name: route-controller-typecheck
+          path: route-controller-typecheck.log
+      - name: Require typecheck
+        if: steps.typecheck.outcome == 'failure'
+        run: |
+          cat route-controller-typecheck.log
+          exit 1
       - run: npm run check
       - run: git diff --check
       - name: Commit clean controller extraction
