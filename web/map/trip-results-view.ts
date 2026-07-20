@@ -6,7 +6,7 @@ import type { DrawerView } from './drawer-view'
 import type { TripResultsState } from './trip-state'
 
 type TripResultsViewOptions = {
-  renderDrawer: (view: DrawerView) => unknown
+  renderDrawer: (view: DrawerView) => void
   createBackButton: (label: string, onClick: () => void) => HTMLButtonElement
   createHeading: (title: string, description: string) => HTMLElement
   createDegradedNotice: (message: string, onRetry: () => void, credentialRecovery?: boolean) => HTMLElement
