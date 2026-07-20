@@ -1,11 +1,12 @@
 name: Apply TDX response byte limit
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/tdx-response-byte-limit
+      - main
     paths:
       - .github/tdx-response-byte-limit.patch
+      - .github/workflows/apply-tdx-response-byte-limit.yml
 
 permissions:
   contents: write
