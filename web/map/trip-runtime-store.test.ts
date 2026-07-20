@@ -128,6 +128,43 @@ describe('trip runtime store', () => {
     expect(store.selectedTransferIndex).toBe(0)
   })
 
+  it('reselects one endpoint without retaining stale results or deleting the other pending match', () => {
+    const fromPending = {
+      kind: 'from' as const,
+      coordinate: [25, 121.5] as [number, number],
+      candidates: [from],
+      selected: from,
+    }
+    const toPending = {
+      kind: 'to' as const,
+      coordinate: [25.1, 121.6] as [number, number],
+      candidates: [to],
+      selected: to,
+    }
+    const store = createTripRuntimeStore(createTripResultsState({
+      from: { place: from, coordinate: fromPending.coordinate },
+      to: { place: to, coordinate: toPending.coordinate },
+      directRoutes: [direct],
+      transferPlans: [],
+      warning: 'tdx-unavailable',
+      pending: { from: fromPending, to: toPending },
+    }))
+
+    store.reselect('to')
+
+    expect(store.state).toMatchObject({
+      phase: 'selecting',
+      next: 'to',
+      from: { place: from },
+      to: undefined,
+      pending: { from: fromPending },
+    })
+    expect(store.directRoutes).toEqual([])
+    expect(store.transferPlans).toEqual([])
+    expect(store.warning).toBeUndefined()
+    expect(store.pending('to')).toBeUndefined()
+  })
+
   it('restores, focuses, and resets without parallel runtime fields', () => {
     const restored = createTripResultsState({
       from: { place: from },
