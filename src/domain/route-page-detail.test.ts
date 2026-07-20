@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedBusQuery } from './bus-query'
+import type { RouteEtaPresentationState } from './route-eta-status'
 import {
   QueryResolutionError,
   TDXServiceError,
@@ -51,6 +52,24 @@ const fullyRealtimeDetail: RouteDetail = {
     : stop),
 }
 
+const realtimeStates: RouteEtaPresentationState[] = [
+  { source: 'realtime', status: 'estimated' },
+  { source: 'realtime', status: 'estimated' },
+  { source: 'none', status: 'missing' },
+]
+
+const fullyRealtimeStates: RouteEtaPresentationState[] = realtimeStates.map((state, index) => index === 2
+  ? { source: 'realtime', status: 'estimated' }
+  : state)
+
+function detailResult(detail: RouteDetail, states: RouteEtaPresentationState[]) {
+  return { detail, states }
+}
+
+function missingStates(detail: RouteDetail): RouteEtaPresentationState[] {
+  return detail.stops.map(() => ({ source: 'none', status: 'missing' }))
+}
+
 const env: TDXEnv = {
   TDX_CLIENT_ID: 'client',
   TDX_CLIENT_SECRET: 'secret',
@@ -99,7 +118,7 @@ describe('getRouteEtaDetail', () => {
   it('does not load timetable or separate static station order when every row has realtime ETA', async () => {
     const getRouteStopGroups = vi.fn(async () => [group])
     const getBusSchedule = vi.fn(async () => [] as ScheduleItem[])
-    const getRouteDetail = vi.fn(async () => fullyRealtimeDetail)
+    const getRouteDetail = vi.fn(async () => detailResult(fullyRealtimeDetail, fullyRealtimeStates))
 
     const result = await getRouteEtaDetail(env, query, {
       getRouteStopGroups,
@@ -120,7 +139,7 @@ describe('getRouteEtaDetail', () => {
 
     const result = await getRouteEtaDetail(env, query, {
       getRouteStopGroups,
-      getRouteDetail: vi.fn(async () => realtimeDetail),
+      getRouteDetail: vi.fn(async () => detailResult(realtimeDetail, realtimeStates)),
       getBusSchedule,
       now,
     })
@@ -140,7 +159,7 @@ describe('getRouteEtaDetail', () => {
 
     const result = await getRouteEtaDetail(env, query, {
       getRouteStopGroups,
-      getRouteDetail: vi.fn(async () => emptyDetail),
+      getRouteDetail: vi.fn(async () => detailResult(emptyDetail, missingStates(emptyDetail))),
       getBusSchedule: vi.fn(async () => exactSchedule('TPE2', '13:40')),
       now,
     })
@@ -169,7 +188,7 @@ describe('getRouteEtaDetail', () => {
     }]
 
     const result = await getRouteEtaDetail(env, query, {
-      getRouteDetail: vi.fn(async () => emptyDetail),
+      getRouteDetail: vi.fn(async () => detailResult(emptyDetail, missingStates(emptyDetail))),
       getBusSchedule: vi.fn(async () => departureOnly),
       now,
     })
@@ -182,7 +201,7 @@ describe('getRouteEtaDetail', () => {
   it('keeps realtime rows and converts gaps to dashes when timetable loading fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = await getRouteEtaDetail(env, query, {
-      getRouteDetail: vi.fn(async () => realtimeDetail),
+      getRouteDetail: vi.fn(async () => detailResult(realtimeDetail, realtimeStates)),
       getBusSchedule: vi.fn(async () => { throw new TDXServiceError('schedule unavailable', 503) }),
       now,
     })
@@ -254,7 +273,7 @@ describe('getRouteEtaDetail', () => {
     const getRouteStopGroups = vi.fn(async () => [group])
     await expect(getRouteEtaDetail({ ...env, TDX_USER_ACCESS_TOKEN: 'user-token' }, query, {
       getRouteStopGroups,
-      getRouteDetail: vi.fn(async () => realtimeDetail),
+      getRouteDetail: vi.fn(async () => detailResult(realtimeDetail, realtimeStates)),
       getBusSchedule: vi.fn(async () => { throw error }),
       now,
     })).rejects.toBe(error)
