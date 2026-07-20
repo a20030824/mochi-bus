@@ -135,9 +135,11 @@ test.describe('Route progressive ETA', () => {
     await expect.poll(() => requests).toBe(2)
     await expect(selectedEta).toHaveText('1 分')
 
-    await page.clock.fastForward(29_999)
+    // Exact interval boundaries are covered by refresh-controller unit tests. Keep
+    // this browser test clear of request/DOM settlement microtask timing.
+    await page.clock.fastForward(29_000)
     expect(requests).toBe(2)
-    await page.clock.fastForward(1)
+    await page.clock.fastForward(1_000)
     await expect.poll(() => requests).toBe(3)
     await expect(selectedEta).toHaveText('即將進站')
   })
