@@ -211,6 +211,7 @@ describe('trip plan loader', () => {
     })
 
     await expect(harness.loader.load({ ...request, signal: controller.signal })).resolves.toBeUndefined()
+    expect(harness.options.loadTransfer).toHaveBeenCalledOnce()
     expect(harness.options.loadJourneyEta).not.toHaveBeenCalled()
   })
 })
