@@ -31,7 +31,7 @@
   --motion-fast: 180ms;
   --motion-ease-out: cubic-bezier(.2, .7, .2, 1);
   --motion-enter-distance: 4px;
-  --paper-grain-opacity: .03;
+  --paper-grain-opacity: .05;
   font-family: ui-rounded, "SF Pro Rounded", "PingFang TC", system-ui, sans-serif;
   color: var(--ink);
   background: var(--canvas);
