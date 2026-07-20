@@ -46,6 +46,7 @@ export type TDXResolutionOptions<T> = {
   validate?: (value: unknown) => value is T
   staleFallback?: (error: TDXServiceError) => Promise<{ data: T; dataAgeMilliseconds?: number } | undefined>
   blockedFailureClass?: TelemetryFailureClass
+  maxResponseBytes?: number
 }
 
 export type TDXResolvedData<T> = {
@@ -963,6 +964,7 @@ export async function resolveTDXJson<T>(
   options: TDXResolutionOptions<T> = {},
 ): Promise<TDXResolvedData<T>> {
   const now = telemetryNow(env)
+  const maxResponseBytes = normalizedResponseByteLimit(options.maxResponseBytes)
   const credentialScope = env.TDX_USER_ACCESS_TOKEN ? 'byok' as const : 'shared' as const
   const tracker = options.operation ? beginTDXResolutionTelemetry({
     tdxOperation: options.operation,
@@ -1029,7 +1031,7 @@ export async function resolveTDXJson<T>(
     throw error
   }
 
-  const memoryKey = `tdx/${url.toString()}`
+  const memoryKey = `tdx/${maxResponseBytes ?? 'unbounded'}/${url.toString()}`
   const memoized = memoryCacheGet<TDXCacheEntry<T>>(memoryKey)
   if (memoized !== undefined && validPayload(memoized.data, options.validate)) {
     return completeData(
@@ -1044,7 +1046,7 @@ export async function resolveTDXJson<T>(
   const cached = await cacheMatchFailOpen(edgeCache, cacheKey, 'tdx')
   if (cached) {
     try {
-      const data = await cached.json() as unknown
+      const data = await readJsonResponse(cached, maxResponseBytes)
       if (validPayload(data, options.validate)) {
         const cachedAt = parsedCacheTimestamp(cached.headers.get('X-Mochi-Cached-At'))
         const typed = data as T
@@ -1125,13 +1127,24 @@ export async function resolveTDXJson<T>(
 
     let unvalidated: unknown
     try {
-      unvalidated = await response.json()
+      unvalidated = await readJsonResponse(response, maxResponseBytes)
     } catch (error) {
-      const serviceError = new TDXServiceError('TDX response is invalid JSON', 502, {
-        cause: error,
-        failureKind: 'invalid_json',
-      })
-      recordTDXCircuitFailure(circuitKey, serviceError)
+      const serviceError = error instanceof TDXPayloadTooLargeError
+        ? error
+        : new TDXServiceError('TDX response is invalid JSON', 502, {
+            cause: error,
+            failureKind: 'invalid_json',
+          })
+      if (serviceError instanceof TDXPayloadTooLargeError) {
+        recordTDXCircuitSuccess(circuitKey)
+        console.error(JSON.stringify({
+          message: 'tdx_response_too_large',
+          maxBytes: serviceError.maxBytes,
+          receivedBytes: serviceError.receivedBytes ?? null,
+        }))
+      } else {
+        recordTDXCircuitFailure(circuitKey, serviceError)
+      }
       return finishFailure(serviceError, true)
     }
     if (!validPayload(unvalidated, options.validate)) {
@@ -1156,6 +1169,63 @@ export async function resolveTDXJson<T>(
     }), 'tdx', env.TDX_BACKGROUND_TASKS)
     return resolved
   }
+}
+
+class TDXPayloadTooLargeError extends TDXServiceError {
+  constructor(
+    readonly maxBytes: number,
+    readonly receivedBytes?: number,
+  ) {
+    super('TDX response exceeds configured byte limit', 502, {
+      failureKind: 'invalid_schema',
+    })
+    this.name = 'TDXPayloadTooLargeError'
+  }
+}
+
+function normalizedResponseByteLimit(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined
+}
+
+async function readJsonResponse(response: Response, maxBytes?: number): Promise<unknown> {
+  if (maxBytes === undefined) return response.json()
+
+  const declaredLength = parsedContentLength(response.headers.get('Content-Length'))
+  if (declaredLength !== undefined && declaredLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new TDXPayloadTooLargeError(maxBytes, declaredLength)
+  }
+  if (!response.body) return response.json()
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let receivedBytes = 0
+  let body = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      receivedBytes += value.byteLength
+      if (receivedBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined)
+        throw new TDXPayloadTooLargeError(maxBytes, receivedBytes)
+      }
+      body += decoder.decode(value, { stream: true })
+    }
+    body += decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
+  return JSON.parse(body)
+}
+
+function parsedContentLength(value: string | null): number | undefined {
+  if (!value) return undefined
+  const length = Number(value)
+  return Number.isFinite(length) && length >= 0 ? length : undefined
 }
 
 function validPayload<T>(value: unknown, validate?: (value: unknown) => value is T): value is T {

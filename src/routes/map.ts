@@ -14,7 +14,11 @@ import {
 import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
-import { buildStopArrivalBatches, isStopArrivalBatchPayload } from '../infrastructure/tdx/stop-arrivals'
+import {
+  buildStopArrivalBatches,
+  isStopArrivalBatchPayload,
+  STOP_ARRIVAL_MAX_RESPONSE_BYTES,
+} from '../infrastructure/tdx/stop-arrivals'
 import {
   findNearbyStopPlaces,
   getCityNetwork,
@@ -542,6 +546,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
         const resolved = await resolveTDXJson<BusETAItem[]>(env, batch.url, 15, {
           operation: 'place_arrivals',
           city: telemetryCity(city),
+          maxResponseBytes: STOP_ARRIVAL_MAX_RESPONSE_BYTES,
           validate: (value): value is BusETAItem[] => isStopArrivalBatchPayload(value, batch.stopUids),
           blockedFailureClass: rateLimited ? 'rate_limited' : undefined,
           staleFallback: async () => {

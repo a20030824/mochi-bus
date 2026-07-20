@@ -16,6 +16,7 @@ export type StopArrivalBatch = {
 }
 
 const MAX_STOP_UIDS_PER_BATCH = 12
+export const STOP_ARRIVAL_MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_STOP_ARRIVAL_RECORDS = 500
 const STOP_ARRIVAL_SELECT = [
   'RouteUID',

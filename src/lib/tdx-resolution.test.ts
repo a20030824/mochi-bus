@@ -256,6 +256,134 @@ describe('TDX logical resolution instrumentation', () => {
     }
   })
 
+  it('replays stale data when Content-Length exceeds the configured response limit', async () => {
+    const events: TelemetryEnvelope[] = []
+    const cachePut = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([{ id: 'fresh' }]), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': '4096',
+      },
+    })))
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: cachePut },
+    })
+
+    const resolved = await resolveTDXJson(
+      observedEnv(events),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=declared-too-large'),
+      30,
+      {
+        ...options,
+        maxResponseBytes: 64,
+        staleFallback: async () => ({ data: [{ id: 'last-known' }], dataAgeMilliseconds: 90_000 }),
+      },
+    )
+
+    expect(resolved).toMatchObject({
+      data: [{ id: 'last-known' }],
+      resolution: 'stale_replay',
+      degraded: true,
+    })
+    expect(cachePut).not.toHaveBeenCalled()
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      result: 'degraded',
+      resolution: 'stale_replay',
+      failureClass: 'invalid_schema',
+    })
+  })
+
+  it('cancels the body immediately when declared length exceeds the limit', async () => {
+    let cancelCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCount += 1
+      },
+    }), {
+      headers: { 'Content-Length': '4096' },
+    })))
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn() },
+    })
+
+    await expect(fetchTDXJson(
+      observedEnv([]),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=declared-cancel'),
+      30,
+      { ...options, maxResponseBytes: 64 },
+    )).rejects.toThrow('byte limit')
+
+    expect(cancelCount).toBe(1)
+  })
+
+  it('keeps capped and uncapped memory-cache identities separate', async () => {
+    const payload = [{ id: 'x'.repeat(64) }]
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload)))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+    const url = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=memory-limit')
+
+    await expect(fetchTDXJson(observedEnv([]), url, 30, options)).resolves.toEqual(payload)
+    await expect(fetchTDXJson(
+      observedEnv([]),
+      url,
+      30,
+      { ...options, maxResponseBytes: 32 },
+    )).rejects.toThrow('byte limit')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels streamed oversized bodies without opening the TDX circuit', async () => {
+    const events: TelemetryEnvelope[] = []
+    const encoder = new TextEncoder()
+    let requestCount = 0
+    let cancelCount = 0
+    const fetchMock = vi.fn(async () => {
+      requestCount += 1
+      if (requestCount === 4) {
+        return new Response(JSON.stringify([{ id: 'healthy' }]))
+      }
+      let emitted = false
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (emitted) return
+          emitted = true
+          controller.enqueue(encoder.encode(JSON.stringify([{ id: 'x'.repeat(128) }])))
+        },
+        cancel() {
+          cancelCount += 1
+        },
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect(fetchTDXJson(
+        observedEnv(events),
+        new URL(`https://tdx.transportdata.tw/api/basic/v2/test?case=stream-too-large-${index}`),
+        30,
+        { ...options, maxResponseBytes: 32 },
+      )).rejects.toThrow('byte limit')
+    }
+
+    await expect(fetchTDXJson(
+      observedEnv(events),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=after-oversized'),
+      30,
+      { ...options, maxResponseBytes: 64 },
+    )).resolves.toEqual([{ id: 'healthy' }])
+
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(cancelCount).toBe(3)
+  })
+
   it('records circuit-open stale replay as degraded and no-fallback as error', async () => {
     const initialEvents: TelemetryEnvelope[] = []
     vi.stubGlobal('fetch', vi.fn(async () => new Response('rate limited', { status: 429 })))
@@ -337,6 +465,46 @@ describe('TDX logical resolution instrumentation', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(events.at(-2)).toMatchObject({ result: 'success', resolution: 'upstream' })
+    expect(events.at(-1)).toMatchObject({ result: 'success', resolution: 'upstream' })
+  })
+
+  it('releases a half-open probe after rejecting an oversized payload', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-19T04:00:00Z'))
+    const events: TelemetryEnvelope[] = []
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429, headers: { 'Retry-After': '1' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'oversized' }]), {
+        headers: { 'Content-Length': '4096' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'healthy' }])))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+    const env = observedEnv(events)
+
+    await expect(fetchTDXJson(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=open-before-oversized'),
+      30,
+      options,
+    )).rejects.toThrow()
+    vi.advanceTimersByTime(1_001)
+    await expect(fetchTDXJson(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=oversized-half-open'),
+      30,
+      { ...options, maxResponseBytes: 64 },
+    )).rejects.toThrow('byte limit')
+    await expect(fetchTDXJson(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=after-oversized-half-open'),
+      30,
+      { ...options, maxResponseBytes: 64 },
+    )).resolves.toEqual([{ id: 'healthy' }])
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(events.at(-1)).toMatchObject({ result: 'success', resolution: 'upstream' })
   })
 
