@@ -78,7 +78,8 @@ function validateStopTarget(
   const nameNode = row.querySelector<HTMLElement>('strong')
   const etaNode = row.querySelector<HTMLElement>('.route-eta')
   const selectedIdentityMismatch = row.classList.contains('selected')
-    && (!selectedStopUid || stop?.stopUid !== selectedStopUid)
+    && selectedStopUid !== null
+    && stop?.stopUid !== selectedStopUid
   if (!stop
     || !nameNode
     || !etaNode
