@@ -147,27 +147,53 @@ describe('trip state transitions', () => {
     expect(tripPendingSelection(clearTripPendingSelection(results, 'from'), 'from')).toBeUndefined()
   })
 
-  it('normalizes result indexes and exposes only non-empty result states', () => {
-    const results = createTripResultsState({
+  it('makes direct, transfer, and empty result collections mutually exclusive', () => {
+    const directResults = createTripResultsState({
       from,
       to,
       directRoutes,
       transferPlans,
       selectedDirectIndex: 99,
-      selectedTransferIndex: -2,
+      selectedTransferIndex: 5,
     })
-
-    expect(results.selectedDirectIndex).toBe(1)
-    expect(results.selectedTransferIndex).toBe(0)
-    expect(selectDirectTripResult(results, -5).selectedDirectIndex).toBe(0)
-    expect(selectTransferTripResult(results, 9).selectedTransferIndex).toBe(0)
-    expect(hasTripResultsState(results)).toBe(true)
-    expect(hasTripResultsState(createTripResultsState({
+    const transferResults = createTripResultsState({
+      from,
+      to,
+      directRoutes: [],
+      transferPlans,
+      selectedTransferIndex: 8,
+    })
+    const emptyResults = createTripResultsState({
       from,
       to,
       directRoutes: [],
       transferPlans: [],
-    }))).toBe(false)
+    })
+
+    expect(directResults).toMatchObject({
+      resultKind: 'direct',
+      selectedDirectIndex: 1,
+      selectedTransferIndex: 0,
+      transferPlans: [],
+    })
+    expect(transferResults).toMatchObject({
+      resultKind: 'transfer',
+      selectedDirectIndex: 0,
+      selectedTransferIndex: 0,
+      directRoutes: [],
+    })
+    expect(emptyResults).toMatchObject({
+      resultKind: 'empty',
+      selectedDirectIndex: 0,
+      selectedTransferIndex: 0,
+      directRoutes: [],
+      transferPlans: [],
+    })
+    expect(selectDirectTripResult(directResults, -5).selectedDirectIndex).toBe(0)
+    expect(selectTransferTripResult(transferResults, 9).selectedTransferIndex).toBe(0)
+    expect(hasTripResultsState(directResults)).toBe(true)
+    expect(hasTripResultsState(transferResults)).toBe(true)
+    expect(hasTripResultsState(emptyResults)).toBe(false)
     expect(hasTripResultsState(idleTripState())).toBe(false)
   })
 
