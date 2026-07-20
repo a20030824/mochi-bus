@@ -104,6 +104,30 @@ describe('trip plan loader', () => {
     expect(harness.options.loadTransfer).not.toHaveBeenCalled()
   })
 
+  it('keeps departure-based schedule times behind reliable realtime arrivals', async () => {
+    const scheduleDeparture = directRoute('schedule', 2)
+    const realtimeArrival = directRoute('realtime', 8)
+    const harness = createHarness({
+      loadDirect: vi.fn(async () => [scheduleDeparture, realtimeArrival]),
+      loadJourneyEta: vi.fn(async () => ({
+        estimates: [
+          { ...eta('direct:0', 1, 'schedule'), departureBased: true },
+          eta('direct:1', 6, 'realtime'),
+        ],
+      })),
+    })
+
+    const result = await harness.loader.load(request)
+
+    expect(result).toMatchObject({
+      kind: 'direct',
+      routes: [
+        { routeName: 'realtime', etaMinutes: 6, etaSource: 'realtime' },
+        { routeName: 'schedule', etaMinutes: 1, etaSource: 'schedule', etaDepartureBased: true },
+      ],
+    })
+  })
+
   it('falls back to transfer plans and enriches both legs with ETA and connection estimates', async () => {
     const plan = transferPlan('307', '605')
     const harness = createHarness({
