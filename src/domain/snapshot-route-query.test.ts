@@ -5,10 +5,17 @@ import {
   type SnapshotRouteSelectionVariant,
 } from './snapshot-route-selection'
 
-function selection(
+type SelectionOptions = {
+  routeUid?: string
+  subRouteUid?: string
+  omitSubRouteUid?: boolean
+}
+
+function selection({
   routeUid = 'SNAPSHOT-ROUTE',
-  subRouteUid: string | undefined = 'SNAPSHOT-SUBROUTE',
-): SnapshotRouteSelection<SnapshotRouteSelectionVariant> {
+  subRouteUid = 'SNAPSHOT-SUBROUTE',
+  omitSubRouteUid = false,
+}: SelectionOptions = {}): SnapshotRouteSelection<SnapshotRouteSelectionVariant> {
   const selectedStop = {
     type: 'Feature' as const,
     properties: {
@@ -24,7 +31,7 @@ function selection(
   return {
     variant: {
       routeUid,
-      subRouteUid,
+      subRouteUid: omitSubRouteUid ? undefined : subRouteUid,
       direction: 0,
       stops: { features: [selectedStop] },
     },
@@ -63,14 +70,17 @@ describe('buildResolvedSnapshotRouteQuery', () => {
       ...baseQuery,
       routeUid: 'EXPLICIT-ROUTE',
       subRouteUid: 'EXPLICIT-SUBROUTE',
-    }, selection('OTHER-ROUTE', 'OTHER-SUBROUTE'))).toMatchObject({
+    }, selection({
+      routeUid: 'OTHER-ROUTE',
+      subRouteUid: 'OTHER-SUBROUTE',
+    }))).toMatchObject({
       routeUid: 'EXPLICIT-ROUTE',
       subRouteUid: 'EXPLICIT-SUBROUTE',
     })
   })
 
   it('keeps SubRouteUID absent when neither the query nor snapshot provides one', () => {
-    expect(buildResolvedSnapshotRouteQuery(baseQuery, selection('SNAPSHOT-ROUTE', undefined))).toMatchObject({
+    expect(buildResolvedSnapshotRouteQuery(baseQuery, selection({ omitSubRouteUid: true }))).toMatchObject({
       routeUid: 'SNAPSHOT-ROUTE',
       subRouteUid: undefined,
     })
