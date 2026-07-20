@@ -37,3 +37,4 @@ jobs:
           git add -A
           git commit --amend --no-edit
           git push origin HEAD:agent/tdx-body-singleflight
+# trigger: sync-main-v1
