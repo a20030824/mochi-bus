@@ -183,3 +183,4 @@ index 9c8edda7..8ca18442 100644
    it('uses at most one request per City and InterCity scope', async () => {
      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
        const url = requestUrl(input)
+
