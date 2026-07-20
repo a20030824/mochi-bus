@@ -99,6 +99,14 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
   let selectedVehiclePlate: string | null = null
   let clearingVehicleMarkers = false
   const vehicleHoverCapable = window.matchMedia('(hover: hover)').matches
+  const vehiclePopup = L.popup({
+    className: 'vehicle-popup',
+    closeButton: false,
+    offset: [0, -8],
+  })
+  vehiclePopup.on('remove', () => {
+    if (!clearingVehicleMarkers) selectedVehiclePlate = null
+  })
 
   function createStopMarker(
     position: L.LatLngExpression,
@@ -129,7 +137,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
     const selectedPlate = preservePopupSelection ? selectedVehiclePlate : null
     clearingVehicleMarkers = true
     try {
-      options.map.closePopup()
+      vehiclePopup.remove()
       options.vehicleLayer.clearLayers()
     } finally {
       clearingVehicleMarkers = false
@@ -342,23 +350,22 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
     return { available: true }
   }
 
+  function openVehiclePopup(marker: L.Marker, plate: string | null, content: string): void {
+    vehiclePopup
+      .setLatLng(marker.getLatLng())
+      .setContent(tooltipText(content))
+      .openOn(options.map)
+    selectedVehiclePlate = plate
+  }
+
   function bindVehicleInformation(marker: L.Marker, vehicle: VehiclePosition, content: string): L.Marker {
     marker.on('add', () => marker.getElement()?.setAttribute('aria-label', content))
     if (vehicleHoverCapable) return options.bindHoverTooltip(marker, content)
 
     const plate = vehicle.plate?.trim() || null
-    marker.bindPopup(tooltipText(content), {
-      className: 'vehicle-popup',
-      closeButton: false,
-      offset: [0, -8],
-    })
-    marker.on('popupopen', () => {
-      selectedVehiclePlate = plate
-    })
-    marker.on('popupclose', () => {
-      if (!clearingVehicleMarkers && plate && selectedVehiclePlate === plate) {
-        selectedVehiclePlate = null
-      }
+    marker.on('click', (event) => {
+      L.DomEvent.stopPropagation(event)
+      openVehiclePopup(marker, plate, content)
     })
     return marker
   }
@@ -366,7 +373,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
   function renderVehicles(vehicles: VehiclePosition[]): void {
     const restorePlate = selectedVehiclePlate
     clearVehicleLayer(true)
-    let restoreMarker: L.Marker | null = null
+    let restoreVehicle: { marker: L.Marker; content: string } | null = null
 
     vehicles.forEach((vehicle) => {
       const azimuth = normalizedVehicleAzimuth(vehicle.azimuth)
@@ -381,15 +388,17 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
         }),
       })
       bindVehicleInformation(marker, vehicle, content).addTo(options.vehicleLayer)
-      if (restorePlate && vehicle.plate?.trim() === restorePlate) restoreMarker = marker
+      if (restorePlate && vehicle.plate?.trim() === restorePlate) restoreVehicle = { marker, content }
     })
 
     if (!vehicleHoverCapable && restorePlate) {
-      if (!restoreMarker) {
+      if (!restoreVehicle) {
         selectedVehiclePlate = null
       } else {
         queueMicrotask(() => {
-          if (options.map.hasLayer(restoreMarker!)) restoreMarker!.openPopup()
+          if (options.map.hasLayer(restoreVehicle!.marker)) {
+            openVehiclePopup(restoreVehicle!.marker, restorePlate, restoreVehicle!.content)
+          }
         })
       }
     }
