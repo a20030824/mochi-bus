@@ -24,12 +24,10 @@ function createIntervalClock() {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  let reject!: (error: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+  const promise = new Promise<T>((resolvePromise) => {
     resolve = resolvePromise
-    reject = rejectPromise
   })
-  return { promise, resolve, reject }
+  return { promise, resolve }
 }
 
 async function flush() {
@@ -96,6 +94,41 @@ describe('createVehicleRefreshController', () => {
     expect(onResponse).toHaveBeenCalledWith('new')
 
     first.resolve('old')
+    await flush()
+    expect(onResponse).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces the active route session, timer and request as one operation', async () => {
+    const clock = createIntervalClock()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    const signals: AbortSignal[] = []
+    const onResponse = vi.fn()
+    const onStop = vi.fn()
+    const controller = createVehicleRefreshController({
+      load: vi.fn((_city: string, route: string, signal: AbortSignal) => {
+        signals.push(signal)
+        return route === '307' ? first.promise : second.promise
+      }),
+      isActive: () => true,
+      onResponse,
+      onError: vi.fn(),
+      onStop,
+      setInterval: clock.setInterval,
+      clearInterval: clock.clearInterval,
+    })
+
+    controller.start({ cityCode: 'Taipei', route: '307' })
+    controller.start({ cityCode: 'NewTaipei', route: '299' })
+    expect(signals[0]?.aborted).toBe(true)
+    expect(clock.size()).toBe(1)
+    expect(onStop).toHaveBeenCalledTimes(2)
+
+    second.resolve('new route')
+    await flush()
+    expect(onResponse).toHaveBeenCalledWith('new route')
+
+    first.resolve('old route')
     await flush()
     expect(onResponse).toHaveBeenCalledTimes(1)
   })
