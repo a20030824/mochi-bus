@@ -29,6 +29,7 @@ describe('parseRouteEtaResponse', () => {
     }).eta).toEqual({ kind: 'unavailable', warning: 'tdx-rate-limit' })
   })
 
+  // Malformed responses are deterministic client invariants, not transient request failures.
   it.each([
     null,
     { ...valid, schemaVersion: 2 },
