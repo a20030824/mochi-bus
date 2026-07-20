@@ -8,7 +8,7 @@ import {
   type BusQuery,
 } from '../domain/bus-query'
 import { embedRoutePageIdentity } from '../domain/route-page-identity'
-import { getRoutePageDetail } from '../domain/route-page-detail'
+import { buildRouteDetailWithoutEta, getRoutePageDetail } from '../domain/route-page-detail'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
@@ -139,22 +139,32 @@ async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQue
     stopUid: selectedStop.properties.stopUid,
     stopName: selectedStop.properties.stopName,
   }
-  const detail = {
+  const detail = buildSnapshotRouteDetail(variant, query.stopUid)
+  return { resolved, detail }
+}
+
+type SnapshotRouteVariant = Awaited<ReturnType<typeof getSnapshotRouteVariants>>[number]
+
+export function buildSnapshotRouteDetail(
+  variant: SnapshotRouteVariant,
+  selectedStopUid: string,
+) {
+  const stops = [...variant.stops.features]
+    .sort((a, b) => a.properties.sequence - b.properties.sequence)
+    .map((stop) => ({
+      stopUid: stop.properties.stopUid,
+      stopName: stop.properties.stopName,
+      sequence: stop.properties.sequence,
+    }))
+
+  return buildRouteDetailWithoutEta({
     routeName: variant.routeName,
     direction: variant.direction,
+    stopUid: selectedStopUid,
+  }, {
     label: variant.label,
-    stops: [...variant.stops.features]
-      .sort((a, b) => a.properties.sequence - b.properties.sequence)
-      .map((stop) => ({
-        stopUid: stop.properties.stopUid,
-        stopName: stop.properties.stopName,
-        sequence: stop.properties.sequence,
-        selected: stop.properties.stopUid === query.stopUid,
-        etaLabel: stop.properties.stopUid === query.stopUid ? '僅站序' : null,
-        etaTone: 'muted' as const,
-      })),
-  }
-  return { resolved, detail }
+    stops,
+  })
 }
 
 bus.get('/api/v1/eta', async (c) => {
