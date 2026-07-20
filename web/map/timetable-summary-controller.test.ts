@@ -90,6 +90,32 @@ describe('createTimetableSummaryController', () => {
     expect(onAvailable).toHaveBeenCalledTimes(1)
   })
 
+  it('ignores a stale route failure after a newer summary starts', async () => {
+    const first = deferred<{ available: boolean }>()
+    const second = deferred<{ available: boolean }>()
+    const onAvailable = vi.fn()
+    const onError = vi.fn()
+    const controller = createTimetableSummaryController({
+      load: vi.fn((_city: string, variant: string) => variant === '307' ? first.promise : second.promise),
+      isTargetActive: () => true,
+      isAvailable: (response) => response.available,
+      onAvailable,
+      onUnavailable: vi.fn(),
+      onError,
+    })
+
+    controller.start({ cityCode: 'Taipei', variant: '307', target: 'old' })
+    controller.start({ cityCode: 'NewTaipei', variant: '299', target: 'new' })
+
+    second.resolve({ available: true })
+    await flush()
+    first.reject(new Error('stale failure'))
+    await flush()
+
+    expect(onAvailable).toHaveBeenCalledTimes(1)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
   it('stops the active request and discards settlement', async () => {
     const request = deferred<{ available: boolean }>()
     let signal: AbortSignal | undefined
