@@ -1,24 +1,46 @@
-name: Export Trip controller workspace
+name: Apply Trip controller extraction
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  export:
+  apply:
     if: github.head_ref == 'agent/extract-trip-controller'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.head_ref }}
-      - uses: actions/upload-artifact@v4
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
         with:
-          name: trip-controller-workspace
-          include-hidden-files: true
-          path: |
-            .
-            !.git
+          node-version: 22
+          cache: npm
+      - name: Apply reviewed main integration patch
+        run: |
+          cat scripts/trip-controller-main.patch.part0{0,1,2,3,4} > /tmp/trip-controller-main.patch
+          git apply --check /tmp/trip-controller-main.patch
+          git apply /tmp/trip-controller-main.patch
+      - run: npm ci
+      - name: Run focused Trip tests
+        run: npx vitest run web/map/trip-controller.test.ts web/map/trip-plan-loader.test.ts web/map/trip-runtime-store.test.ts web/map/trip-state.test.ts web/map/trip-results-snapshot.test.ts
+      - run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run desktop and touch regressions
+        run: npm run test:e2e
+      - run: git diff --check
+      - name: Commit clean product diff
+        run: |
+          rm .github/workflows/export-trip-controller-workspace.yml
+          rm scripts/trip-controller-payload.part00
+          rm scripts/trip-controller-main.patch.part0{0,1,2,3,4}
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "refactor(map): extract Trip controller"
+          git push origin HEAD:${{ github.head_ref }}
