@@ -7,6 +7,7 @@ import {
   toBusSearchParams,
   type BusQuery,
 } from '../domain/bus-query'
+import { embedRoutePageIdentity } from '../domain/route-page-identity'
 import { getRoutePageDetail } from '../domain/route-page-detail'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
@@ -100,11 +101,17 @@ bus.get('/route', async (c) => {
     const env = tdxEnv(c)
     const resolved = await resolveBusQuery(env, query)
     const { detail } = await getRoutePageDetail(env, resolved)
-    return c.html(renderRoutePage(resolved, detail, c.req.url), 200, pageHeaders)
+    return c.html(embedRoutePageIdentity(renderRoutePage(resolved, detail, c.req.url), detail), 200, pageHeaders)
   } catch (error) {
     try {
       const fallback = await getSnapshotRoutePage(c.env, query)
-      if (fallback) return c.html(renderRoutePage(fallback.resolved, fallback.detail, c.req.url), 200, pageHeaders)
+      if (fallback) {
+        return c.html(
+          embedRoutePageIdentity(renderRoutePage(fallback.resolved, fallback.detail, c.req.url), fallback.detail),
+          200,
+          pageHeaders,
+        )
+      }
     } catch (fallbackError) {
       console.error('route_snapshot_fallback_failed', fallbackError)
     }
