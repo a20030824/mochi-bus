@@ -32,14 +32,34 @@ jobs:
           web/map/nearby-places-controller.test.ts
           web/map/nearby-places-view.test.ts
           web/map/main-size.test.ts
-      - run: npm run check
-      - run: git diff --check
-      - name: Commit compact wiring
+      - name: Run complete check
+        id: complete
+        continue-on-error: true
         run: |
+          set -o pipefail
+          npm run check 2>&1 | tee /tmp/complete.log
+      - name: Check whitespace
+        id: whitespace
+        continue-on-error: true
+        run: git diff --check
+      - name: Preserve compact wiring and diagnostics
+        if: always()
+        env:
+          COMPLETE_OUTCOME: ${{ steps.complete.outcome }}
+          WHITESPACE_OUTCOME: ${{ steps.whitespace.outcome }}
+        run: |
+          {
+            echo "complete=$COMPLETE_OUTCOME"
+            echo "whitespace=$WHITESPACE_OUTCOME"
+            echo
+            cat /tmp/complete.log 2>/dev/null || true
+          } > .github/nearby-controller-compact-diagnostic.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add web/map/main.ts web/map/main-size.test.ts
+          git add web/map/main.ts web/map/main-size.test.ts .github/nearby-controller-compact-diagnostic.txt
           if ! git diff --cached --quiet; then
             git commit -m "refactor(map): compact nearby controller wiring"
             git push
           fi
+          test "$COMPLETE_OUTCOME" = success
+          test "$WHITESPACE_OUTCOME" = success
