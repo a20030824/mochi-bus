@@ -37,3 +37,4 @@ jobs:
           git add src/lib/tdx.ts src/lib/tdx-resolution.test.ts .github
           git commit -m "fix(tdx): observe response size limits"
           git push origin HEAD:agent/tdx-body-singleflight
+# trigger: size-observability-v1
