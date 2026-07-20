@@ -92,12 +92,26 @@ jobs:
           npm run build:map >/tmp/build-without-maps.log
           without_total=$(find public/assets -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
           cp /tmp/vite.config.ts vite.config.ts
-          echo "SOURCE_MAP_MEASUREMENT with_total=${with_total} map_bytes=${map_bytes} map_files=${map_files} without_total=${without_total} saved=$((with_total - without_total))"
+          echo "SOURCE_MAP_MEASUREMENT with_total=${with_total} map_bytes=${map_bytes} map_files=${map_files} without_total=${without_total} saved=$((with_total - without_total))" | tee /tmp/source-map-measurement.txt
       - name: Apply cleanup and validate
+        shell: bash
         run: |
-          node scripts/remove-unused-compatibility-surfaces.mjs
-          npm run check
-          git diff --check
+          set -euo pipefail
+          node scripts/remove-unused-compatibility-surfaces.mjs 2>&1 | tee /tmp/cleanup.log
+          npm run check 2>&1 | tee -a /tmp/cleanup.log
+          git diff --check 2>&1 | tee -a /tmp/cleanup.log
+      - name: Upload cleanup diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-cleanup-diagnostics
+          path: |
+            /tmp/source-map-measurement.txt
+            /tmp/cleanup.log
+            /tmp/build-with-maps.log
+            /tmp/build-without-maps.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Push clean product commit
         shell: bash
         run: |
