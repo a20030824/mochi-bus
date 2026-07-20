@@ -1,0 +1,37 @@
+name: Observe A6 durable evidence
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/a6-final-audit-observe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - name: Print compact durable evidence
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tables="$(npx wrangler d1 execute mochi-transit --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('snapshot_watchdog_runs','snapshot_watchdog_city_attempts','snapshot_watchdog_city_results','public_probe_runs','public_probe_city_attempts','public_probe_city_results') ORDER BY name;")"
+          watchdog="$(npx wrangler d1 execute mochi-transit --remote --json --command "SELECT schedule_date, status, COUNT(*) AS cities FROM snapshot_watchdog_city_results WHERE schedule_date=(SELECT MAX(schedule_date) FROM snapshot_watchdog_city_results) GROUP BY schedule_date,status ORDER BY status;")"
+          probe="$(npx wrangler d1 execute mochi-transit --remote --json --command "SELECT probe_date, status, COUNT(*) AS cities FROM public_probe_city_results WHERE probe_date=(SELECT MAX(probe_date) FROM public_probe_city_results) GROUP BY probe_date,status ORDER BY status;")"
+          echo "TABLES=$(echo "$tables" | jq -c '.[0].results')"
+          echo "WATCHDOG=$(echo "$watchdog" | jq -c '.[0].results')"
+          echo "PUBLIC_PROBE=$(echo "$probe" | jq -c '.[0].results')"
+          echo "RELEASE=$(curl --fail --silent --show-error "https://bus.moc96336.com/api/v1/health/release?a6-observe=${GITHUB_RUN_ID}" | jq -c .)"
