@@ -8,19 +8,30 @@ on:
 permissions:
   contents: read
   actions: read
+  checks: read
 
 jobs:
   observe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Show recent repair runs
+      - name: Show failed repair metadata
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl --fail --location --silent --show-error \
-            -H 'Accept: application/vnd.github+json' \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            'https://api.github.com/repos/a20030824/mochi-bus/actions/workflows/a6-watchdog-repair.yml/runs?branch=main&event=push&per_page=5' \
-          | jq -c '{total_count,runs:[.workflow_runs[]|{id,status,conclusion,head_sha,created_at,updated_at,html_url}]}'
+          for run_id in 29714353598 29714337259; do
+            echo "RUN=$run_id"
+            run="$(curl --fail --location --silent --show-error \
+              -H 'Accept: application/vnd.github+json' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/a20030824/mochi-bus/actions/runs/$run_id")"
+            echo "$run" | jq -c '{id,name,path,event,status,conclusion,workflow_id,check_suite_id,head_sha,display_title,run_attempt,created_at,updated_at,jobs_url}'
+            suite_id="$(echo "$run" | jq -r '.check_suite_id')"
+            curl --fail --location --silent --show-error \
+              -H 'Accept: application/vnd.github+json' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/a20030824/mochi-bus/check-suites/$suite_id/check-runs" \
+            | jq -c '{total_count,check_runs:[.check_runs[]|{id,name,status,conclusion,details_url,output}]}'
+          done
