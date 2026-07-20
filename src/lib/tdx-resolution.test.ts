@@ -28,11 +28,26 @@ const options = {
   validate: isTDXRecordArray<{ id: string }>,
 }
 
+function parsedConsoleCalls(calls: readonly (readonly unknown[])[]): Array<Record<string, unknown>> {
+  return calls.flatMap(([value]) => {
+    if (typeof value !== 'string') return []
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? [parsed as Record<string, unknown>]
+        : []
+    } catch {
+      return []
+    }
+  })
+}
+
 describe('TDX logical resolution instrumentation', () => {
   beforeEach(() => {
     resetTDXTestState()
     resetMemoryCacheForTests()
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
   })
 
   afterEach(() => {
@@ -61,6 +76,114 @@ describe('TDX logical resolution instrumentation', () => {
     expect(events[0]).toMatchObject({ resolution: 'upstream', result: 'success', credentialScope: 'byok' })
     expect(events[1]).toMatchObject({ resolution: 'memory', result: 'success', upstreamStatusClass: 'none' })
     expect(JSON.stringify(events)).not.toMatch(/private=query|private-access-token|shared-secret|Authorization|fingerprint|routeUid|placeId|stopUid|plate|latitude|longitude|stack|message/i)
+  })
+
+  it('coalesces concurrent identical data requests and clears the flight afterward', async () => {
+    let releaseResponse: (response: Response) => void = () => undefined
+    const pendingResponse = new Promise<Response>((resolve) => {
+      releaseResponse = resolve
+    })
+    let upstreamRequests = 0
+    const fetchMock = vi.fn(() => {
+      upstreamRequests += 1
+      return upstreamRequests === 1
+        ? pendingResponse
+        : Promise.resolve(new Response(JSON.stringify([{ id: 'shared' }])))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+    const url = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=singleflight-data')
+    const eventSets = [[], [], []] as TelemetryEnvelope[][]
+
+    const requests = eventSets.map((events) => fetchTDXJson(observedEnv(events), url, 0, options))
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    releaseResponse(new Response(JSON.stringify([{ id: 'shared' }])))
+
+    await expect(Promise.all(requests)).resolves.toEqual([
+      [{ id: 'shared' }],
+      [{ id: 'shared' }],
+      [{ id: 'shared' }],
+    ])
+    await expect(fetchTDXJson(observedEnv([]), url, 0, options)).resolves.toEqual([{ id: 'shared' }])
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(eventSets.every((events) => events.length === 1 && events[0]?.resolution === 'upstream')).toBe(true)
+  })
+
+  it('does not coalesce requests with different cache or validation policies', async () => {
+    const responders: Array<(response: Response) => void> = []
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      responders.push(resolve)
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+
+    const ttlUrl = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=singleflight-ttl')
+    const ttlRequests = [
+      fetchTDXJson(observedEnv([]), ttlUrl, 15, options),
+      fetchTDXJson(observedEnv([]), ttlUrl, 30, options),
+    ]
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    responders.splice(0).forEach((resolve) => resolve(new Response(JSON.stringify([{ id: 'ttl' }]))))
+    await expect(Promise.all(ttlRequests)).resolves.toHaveLength(2)
+
+    resetMemoryCacheForTests()
+    const validationUrl = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=singleflight-validation')
+    const validationRequests = [
+      fetchTDXJson(observedEnv([]), validationUrl, 0, options),
+      fetchTDXJson(observedEnv([]), validationUrl, 0, {
+        operation: options.operation,
+        city: options.city,
+      }),
+    ]
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+    responders.splice(0).forEach((resolve) => resolve(new Response(JSON.stringify([{ id: 'validation' }]))))
+    await expect(Promise.all(validationRequests)).resolves.toHaveLength(2)
+  })
+
+  it('coalesces concurrent shared-token requests without mixing data URLs', async () => {
+    let releaseToken: (response: Response) => void = () => undefined
+    const pendingToken = new Promise<Response>((resolve) => {
+      releaseToken = resolve
+    })
+    let tokenRequests = 0
+    let dataRequests = 0
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      if (String(input).includes('/openid-connect/token')) {
+        tokenRequests += 1
+        return pendingToken
+      }
+      dataRequests += 1
+      return Promise.resolve(new Response(JSON.stringify([{ id: String(input) }])))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+
+    const first = fetchTDXJson(
+      observedEnv([], false),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=token-flight-a'),
+      0,
+      options,
+    )
+    const second = fetchTDXJson(
+      observedEnv([], false),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=token-flight-b'),
+      0,
+      options,
+    )
+
+    await vi.waitFor(() => expect(tokenRequests).toBe(1))
+    releaseToken(new Response(JSON.stringify({ access_token: 'shared-token', expires_in: 600 })))
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+
+    expect(tokenRequests).toBe(1)
+    expect(dataRequests).toBe(2)
   })
 
   it('serves an edge hit without making an upstream request', async () => {
@@ -256,6 +379,170 @@ describe('TDX logical resolution instrumentation', () => {
     }
   })
 
+  it('applies a default byte cap when the caller omits one', async () => {
+    let cancelCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCount += 1
+      },
+    }), {
+      headers: { 'Content-Length': String(64 * 1024 * 1024) },
+    })))
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn() },
+    })
+
+    await expect(fetchTDXJson(
+      observedEnv([]),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Shape/City/Taipei/307?private=query'),
+      30,
+      options,
+    )).rejects.toThrow('byte limit')
+
+    expect(cancelCount).toBe(1)
+    const oversized = parsedConsoleCalls(vi.mocked(console.error).mock.calls)
+      .find((entry) => entry.message === 'tdx_response_too_large')
+    expect(oversized).toMatchObject({
+      operation: 'vehicle_positions',
+      resource: 'Shape',
+      credentialScope: 'byok',
+      maxBytes: 8 * 1024 * 1024,
+      declaredBytes: 64 * 1024 * 1024,
+      receivedBytes: null,
+      sizeSource: 'content_length',
+    })
+    expect(JSON.stringify(oversized)).not.toMatch(/private=query|private-access-token|307/)
+  })
+
+  it('observes sampled and near-limit response sizes without logging request identity', async () => {
+    const payload = [{ id: 'x'.repeat(200) }]
+    const body = JSON.stringify(payload)
+    const receivedBytes = new TextEncoder().encode(body).byteLength
+    const fetchMock = vi.fn(async () => new Response(body, {
+      headers: { 'Content-Length': String(receivedBytes) },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+
+    await expect(fetchTDXJson(
+      observedEnv([]),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Route/City/Taipei?private=query'),
+      0,
+      { ...options, maxResponseBytes: receivedBytes * 4 },
+    )).resolves.toEqual(payload)
+
+    const unsampledEnv = observedEnv([])
+    unsampledEnv.TDX_TELEMETRY = {
+      ...unsampledEnv.TDX_TELEMETRY,
+      random: () => 1,
+    }
+    await expect(fetchTDXJson(
+      unsampledEnv,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Route/City/Taipei?private=near-limit'),
+      0,
+      { ...options, maxResponseBytes: Math.ceil(receivedBytes / 0.8) },
+    )).resolves.toEqual(payload)
+
+    const observations = parsedConsoleCalls(vi.mocked(console.info).mock.calls)
+      .filter((entry) => entry.message === 'tdx_response_size_observed')
+    expect(observations).toHaveLength(2)
+    expect(observations[0]).toMatchObject({
+      sampleReason: 'sampled',
+      operation: 'vehicle_positions',
+      resource: 'Route',
+      credentialScope: 'byok',
+      receivedBytes,
+      declaredBytes: receivedBytes,
+      sizeBucket: 'lt_64k',
+      limitUsageBucket: '25_50pct',
+    })
+    expect(observations[1]).toMatchObject({
+      sampleReason: 'near_limit',
+      resource: 'Route',
+      limitUsageBucket: '75_90pct',
+    })
+    expect(JSON.stringify(observations)).not.toMatch(/private=query|near-limit|private-access-token|x{20}/)
+  })
+
+  it('truncates oversized error bodies while preserving warning classification', async () => {
+    const encoder = new TextEncoder()
+    const chunk = encoder.encode(`monthly quota exceeded ${'x'.repeat(40 * 1024)}`)
+    let cancelCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk)
+      },
+      cancel() {
+        cancelCount += 1
+      },
+    }), {
+      status: 403,
+      headers: { 'Content-Length': String(chunk.byteLength) },
+    })))
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn() },
+    })
+    const events: TelemetryEnvelope[] = []
+
+    await expect(fetchTDXJson(
+      observedEnv(events),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=bounded-error'),
+      30,
+      options,
+    )).rejects.toThrow()
+
+    expect(cancelCount).toBe(1)
+    expect(events[0]).toMatchObject({ failureClass: 'quota', upstreamStatusClass: '4xx' })
+    const truncated = parsedConsoleCalls(vi.mocked(console.error).mock.calls)
+      .find((entry) => entry.message === 'tdx_error_body_truncated')
+    expect(truncated).toMatchObject({
+      operation: 'vehicle_positions',
+      resource: 'other',
+      credentialScope: 'byok',
+      status: 403,
+      maxBytes: 32 * 1024,
+      declaredBytes: chunk.byteLength,
+      sizeSource: 'content_length',
+    })
+  })
+
+  it('rejects an oversized successful token response before requesting data', async () => {
+    let cancelCount = 0
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCount += 1
+      },
+    }), {
+      headers: { 'Content-Length': String(64 * 1024) },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn() },
+    })
+
+    await expect(fetchTDXJson(
+      observedEnv([], false),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=oversized-token'),
+      30,
+      options,
+    )).rejects.toThrow('byte limit')
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(cancelCount).toBe(1)
+    const oversized = parsedConsoleCalls(vi.mocked(console.error).mock.calls)
+      .find((entry) => entry.message === 'tdx_response_too_large')
+    expect(oversized).toMatchObject({
+      operation: 'token',
+      resource: 'token',
+      credentialScope: 'shared',
+      maxBytes: 16 * 1024,
+      declaredBytes: 64 * 1024,
+      sizeSource: 'content_length',
+    })
+  })
+
   it('replays stale data when Content-Length exceeds the configured response limit', async () => {
     const events: TelemetryEnvelope[] = []
     const cachePut = vi.fn()
@@ -317,7 +604,7 @@ describe('TDX logical resolution instrumentation', () => {
     expect(cancelCount).toBe(1)
   })
 
-  it('keeps capped and uncapped memory-cache identities separate', async () => {
+  it('keeps different byte-limit memory-cache identities separate', async () => {
     const payload = [{ id: 'x'.repeat(64) }]
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload)))
     vi.stubGlobal('fetch', fetchMock)
