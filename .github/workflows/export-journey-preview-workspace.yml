@@ -1,24 +1,54 @@
-name: Export Journey preview workspace
+name: Apply Journey preview extraction
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  export:
+  apply:
     if: github.head_ref == 'agent/extract-journey-preview-controller'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
-      - uses: actions/upload-artifact@v4
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
         with:
-          name: journey-preview-workspace
-          include-hidden-files: true
-          path: |
-            .
-            !.git
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Apply reviewed main integration patch
+        run: |
+          git apply --check .github/journey-preview-main.patch
+          git apply .github/journey-preview-main.patch
+      - run: npm ci
+      - name: Run focused Journey preview tests
+        run: >-
+          npx vitest run
+          web/map/journey-preview-controller.test.ts
+          web/map/trip-controller.test.ts
+          web/map/main-size.test.ts
+      - run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Test desktop and touch interaction flows
+        run: >-
+          npx playwright test
+          --project=desktop-chromium
+          --project=mobile-touch
+          --reporter=line,html
+      - run: git diff --check
+      - name: Commit clean product diff
+        run: |
+          git checkout -- public worker-configuration.d.ts
+          rm .github/journey-preview-main.patch
+          rm .github/workflows/export-journey-preview-workspace.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m "refactor(map): integrate Journey preview controller"
+          git push origin HEAD:${{ github.head_ref }}
