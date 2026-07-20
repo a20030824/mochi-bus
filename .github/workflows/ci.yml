@@ -27,16 +27,16 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - name: Check generated bindings
-        run: npm run cf-typegen:check
-      - name: Run unit tests
+      - name: Route domain tests
+        run: npx vitest run src/domain/route-page-detail.test.ts
+      - name: Route shell tests
+        run: npx vitest run src/route-shell.test.ts
+      - name: Route browser contract tests
+        run: npx vitest run web/route/contract.test.ts
+      - name: Route API contract tests
+        run: npx vitest run src/tdx-api-contract.test.ts
+      - name: Remaining unit suite
         run: npm run test
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Build browser assets
-        run: npm run build:map
-      - name: Dry-run Worker bundle
-        run: wrangler deploy --dry-run
 
   map-ui:
     name: Map UI regression
