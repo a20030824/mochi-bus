@@ -23,7 +23,20 @@ jobs:
       - run: npm ci
       - run: node scripts/apply-trip-plan-loader.mjs
       - run: npx vitest run web/map/trip-plan-loader.test.ts web/map/trip-runtime-store.test.ts web/map/trip-state.test.ts
-      - run: npx tsc --noEmit
+      - name: Capture typecheck
+        id: typecheck
+        continue-on-error: true
+        run: npx tsc --noEmit > trip-plan-loader-typecheck.log 2>&1
+      - uses: actions/upload-artifact@v4
+        if: steps.typecheck.outcome == 'failure'
+        with:
+          name: trip-plan-loader-typecheck
+          path: trip-plan-loader-typecheck.log
+      - name: Require typecheck
+        if: steps.typecheck.outcome == 'failure'
+        run: |
+          cat trip-plan-loader-typecheck.log
+          exit 1
       - run: npm run check
       - run: git diff --check
       - name: Commit clean loader extraction
