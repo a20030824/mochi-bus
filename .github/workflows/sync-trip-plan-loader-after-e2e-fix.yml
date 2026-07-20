@@ -1,0 +1,37 @@
+name: Sync Trip loader after E2E fixes
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.head_ref == 'agent/extract-trip-plan-loader'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Merge latest main
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git merge origin/main --no-edit
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run web/map/trip-plan-loader.test.ts web/map/trip-runtime-store.test.ts web/map/trip-state.test.ts
+      - run: npm run check
+      - name: Remove temporary workflow
+        run: |
+          rm .github/workflows/sync-trip-plan-loader-after-e2e-fix.yml
+          git add .github/workflows/sync-trip-plan-loader-after-e2e-fix.yml
+          git commit -m "chore: finish Trip loader sync"
+          git push origin HEAD:${{ github.head_ref }}
