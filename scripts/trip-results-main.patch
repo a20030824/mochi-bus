@@ -1,0 +1,256 @@
+--- a/web/map/main.ts
++++ b/web/map/main.ts
+@@ -6,9 +6,9 @@
+ import { createTripController, type TripPlanContext, type TripResultsPresentation } from './trip-controller'
+ import { createTripPlanLoader, type TripPlanLoadPhase } from './trip-plan-loader'
+ import { createTripResultsSnapshot, parseTripResultsSnapshot } from './trip-results-snapshot'
++import { createTripResultsView } from './trip-results-view'
+ import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
+ import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
+-import { describeTransferEstimate } from '../../src/domain/map/transfer-estimate'
+ import {
+   isFavoriteDirection,
+   readBoards,
+@@ -16,7 +16,7 @@
+   toggleFavoriteDirection,
+   type FavoriteBus,
+ } from '../boards/store'
+-import { formatJourneyWait, splitEtaLabel } from '../../src/domain/eta-presentation'
++import { splitEtaLabel } from '../../src/domain/eta-presentation'
+ import { tdxWarningMessages } from '../../src/domain/tdx-warning'
+ import { isTdxTokenRejectedError } from '../tdx/api-client'
+ import { splitRouteDisplayName } from '../lib/route-display'
+@@ -212,6 +212,21 @@
+   onResults: presentTripResults,
+   onPlanError: renderTripPlanError,
+ })
++const tripResultsView = createTripResultsView({
++  renderDrawer,
++  createBackButton: drawerBack,
++  createHeading: heading,
++  createDegradedNotice: degradedNotice,
++  createTripModeButton: tripModeButton,
++  createMatchedControls: tripMatchedControls,
++  routeColor,
++  transferLegColors,
++  onResumeDestination: () => tripController.resume('to'),
++  onRetry: () => void tripController.loadPlan(),
++  onSelectDirect: (index) => void tripController.selectDirect(index),
++  onSelectTransfer: (index) => void tripController.selectTransfer(index),
++  onOpenRoute: openTripRoute,
++})
+ // 全路網是可疊加的輔助圖層，不是 drawer 主視圖。它不能取消路線、站牌或
+ // 行程查詢；關閉圖層時則只作廢自己的載入。
+ const networkRequests = createNavRequestCoordinator()
+@@ -1504,200 +1519,25 @@
+ async function presentTripResults({ fitCamera }: TripResultsPresentation): Promise<boolean> {
+   const results = trip.results()
+   if (!results) return false
+-  if (results.resultKind === 'direct') {
+-    renderDirectRoutes(results.directRoutes)
+-    return previewDirectRoutes(results.directRoutes, { fitCamera })
+-  }
+-  renderTransferPlans(results.transferPlans)
+-  return previewTransferPlans(results.transferPlans, { fitCamera })
++  interactionMode = 'trip-results'
++  writeTripResultsUrl()
++  tripResultsView.render(results)
++  clearStatus()
++  return results.resultKind === 'direct'
++    ? previewDirectRoutes(results.directRoutes, { fitCamera })
++    : previewTransferPlans(results.transferPlans, { fitCamera })
+ }
+ 
+ function renderTripPlanError(error: unknown, context: TripPlanContext) {
+   const message = error instanceof Error && error.message ? error.message : '直達路線查詢失敗'
+-  const credentialRejected = isTdxTokenRejectedError(error)
+   setStatus(message, true)
+-  renderDrawer({
+-    key: `trip-results:${context.from.placeId}:${context.to.placeId}`,
+-    mode: 'compact',
+-    content: [
+-      drawerBack('重新選目的地', () => tripController.resume('to')),
+-      heading('查詢失敗了', `${context.from.name} → ${context.to.name} 暫時查不到，稍等一下再試。`),
+-      degradedNotice(message, () => void tripController.loadPlan(), credentialRejected),
+-    ],
+-  })
+-}
+-
+-function renderDirectRoutes(directRoutes: DirectRoute[]) {
+-  if (!trip.from || !trip.to) return
+-  interactionMode = 'trip-results'
+-  writeTripResultsUrl()
+-  const selectedIndex = trip.selectedDirectIndex
+-  const list = document.createElement('div')
+-  list.className = 'direct-route-list'
+-  if (!directRoutes.length) list.appendChild(paragraph('目前沒有找到直達車。'))
+-  directRoutes.forEach((route, index) => {
+-    const color = routeColor(route.routeName)
+-    const selected = index === selectedIndex
+-    const card = document.createElement('section')
+-    card.className = 'direct-route-card'
+-    card.classList.toggle('selected', selected)
+-    card.style.setProperty('--route-color', color)
+-    const button = document.createElement('button')
+-    button.type = 'button'
+-    button.className = 'direct-route-select'
+-    button.setAttribute('aria-pressed', String(selected))
+-    button.setAttribute('aria-label', `${selected ? '目前預覽：' : '選擇：'}${route.routeName} ${route.label}`)
+-    const top = document.createElement('span')
+-    const name = document.createElement('strong')
+-    name.textContent = route.routeName
+-    const count = document.createElement('span')
+-    const wait = formatJourneyWait(route.etaMinutes, route.etaSource, new Date(), {
+-      departureBased: route.etaDepartureBased,
+-      headwayMinutes: route.etaHeadwayMinutes,
+-      nextDay: route.etaNextDay,
+-    })
+-    count.textContent = wait ? `${wait} · ${route.stopCount} 站` : `${route.stopCount} 站`
+-    top.appendChild(name)
+-    top.appendChild(count)
+-    const detail = document.createElement('small')
+-    detail.textContent = route.label
+-    button.appendChild(top)
+-    button.appendChild(detail)
+-    button.addEventListener('click', () => void tripController.selectDirect(index))
+-    const detailButton = document.createElement('button')
+-    detailButton.type = 'button'
+-    detailButton.className = 'direct-route-detail'
+-    detailButton.textContent = '完整路線 ›'
+-    detailButton.setAttribute('aria-label', `查看 ${route.routeName} 完整路線`)
+-    detailButton.addEventListener('click', (event) => {
+-      event.stopPropagation()
+-      openTripRoute(route.routeName, route.variantKey, color)
+-    })
+-    card.appendChild(button)
+-    card.appendChild(detailButton)
+-    list.appendChild(card)
+-  })
+-  const back = drawerBack('重新選目的地', () => tripController.resume('to'))
+-  const reset = tripModeButton()
+-  const matchedControls = tripMatchedControls(true)
+-  renderDrawer({
+-    key: `trip-results:${trip.from.placeId}:${trip.to.placeId}`,
+-    mode: 'results',
+-    header: [
+-      back,
+-      heading(`${trip.from.name} → ${trip.to.name}`, directRoutes.length ? `${directRoutes.length} 個直達方向，淡色線為候選路線。` : '沒有直達路線'),
+-      ...(matchedControls ? [matchedControls] : []),
+-    ],
+-    content: [
+-      ...(trip.warning ? [degradedNotice(tdxWarningMessages[trip.warning], () => void tripController.loadPlan())] : []),
+-      list,
+-    ],
+-    footer: [reset],
++  tripResultsView.renderError({
++    context,
++    message,
++    credentialRecovery: isTdxTokenRejectedError(error),
+   })
+-  clearStatus()
+ }
+ 
+-function renderTransferPlans(plans: TransferPlan[]) {
+-  if (!trip.from || !trip.to) return
+-  interactionMode = 'trip-results'
+-  writeTripResultsUrl()
+-  const list = document.createElement('div')
+-  list.className = 'transfer-plan-list'
+-  if (!plans.length) list.appendChild(paragraph('目前沒有找到合理的一次轉乘方案。'))
+-  plans.forEach((plan, index) => {
+-    const card = document.createElement('section')
+-    card.className = 'transfer-plan'
+-    card.classList.toggle('selected', index === trip.selectedTransferIndex)
+-    card.tabIndex = 0
+-    card.addEventListener('click', () => void tripController.selectTransfer(index))
+-    card.addEventListener('keydown', (event) => {
+-      if (event.target !== event.currentTarget) return
+-      if (event.key === 'Enter' || event.key === ' ') {
+-        event.preventDefault()
+-        card.click()
+-      }
+-    })
+-    const title = document.createElement('div')
+-    title.className = 'transfer-title'
+-    const transfer = document.createElement('strong')
+-    transfer.textContent = '一次轉乘'
+-    const count = document.createElement('span')
+-    const estimatePresentation = plan.transferEstimate
+-      ? describeTransferEstimate(plan.transferEstimate)
+-      : null
+-    count.textContent = estimatePresentation?.label ?? `共 ${plan.totalStops} 站`
+-    title.appendChild(transfer)
+-    title.appendChild(count)
+-    if (plan.transferEstimate?.connectionStatus === 'tight' || plan.transferEstimate?.connectionStatus === 'missed') {
+-      card.classList.add('connection-tight')
+-    }
+-    card.appendChild(title)
+-    const assumption = document.createElement('small')
+-    assumption.className = 'transfer-assumption'
+-    assumption.textContent = estimatePresentation?.note ?? '未取得足夠資料，請以現場資訊為準'
+-    card.appendChild(assumption)
+-    const legColors = transferLegColors(plan.first.routeName, plan.second.routeName)
+-    ;[plan.first, plan.second].forEach((leg, legIndex) => {
+-      const color = legColors[legIndex]
+-      const button = document.createElement('button')
+-      button.className = 'transfer-leg-button'
+-      button.style.setProperty('--route-color', color)
+-      const order = document.createElement('span')
+-      order.textContent = legIndex === 0 ? '先搭' : '再搭'
+-      const routeName = document.createElement('strong')
+-      routeName.textContent = leg.routeName
+-      const stops = document.createElement('small')
+-      const eta = legIndex === 0 ? plan.firstEtaMinutes : plan.secondEtaMinutes
+-      const etaSource = legIndex === 0 ? plan.firstEtaSource : plan.secondEtaSource
+-      const wait = formatJourneyWait(eta, etaSource, new Date(), {
+-        departureBased: legIndex === 0 ? plan.firstEtaDepartureBased : plan.secondEtaDepartureBased,
+-        headwayMinutes: legIndex === 0 ? plan.firstEtaHeadwayMinutes : plan.secondEtaHeadwayMinutes,
+-        nextDay: legIndex === 0 ? plan.firstEtaNextDay : plan.secondEtaNextDay,
+-      })
+-      stops.textContent = `${wait ? `${wait} · ` : ''}${leg.stopCount} 站 · ${leg.label}`
+-      button.appendChild(order)
+-      button.appendChild(routeName)
+-      button.appendChild(stops)
+-      button.addEventListener('click', (event) => {
+-        event.stopPropagation()
+-        openTripRoute(leg.routeName, leg.variantKey, color)
+-      })
+-      card.appendChild(button)
+-      if (legIndex === 0) {
+-        const connection = document.createElement('div')
+-        connection.className = 'transfer-connection'
+-        const icon = document.createElement('span')
+-        icon.textContent = '↳'
+-        icon.setAttribute('aria-hidden', 'true')
+-        const copy = document.createElement('strong')
+-        copy.textContent = `於 ${plan.transferName} 轉乘`
+-        const walk = document.createElement('small')
+-        walk.textContent = plan.transferWalkMeters ? `步行約 ${plan.transferWalkMeters} m` : '同站轉乘'
+-        connection.appendChild(icon)
+-        connection.appendChild(copy)
+-        connection.appendChild(walk)
+-        card.appendChild(connection)
+-      }
+-    })
+-    list.appendChild(card)
+-  })
+-  const matchedControls = tripMatchedControls(true)
+-  renderDrawer({
+-    key: `trip-results:${trip.from.placeId}:${trip.to.placeId}`,
+-    mode: 'results',
+-    header: [
+-      drawerBack('重新選目的地', () => tripController.resume('to')),
+-      heading(`${trip.from.name} → ${trip.to.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
+-      ...(matchedControls ? [matchedControls] : []),
+-    ],
+-    content: [
+-      ...(trip.warning ? [degradedNotice(tdxWarningMessages[trip.warning], () => void tripController.loadPlan())] : []),
+-      list,
+-    ],
+-    footer: [tripModeButton()],
+-  })
+-  clearStatus()
+-}
+ async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {
+   if (!activeCity) return false
+   const requestId = ++previewRequest
