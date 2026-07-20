@@ -20,28 +20,28 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Assemble and inspect integration patch
-        run: |
-          cat scripts/trip-controller-main.patch.part0{0,1,2,3,4} > /tmp/trip-controller-main.patch
-          {
-            wc -c /tmp/trip-controller-main.patch
-            sha256sum /tmp/trip-controller-main.patch
-            git apply --check --verbose /tmp/trip-controller-main.patch
-          } > /tmp/trip-controller-patch-diagnostics.txt 2>&1 || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: trip-controller-patch-diagnostics
-          path: |
-            /tmp/trip-controller-main.patch
-            /tmp/trip-controller-patch-diagnostics.txt
       - name: Apply reviewed main integration patch
         run: |
+          cat scripts/trip-controller-main.patch.part0{0,1,2,3,4} > /tmp/trip-controller-main.patch
           git apply --check /tmp/trip-controller-main.patch
           git apply /tmp/trip-controller-main.patch
       - run: npm ci
       - name: Run focused Trip tests
         run: npx vitest run web/map/trip-controller.test.ts web/map/trip-plan-loader.test.ts web/map/trip-runtime-store.test.ts web/map/trip-state.test.ts web/map/trip-results-snapshot.test.ts
-      - run: npm run check
+      - name: Capture complete project check
+        run: |
+          set +e
+          npm run check > /tmp/trip-controller-check.log 2>&1
+          echo $? > /tmp/trip-controller-check.status
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trip-controller-check
+          path: |
+            /tmp/trip-controller-check.log
+            /tmp/trip-controller-check.status
+      - name: Require complete project check
+        run: test "$(cat /tmp/trip-controller-check.status)" = "0"
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Run desktop and touch regressions
