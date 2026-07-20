@@ -1,0 +1,39 @@
+name: Sync PR 110 with main
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-pr110-main.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.head_ref == 'agent/tdx-body-singleflight'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/tdx-body-singleflight
+          fetch-depth: 0
+      - name: Merge latest main
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git merge --no-edit origin/main
+      - name: Install dependencies
+        run: npm ci
+      - name: Run focused tests
+        run: npm test -- src/lib/tdx-resolution.test.ts src/lib/tdx.test.ts
+      - name: Run full project check
+        run: npm run check
+      - name: Publish clean merge
+        run: |
+          rm .github/workflows/sync-pr110-main.yml
+          git add -A
+          git commit --amend --no-edit
+          git push origin HEAD:agent/tdx-body-singleflight
