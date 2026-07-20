@@ -1,29 +1,27 @@
 diff --git a/src/lib/tdx.ts b/src/lib/tdx.ts
 --- a/src/lib/tdx.ts
 +++ b/src/lib/tdx.ts
-@@ -45,6 +45,7 @@ export type TDXResolutionOptions<T> = {
+@@ -47,4 +47,5 @@
    validate?: (value: unknown) => value is T
    staleFallback?: (error: TDXServiceError) => Promise<{ data: T; dataAgeMilliseconds?: number } | undefined>
    blockedFailureClass?: TelemetryFailureClass
 +  maxResponseBytes?: number
  }
-@@ -966,6 +967,7 @@ export async function resolveTDXJson<T>(
+@@ -969,5 +970,6 @@
    options: TDXResolutionOptions<T> = {},
  ): Promise<TDXResolvedData<T>> {
    const now = telemetryNow(env)
 +  const maxResponseBytes = normalizedResponseByteLimit(options.maxResponseBytes)
    const credentialScope = env.TDX_USER_ACCESS_TOKEN ? 'byok' as const : 'shared' as const
    const tracker = options.operation ? beginTDXResolutionTelemetry({
-@@ -1048,7 +1050,7 @@ export async function resolveTDXJson<T>(
+@@ -1051,5 +1053,5 @@
    const cached = await cacheMatchFailOpen(edgeCache, cacheKey, 'tdx')
    if (cached) {
      try {
 -      const data = await cached.json() as unknown
 +      const data = await readJsonResponse(cached, maxResponseBytes)
        if (validPayload(data, options.validate)) {
-         const cachedAt = parsedCacheTimestamp(cached.headers.get('X-Mochi-Cached-At'))
-         const typed = data as T
-@@ -1130,13 +1132,24 @@ export async function resolveTDXJson<T>(
+@@ -1133,12 +1135,22 @@
  
      let unvalidated: unknown
      try {
@@ -52,10 +50,7 @@ diff --git a/src/lib/tdx.ts b/src/lib/tdx.ts
 +      }
        return finishFailure(serviceError, true)
      }
-@@ -1162,6 +1175,68 @@ export async function resolveTDXJson<T>(
-   }
- }
- 
+@@ -1164,3 +1176,59 @@
 +class TDXPayloadTooLargeError extends TDXServiceError {
 +  constructor(
 +    readonly maxBytes: number,
@@ -118,10 +113,7 @@ diff --git a/src/lib/tdx.ts b/src/lib/tdx.ts
 diff --git a/src/lib/tdx-resolution.test.ts b/src/lib/tdx-resolution.test.ts
 --- a/src/lib/tdx-resolution.test.ts
 +++ b/src/lib/tdx-resolution.test.ts
-@@ -258,6 +258,83 @@ describe('TDX logical resolution instrumentation', () => {
-     }
-   })
- 
+@@ -261,1 +261,86 @@
 +  it('replays stale data when Content-Length exceeds the configured response limit', async () => {
 +    const events: TelemetryEnvelope[] = []
 +    const cachePut = vi.fn()
@@ -208,23 +200,17 @@ diff --git a/src/lib/tdx-resolution.test.ts b/src/lib/tdx-resolution.test.ts
 +  })
 +
    it('records circuit-open stale replay as degraded and no-fallback as error', async () => {
-     const initialEvents: TelemetryEnvelope[] = []
-     vi.stubGlobal('fetch', vi.fn(async () => new Response('rate limited', { status: 429 })))
 diff --git a/src/infrastructure/tdx/stop-arrivals.ts b/src/infrastructure/tdx/stop-arrivals.ts
 --- a/src/infrastructure/tdx/stop-arrivals.ts
 +++ b/src/infrastructure/tdx/stop-arrivals.ts
-@@ -18,6 +18,7 @@ export type StopArrivalBatch = {
- }
- 
+@@ -20,2 +20,3 @@
  const MAX_STOP_UIDS_PER_BATCH = 12
 +export const STOP_ARRIVAL_MAX_RESPONSE_BYTES = 512 * 1024
  const MAX_STOP_ARRIVAL_RECORDS = 500
- const STOP_ARRIVAL_SELECT = [
-   'RouteUID',
 diff --git a/src/routes/map.ts b/src/routes/map.ts
 --- a/src/routes/map.ts
 +++ b/src/routes/map.ts
-@@ -16,7 +16,11 @@ import {
+@@ -15,6 +15,10 @@
  } from '../domain/map/journey-estimate'
  import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
  import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
@@ -236,13 +222,9 @@ diff --git a/src/routes/map.ts b/src/routes/map.ts
 +  STOP_ARRIVAL_MAX_RESPONSE_BYTES,
 +} from '../infrastructure/tdx/stop-arrivals'
  import {
-   findNearbyStopPlaces,
-   getCityNetwork,
-@@ -545,6 +549,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
+@@ -544,4 +548,5 @@
          const resolved = await resolveTDXJson<BusETAItem[]>(env, batch.url, 15, {
            operation: 'place_arrivals',
            city: telemetryCity(city),
 +          maxResponseBytes: STOP_ARRIVAL_MAX_RESPONSE_BYTES,
            validate: (value): value is BusETAItem[] => isStopArrivalBatchPayload(value, batch.stopUids),
-           blockedFailureClass: rateLimited ? 'rate_limited' : undefined,
-           staleFallback: async () => {
