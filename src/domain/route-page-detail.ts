@@ -16,31 +16,60 @@ export type RouteEtaState =
   | { kind: 'empty' }
   | { kind: 'unavailable'; warning: TDXWarning }
 
-export type RoutePageDetail = {
+export type RouteEtaDetail = {
   detail: RouteDetail
   eta: RouteEtaState
 }
 
-type RoutePageDetailDependencies = {
+export type RouteEtaStop = Pick<
+  RouteDetail['stops'][number],
+  'stopUid' | 'stopName' | 'sequence' | 'etaLabel' | 'etaTone'
+>
+
+export type RouteEtaResponse = {
+  schemaVersion: 1
+  eta: RouteEtaState
+  stops: RouteEtaStop[]
+}
+
+type RouteDetailDependencies = {
   getRouteStopGroups: typeof getRouteStopGroups
   getRouteDetail: typeof getRouteDetail
 }
 
-const defaultDependencies: RoutePageDetailDependencies = {
+type RoutePageDetailDependencies = Pick<RouteDetailDependencies, 'getRouteStopGroups'>
+
+const defaultDependencies: RouteDetailDependencies = {
   getRouteStopGroups,
   getRouteDetail,
 }
 
 /**
- * Resolve static station order first, then add realtime ETA as a fail-open
- * enhancement. This keeps one cold StopOfRoute request and prevents a
- * transient ETA failure from removing an otherwise valid route timeline.
+ * Build the server-rendered Route page from static station order only.
+ * Realtime ETA is deliberately loaded later through the authenticated API so
+ * page navigation never consumes TDX realtime quota and BYOK can take effect.
  */
 export async function getRoutePageDetail(
   env: TDXEnv,
   query: ResolvedBusQuery,
   dependencies: RoutePageDetailDependencies = defaultDependencies,
-): Promise<RoutePageDetail> {
+): Promise<{ detail: RouteDetail }> {
+  const groups = await dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
+  const group = matchingStopGroup(groups, query)
+  if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
+  return { detail: routeDetailWithoutEta(query, group, '更新中') }
+}
+
+/**
+ * Add route-level realtime ETA as a fail-open enhancement for the browser API.
+ * A transient upstream failure still returns a complete, identity-checked set
+ * of station rows instead of turning the API into an error page.
+ */
+export async function getRouteEtaDetail(
+  env: TDXEnv,
+  query: ResolvedBusQuery,
+  dependencies: RouteDetailDependencies = defaultDependencies,
+): Promise<RouteEtaDetail> {
   const groups = await dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
 
   try {
@@ -71,6 +100,20 @@ export async function getRoutePageDetail(
       detail: routeDetailWithoutEta(query, group, unavailableLabel(warning)),
       eta: { kind: 'unavailable', warning },
     }
+  }
+}
+
+export function toRouteEtaResponse(result: RouteEtaDetail): RouteEtaResponse {
+  return {
+    schemaVersion: 1,
+    eta: result.eta,
+    stops: result.detail.stops.map((stop) => ({
+      stopUid: stop.stopUid,
+      stopName: stop.stopName,
+      sequence: stop.sequence,
+      etaLabel: stop.etaLabel,
+      etaTone: stop.etaTone,
+    })),
   }
 }
 
