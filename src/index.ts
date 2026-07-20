@@ -2,9 +2,11 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { applyAppearanceShell } from './appearance-shell'
 import { apiRateLimit } from './rate-limit'
+import { applyRouteShell } from './route-shell'
 import bus from './routes/bus'
 import health from './routes/health'
 import map from './routes/map'
+import routeEta from './routes/route-eta'
 import { cspViolationSummaries, httpsRedirectTarget, securityHeaders } from './security'
 
 type Env = { Bindings: CloudflareBindings }
@@ -20,6 +22,7 @@ app.use('*', async (c, next) => {
 
   await next()
   c.res = applyAppearanceShell(c.res)
+  if (requestUrl.pathname === '/route') c.res = applyRouteShell(c.res)
 
   // Keep route-specific policies when they are stricter than the global defaults.
   for (const [name, value] of Object.entries(headers)) {
@@ -42,6 +45,7 @@ app.post('/api/v1/csp-report', bodyLimit({
 
 app.route('/', health)
 app.route('/', map)
+app.route('/', routeEta)
 app.route('/', bus)
 
 export default app
