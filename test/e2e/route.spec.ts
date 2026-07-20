@@ -2,6 +2,7 @@ import { expect, test } from './fixtures'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE } from '../../src/domain/tdx-api-error'
 
 const routeUrl = '/route?city=Taipei&route=307&routeUid=TPE19108&direction=0&stop=%E6%8D%B7%E9%81%8B%E8%A5%BF%E9%96%80%E7%AB%99&stopUid=TPE213044'
+const routeUrlWithoutStopUid = '/route?city=Taipei&route=307&routeUid=TPE19108&direction=0&stop=%E6%8D%B7%E9%81%8B%E8%A5%BF%E9%96%80%E7%AB%99'
 
 const routeHtml = `<!doctype html><html><body>
 <main class="route-page">
@@ -52,6 +53,15 @@ test.describe('Route progressive ETA', () => {
     expect(apiUrl?.searchParams.get('stopUid')).toBe('TPE213044')
   })
 
+  test('keeps hydrating a legacy shared link without stopUid', async ({ page }) => {
+    await page.route('**/api/v1/route-eta*', (route) => route.fulfill({ json: realtime }))
+
+    await page.goto(routeUrlWithoutStopUid)
+
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('12 分')
+    await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即將進站')
+  })
+
   test('pauses while hidden and resumes only when the previous result is stale', async ({ page }) => {
     let requests = 0
     await page.clock.install()
@@ -93,11 +103,40 @@ test.describe('Route progressive ETA', () => {
     await expect(selectedEta).toHaveText('即將進站')
   })
 
-  test('keeps the station order and exposes personal-token recovery', async ({ page }) => {
-    await page.route('**/api/v1/route-eta*', (route) => route.fulfill({
-      status: 401,
-      json: { code: TDX_ACCESS_TOKEN_REJECTED_CODE, error: 'TDX 授權已失效' },
-    }))
+  test('clears previously live ETA when a later browser request fails', async ({ page }) => {
+    let requests = 0
+    await page.clock.install()
+    await page.route('**/api/v1/route-eta*', (route) => {
+      requests += 1
+      return requests === 1
+        ? route.fulfill({ json: realtime })
+        : route.fulfill({ status: 503, json: { error: '暫時無法讀取' } })
+    })
+
+    await page.goto(routeUrl)
+    const firstEta = page.locator('.route-stop').nth(0).locator('.route-eta')
+    const selectedEta = page.locator('.route-stop.selected .route-eta')
+    await expect(firstEta).toHaveText('12 分')
+    await expect(firstEta).toHaveClass(/live/)
+
+    await page.clock.fastForward(30_000)
+    await expect.poll(() => requests).toBe(2)
+    await expect(firstEta).toHaveText('')
+    await expect(firstEta).toHaveClass(/muted/)
+    await expect(firstEta).not.toHaveClass(/live/)
+    await expect(selectedEta).toHaveText('即時未更新')
+  })
+
+  test('keeps the station order and stops retrying a rejected personal token', async ({ page }) => {
+    let requests = 0
+    await page.clock.install()
+    await page.route('**/api/v1/route-eta*', (route) => {
+      requests += 1
+      return route.fulfill({
+        status: 401,
+        json: { code: TDX_ACCESS_TOKEN_REJECTED_CODE, error: 'TDX 授權已失效' },
+      })
+    })
 
     await page.goto(routeUrl)
 
@@ -105,13 +144,17 @@ test.describe('Route progressive ETA', () => {
     await expect(page.locator('.route-stop')).toHaveCount(2)
     await expect(selectedEta).toHaveText('憑證失效')
     await expect(selectedEta).toHaveClass(/muted/)
+    await page.clock.fastForward(60_000)
+    expect(requests).toBe(1)
   })
 
-  test('rejects mismatched route identities before painting any ETA row', async ({ page }) => {
+  test('rejects a same-name selected stop with the wrong physical identity', async ({ page }) => {
     await page.route('**/api/v1/route-eta*', (route) => route.fulfill({
       json: {
         ...realtime,
-        stops: realtime.stops.map((stop, index) => index === 1 ? { ...stop, stopName: '錯誤站牌' } : stop),
+        stops: realtime.stops.map((stop, index) => index === 1
+          ? { ...stop, stopUid: 'TPE-WRONG' }
+          : stop),
       },
     }))
 

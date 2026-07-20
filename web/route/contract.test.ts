@@ -10,6 +10,12 @@ const valid = {
   ],
 }
 
+const tooManyStops = Array.from({ length: 1_001 }, (_, index) => ({
+  ...valid.stops[0],
+  stopUid: `TPE${index}`,
+  sequence: index,
+}))
+
 describe('parseRouteEtaResponse', () => {
   it('accepts the versioned ordered ETA contract', () => {
     expect(parseRouteEtaResponse(valid)).toEqual(valid)
@@ -27,8 +33,13 @@ describe('parseRouteEtaResponse', () => {
     null,
     { ...valid, schemaVersion: 2 },
     { ...valid, eta: { kind: 'unavailable', warning: 'secret-upstream-error' } },
+    { ...valid, stops: [] },
     { ...valid, stops: [{ ...valid.stops[0], etaTone: 'unknown' }] },
     { ...valid, stops: [{ ...valid.stops[0], etaLabel: 12 }] },
+    { ...valid, stops: [{ ...valid.stops[0], etaLabel: 'x'.repeat(65) }] },
+    { ...valid, stops: [{ ...valid.stops[0], sequence: 1.5 }] },
+    { ...valid, stops: [valid.stops[1], valid.stops[0]] },
+    { ...valid, stops: tooManyStops },
   ])('rejects malformed or unbounded data %#', (value) => {
     expect(() => parseRouteEtaResponse(value)).toThrow()
   })

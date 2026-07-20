@@ -105,6 +105,40 @@ describe('createVisibleRefreshController', () => {
     expect(refresh).toHaveBeenCalledTimes(2)
   })
 
+  it('aborts an active request while hidden and refreshes when visible again', async () => {
+    const clock = createClock()
+    let visible = true
+    let firstSignal: AbortSignal | undefined
+    const refresh = vi.fn((signal: AbortSignal) => {
+      if (!firstSignal) {
+        firstSignal = signal
+        return new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+      }
+      return Promise.resolve()
+    })
+    const controller = createVisibleRefreshController({
+      refresh,
+      intervalMs: 30_000,
+      isVisible: () => visible,
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    })
+
+    const first = controller.start()
+    await Promise.resolve()
+    visible = false
+    await controller.visibilityChanged()
+    await first
+    expect(firstSignal?.aborted).toBe(true)
+
+    visible = true
+    await controller.visibilityChanged()
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
   it('never overlaps refresh requests', async () => {
     const clock = createClock()
     let release: (() => void) | undefined
@@ -129,9 +163,9 @@ describe('createVisibleRefreshController', () => {
     expect(refresh).toHaveBeenCalledTimes(2)
   })
 
-  it('stops future refreshes', async () => {
+  it('stops scheduling after a terminal refresh result', async () => {
     const clock = createClock()
-    const refresh = vi.fn(async () => {})
+    const refresh = vi.fn(async () => 'stop' as const)
     const controller = createVisibleRefreshController({
       refresh,
       intervalMs: 30_000,
@@ -142,7 +176,32 @@ describe('createVisibleRefreshController', () => {
     })
 
     await controller.start()
+    await clock.advance(60_000)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops future refreshes and aborts an active request', async () => {
+    const clock = createClock()
+    let activeSignal: AbortSignal | undefined
+    const refresh = vi.fn((signal: AbortSignal) => new Promise<void>((resolve) => {
+      activeSignal = signal
+      signal.addEventListener('abort', () => resolve(), { once: true })
+    }))
+    const controller = createVisibleRefreshController({
+      refresh,
+      intervalMs: 30_000,
+      isVisible: () => true,
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    })
+
+    const first = controller.start()
+    await Promise.resolve()
     controller.stop()
+    await first
+    expect(activeSignal?.aborted).toBe(true)
+
     await clock.advance(60_000)
     expect(refresh).toHaveBeenCalledTimes(1)
   })
