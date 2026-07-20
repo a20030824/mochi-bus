@@ -1,5 +1,4 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
-import { bindTextTooltip } from './leaflet-tooltip'
 import type { DrawerView, DrawerViewSession } from './drawer-view'
 import type {
   RouteMapVariant,
@@ -9,6 +8,7 @@ import type {
 } from './map-api-client'
 import { createTimetablePanel } from './timetable-view'
 import {
+  initialRouteStopMarkerMetrics,
   normalizedVehicleAzimuth,
   routeStopMarkerMetrics,
   routeVariantPreviewStyle,
@@ -99,7 +99,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
     prominent = false,
     fillColor = stopFillGreen,
   ): L.CircleMarker {
-    const metrics = routeStopMarkerMetrics(options.map.getZoom(), prominent)
+    const metrics = initialRouteStopMarkerMetrics(options.map.getZoom(), prominent)
     return L.circleMarker(position, {
       pane: 'stopPane',
       radius: metrics.radius,

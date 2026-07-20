@@ -23,6 +23,14 @@ export function routeStopMarkerMetrics(zoom: number, prominent = false): { radiu
   return { radius: 2, weight: 1 }
 }
 
+export function initialRouteStopMarkerMetrics(
+  zoom: number,
+  prominent = false,
+): { radius: number; weight: number } {
+  const metrics = routeStopMarkerMetrics(zoom, prominent)
+  return { radius: metrics.radius, weight: prominent ? metrics.weight : 1.4 }
+}
+
 export function normalizedVehicleAzimuth(azimuth: number | null): number {
   return Number.isFinite(azimuth) ? azimuth as number : 0
 }
