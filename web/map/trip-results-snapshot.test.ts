@@ -36,6 +36,7 @@ function directRoute(routeName: string): DirectRoute {
     stopSequence: 1,
     estimateSeconds: null,
     etaLabel: '未發車',
+    stopStatus: 0,
     source: 'none',
     boardSequence: 1,
     alightSequence: 5,
