@@ -16,6 +16,7 @@ export default defineConfig({
         appearance: 'web/entries/appearance.ts',
         map: 'web/entries/map.ts',
         eta: 'web/entries/eta.ts',
+        route: 'web/entries/route.ts',
         // 常用站牌儲存層，作為共用 store entry 保留。
         boards: 'web/boards/store.ts',
         setup: 'web/entries/setup.ts',
