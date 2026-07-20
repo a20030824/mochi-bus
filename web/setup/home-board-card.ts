@@ -37,7 +37,8 @@ function renderHomeBoardCard(): void {
   const status = document.createElement('span')
   status.className = 'board-status'
   status.textContent = '封面'
-  titleLine.append(title, status)
+  titleLine.appendChild(title)
+  titleLine.appendChild(status)
 
   const detail = document.createElement('div')
   detail.className = 'board-route-chips'
@@ -53,7 +54,8 @@ function renderHomeBoardCard(): void {
     note.textContent = '需重新選擇路線'
     detail.appendChild(note)
   }
-  copy.append(titleLine, detail)
+  copy.appendChild(titleLine)
+  copy.appendChild(detail)
 
   const actions = document.createElement('div')
   actions.className = 'item-actions'
@@ -71,9 +73,11 @@ function renderHomeBoardCard(): void {
     clearHomeBoard()
     location.reload()
   })
-  actions.append(save, remove)
-  card.append(copy, actions)
-  boardList.prepend(card)
+  actions.appendChild(save)
+  actions.appendChild(remove)
+  card.appendChild(copy)
+  card.appendChild(actions)
+  boardList.insertBefore(card, boardList.firstChild)
 }
 
 renderHomeBoardCard()
