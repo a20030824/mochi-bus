@@ -6,12 +6,14 @@ import type {
   TimetableStop,
   VehiclePosition,
 } from './map-api-client'
+import { tooltipText } from './leaflet-tooltip'
 import { createTimetablePanel } from './timetable-view'
 import {
   initialRouteStopMarkerMetrics,
   normalizedVehicleAzimuth,
   routeStopMarkerMetrics,
   routeVariantPreviewStyle,
+  vehicleInfoText,
 } from './route-detail-presentation'
 import {
   routeCasingColor,
@@ -20,6 +22,7 @@ import {
   stopFillGreen,
   stopHaloColor,
 } from './theme'
+import './vehicle-info.css'
 
 type BindHoverTooltip = <T extends L.Layer>(
   layer: T,
@@ -93,6 +96,9 @@ export type RouteDetailSurface = {
 
 export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): RouteDetailSurface {
   let stopMarkers: L.CircleMarker[] = []
+  let selectedVehiclePlate: string | null = null
+  let clearingVehicleMarkers = false
+  const vehicleHoverCapable = window.matchMedia('(hover: hover)').matches
 
   function createStopMarker(
     position: L.LatLngExpression,
@@ -119,8 +125,19 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
     options.selectionLayer.clearLayers()
   }
 
+  function clearVehicleLayer(preservePopupSelection: boolean): void {
+    const selectedPlate = preservePopupSelection ? selectedVehiclePlate : null
+    clearingVehicleMarkers = true
+    try {
+      options.vehicleLayer.clearLayers()
+    } finally {
+      clearingVehicleMarkers = false
+      selectedVehiclePlate = selectedPlate
+    }
+  }
+
   function clearVehicles(): void {
-    options.vehicleLayer.clearLayers()
+    clearVehicleLayer(false)
   }
 
   function showVariantPicker(view: VariantPickerOptions): void {
@@ -324,10 +341,35 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
     return { available: true }
   }
 
+  function bindVehicleInformation(marker: L.Marker, vehicle: VehiclePosition, content: string): L.Marker {
+    marker.on('add', () => marker.getElement()?.setAttribute('aria-label', content))
+    if (vehicleHoverCapable) return options.bindHoverTooltip(marker, content)
+
+    const plate = vehicle.plate?.trim() || null
+    marker.bindPopup(tooltipText(content), {
+      className: 'vehicle-popup',
+      closeButton: false,
+      offset: [0, -8],
+    })
+    marker.on('popupopen', () => {
+      selectedVehiclePlate = plate
+    })
+    marker.on('popupclose', () => {
+      if (!clearingVehicleMarkers && plate && selectedVehiclePlate === plate) {
+        selectedVehiclePlate = null
+      }
+    })
+    return marker
+  }
+
   function renderVehicles(vehicles: VehiclePosition[]): void {
-    clearVehicles()
+    const restorePlate = selectedVehiclePlate
+    clearVehicleLayer(true)
+    let restoreMarker: L.Marker | null = null
+
     vehicles.forEach((vehicle) => {
       const azimuth = normalizedVehicleAzimuth(vehicle.azimuth)
+      const content = vehicleInfoText(vehicle.plate, vehicle.gpsTime)
       const marker = L.marker([vehicle.latitude, vehicle.longitude], {
         pane: 'vehiclePane',
         icon: L.divIcon({
@@ -337,11 +379,19 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
           iconAnchor: [13, 16],
         }),
       })
-      options.bindHoverTooltip(
-        marker,
-        `${vehicle.plate ?? "公車"}${vehicle.speed === null ? "" : ` · ${Math.round(vehicle.speed)} km/h`}`,
-      ).addTo(options.vehicleLayer)
+      bindVehicleInformation(marker, vehicle, content).addTo(options.vehicleLayer)
+      if (restorePlate && vehicle.plate?.trim() === restorePlate) restoreMarker = marker
     })
+
+    if (!vehicleHoverCapable && restorePlate) {
+      if (!restoreMarker) {
+        selectedVehiclePlate = null
+      } else {
+        queueMicrotask(() => {
+          if (options.map.hasLayer(restoreMarker!)) restoreMarker!.openPopup()
+        })
+      }
+    }
   }
 
   function resizeStopMarkers(): void {
