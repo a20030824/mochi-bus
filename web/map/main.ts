@@ -4,14 +4,11 @@ import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
 import type { TripPendingSelection } from './trip-state'
 import { createTripRuntimeStore } from './trip-runtime-store'
+import { createTripPlanLoader } from './trip-plan-loader'
 import { createTripResultsSnapshot, parseTripResultsSnapshot } from './trip-results-snapshot'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
-import {
-  describeTransferEstimate,
-  estimateTransfer,
-  transferEstimateSortKey,
-} from '../../src/domain/map/transfer-estimate'
+import { describeTransferEstimate } from '../../src/domain/map/transfer-estimate'
 import {
   isFavoriteDirection,
   readBoards,
@@ -19,11 +16,7 @@ import {
   toggleFavoriteDirection,
   type FavoriteBus,
 } from '../boards/store'
-import {
-  formatJourneyWait,
-  splitEtaLabel,
-  type EtaSource,
-} from '../../src/domain/eta-presentation'
+import { formatJourneyWait, splitEtaLabel } from '../../src/domain/eta-presentation'
 import { tdxWarningMessages } from '../../src/domain/tdx-warning'
 import { isTdxTokenRejectedError } from '../tdx/api-client'
 import { splitRouteDisplayName } from '../lib/route-display'
@@ -47,7 +40,6 @@ import { routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './th
 import {
   mapApi,
   type DirectRoute,
-  type JourneyEtaEstimate,
   type MapCity,
   type NearbyPlace,
   type PlaceRoute,
@@ -78,8 +70,6 @@ type JourneyLegPreviewOptions = {
 type JourneyPreviewOptions = {
   fitCamera: boolean
 }
-
-type JourneyEtaValue = Omit<JourneyEtaEstimate, 'key'> & { source: EtaSource }
 
 const regions: Array<{
   code: RegionCode
@@ -179,6 +169,12 @@ let routeScrollTop = 0
 let lastNearbyPlaces: NearbyPlace[] = []
 let lastNearbyOrigin: [number, number] | undefined
 const trip = createTripRuntimeStore()
+const tripPlanLoader = createTripPlanLoader({
+  loadDirect: mapApi.direct,
+  loadTransfer: mapApi.transfer,
+  loadJourneyEta: mapApi.journeyEta,
+  isCredentialRejectedError: isTdxTokenRejectedError,
+})
 let tripSelecting = false
 let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = 'browse'
 let previewRequest = 0
@@ -1586,25 +1582,32 @@ async function loadDirectRoutes() {
   trip.setWarning(undefined)
   setStatus(`正在找 ${from.name} → ${to.name} 的直達車…`)
   try {
-    const directRoutes = await mapApi.direct(activeCity.code, from.placeId, to.placeId, signal)
-    if (isStaleNav(requestId)) return
-    if (directRoutes.length) {
-      const rankedRoutes = await rankDirectRoutesByEta(directRoutes, signal)
-      if (isStaleNav(requestId)) return
-      trip.completeDirect(rankedRoutes)
-      renderDirectRoutes(rankedRoutes)
-      await previewDirectRoutes(rankedRoutes, { fitCamera: true })
+    const result = await tripPlanLoader.load({
+      cityCode: activeCity.code,
+      fromPlaceId: from.placeId,
+      toPlaceId: to.placeId,
+      signal,
+      onPhase: (phase) => {
+        if (phase === 'transfer') setStatus('沒有直達車，正在找一次轉乘…')
+      },
+    })
+    if (isStaleNav(requestId) || !result) return
+    trip.setWarning(result.warning)
+    if (result.kind === 'direct') {
+      trip.completeDirect(result.routes)
+      renderDirectRoutes(result.routes)
+      await previewDirectRoutes(result.routes, { fitCamera: true })
       return
     }
-    setStatus('沒有直達車，正在找一次轉乘…')
-    const transferPlans = await mapApi.transfer(activeCity.code, from.placeId, to.placeId, signal)
-    if (isStaleNav(requestId)) return
-    const rankedPlans = await rankTransferPlansByEta(transferPlans, signal)
-    if (isStaleNav(requestId)) return
-    if (rankedPlans.length) trip.completeTransfer(rankedPlans)
-    else trip.completeEmpty()
-    renderTransferPlans(rankedPlans)
-    await previewTransferPlans(rankedPlans, { fitCamera: true })
+    if (result.kind === 'transfer') {
+      trip.completeTransfer(result.plans)
+      renderTransferPlans(result.plans)
+      await previewTransferPlans(result.plans, { fitCamera: true })
+      return
+    }
+    trip.completeEmpty()
+    renderTransferPlans([])
+    await previewTransferPlans([], { fitCamera: true })
   } catch (error) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '直達路線查詢失敗'
@@ -1622,106 +1625,6 @@ async function loadDirectRoutes() {
   }
 }
 
-
-async function fetchJourneyEta(
-  legs: Array<{ key: string; patternId: string; sequence: number }>,
-  signal?: AbortSignal,
-) {
-  if (!activeCity || !legs.length) return new Map<string, JourneyEtaValue>()
-  try {
-    const response = await mapApi.journeyEta(activeCity.code, legs, signal)
-    trip.setWarning(response.warning)
-    return new Map(response.estimates.map((estimate) => [
-      estimate.key,
-      {
-        minutes: estimate.minutes,
-        source: estimate.source,
-        departureBased: estimate.departureBased ?? false,
-        headwayMinutes: estimate.headwayMinutes ?? null,
-        nextDay: estimate.nextDay ?? false,
-      },
-    ]))
-  } catch (error) {
-    if (isTdxTokenRejectedError(error)) throw error
-    trip.setWarning('tdx-unavailable')
-    return new Map<string, JourneyEtaValue>()
-  }
-}
-
-async function rankDirectRoutesByEta(routesToRank: DirectRoute[], signal?: AbortSignal): Promise<DirectRoute[]> {
-  const estimates = await fetchJourneyEta(routesToRank.map((route, index) => ({
-    key: `direct:${index}`,
-    patternId: route.variantKey,
-    sequence: route.boardSequence,
-  })), signal)
-  return routesToRank.map((route, index) => {
-    const estimate = estimates.get(`direct:${index}`)
-    return {
-      ...route,
-      etaMinutes: estimate?.minutes ?? null,
-      etaSource: estimate?.source ?? 'none',
-      etaDepartureBased: estimate?.departureBased ?? false,
-      etaHeadwayMinutes: estimate?.headwayMinutes ?? null,
-      etaNextDay: estimate?.nextDay ?? false,
-    }
-  }).sort((a, b) =>
-    sortableJourneyMinutes(a) - sortableJourneyMinutes(b)
-    || a.stopCount - b.stopCount,
-  )
-}
-
-function sortableJourneyMinutes(route: DirectRoute): number {
-  if (route.etaSource !== 'realtime' && route.etaSource !== 'schedule') return Number.POSITIVE_INFINITY
-  if (route.etaDepartureBased || route.etaHeadwayMinutes || route.etaNextDay) return Number.POSITIVE_INFINITY
-  return route.etaMinutes ?? Number.POSITIVE_INFINITY
-}
-
-function isReliableJourneyArrival(estimate: JourneyEtaValue | undefined): boolean {
-  return estimate?.source === 'realtime'
-    && estimate.minutes !== null
-    && !estimate.departureBased
-    && !estimate.headwayMinutes
-    && !estimate.nextDay
-}
-
-async function rankTransferPlansByEta(plans: TransferPlan[], signal?: AbortSignal): Promise<TransferPlan[]> {
-  const estimates = await fetchJourneyEta(plans.flatMap((plan, index) => [
-    { key: `transfer:${index}:first`, patternId: plan.first.variantKey, sequence: plan.first.boardSequence },
-    { key: `transfer:${index}:second`, patternId: plan.second.variantKey, sequence: plan.second.boardSequence },
-  ]), signal)
-  return plans.map((plan, index) => {
-    const firstEstimate = estimates.get(`transfer:${index}:first`)
-    const secondEstimate = estimates.get(`transfer:${index}:second`)
-    const firstEta = firstEstimate?.minutes ?? null
-    const secondEta = secondEstimate?.minutes ?? null
-    const estimate = estimateTransfer({
-      firstStopCount: plan.first.stopCount,
-      secondStopCount: plan.second.stopCount,
-      walkMeters: plan.transferWalkMeters ?? 0,
-      firstEtaMinutes: firstEta,
-      secondEtaMinutes: secondEta,
-      firstEtaReliable: isReliableJourneyArrival(firstEstimate),
-      secondEtaReliable: isReliableJourneyArrival(secondEstimate),
-    })
-    return {
-      ...plan,
-      firstEtaMinutes: firstEta,
-      secondEtaMinutes: secondEta,
-      firstEtaSource: firstEstimate?.source ?? 'none',
-      secondEtaSource: secondEstimate?.source ?? 'none',
-      firstEtaDepartureBased: firstEstimate?.departureBased ?? false,
-      secondEtaDepartureBased: secondEstimate?.departureBased ?? false,
-      firstEtaHeadwayMinutes: firstEstimate?.headwayMinutes ?? null,
-      secondEtaHeadwayMinutes: secondEstimate?.headwayMinutes ?? null,
-      firstEtaNextDay: firstEstimate?.nextDay ?? false,
-      secondEtaNextDay: secondEstimate?.nextDay ?? false,
-      transferEstimate: estimate,
-    }
-  }).sort((a, b) =>
-    transferEstimateSortKey(a.transferEstimate) - transferEstimateSortKey(b.transferEstimate)
-    || a.totalStops - b.totalStops,
-  )
-}
 
 function renderDirectRoutes(directRoutes: DirectRoute[]) {
   if (!trip.from || !trip.to) return
