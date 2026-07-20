@@ -468,6 +468,46 @@ describe('TDX logical resolution instrumentation', () => {
     expect(events.at(-1)).toMatchObject({ result: 'success', resolution: 'upstream' })
   })
 
+  it('releases a half-open probe after rejecting an oversized payload', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-19T04:00:00Z'))
+    const events: TelemetryEnvelope[] = []
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429, headers: { 'Retry-After': '1' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'oversized' }]), {
+        headers: { 'Content-Length': '4096' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'healthy' }])))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+    const env = observedEnv(events)
+
+    await expect(fetchTDXJson(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=open-before-oversized'),
+      30,
+      options,
+    )).rejects.toThrow()
+    vi.advanceTimersByTime(1_001)
+    await expect(fetchTDXJson(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=oversized-half-open'),
+      30,
+      { ...options, maxResponseBytes: 64 },
+    )).rejects.toThrow('byte limit')
+    await expect(fetchTDXJson(
+      env,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=after-oversized-half-open'),
+      30,
+      { ...options, maxResponseBytes: 64 },
+    )).resolves.toEqual([{ id: 'healthy' }])
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(events.at(-1)).toMatchObject({ result: 'success', resolution: 'upstream' })
+  })
+
   it('classifies BYOK and shared token rejection by scope without retrying either', async () => {
     const byokEvents: TelemetryEnvelope[] = []
     const byokFetch = vi.fn(async () => new Response('rejected', { status: 401 }))

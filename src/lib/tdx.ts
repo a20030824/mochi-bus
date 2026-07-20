@@ -1136,6 +1136,7 @@ export async function resolveTDXJson<T>(
             failureKind: 'invalid_json',
           })
       if (serviceError instanceof TDXPayloadTooLargeError) {
+        recordTDXCircuitSuccess(circuitKey)
         console.error(JSON.stringify({
           message: 'tdx_response_too_large',
           maxBytes: serviceError.maxBytes,
