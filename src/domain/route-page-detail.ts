@@ -1,5 +1,11 @@
 import type { ResolvedBusQuery } from './bus-query'
 import {
+  applyRouteTimelineFallback,
+  ROUTE_UNKNOWN_ETA_LABEL,
+  routeTimelineNeedsSchedule,
+} from './route-timeline-fallback'
+import {
+  getBusSchedule,
   getRouteDetail,
   getRouteStopGroups,
   isRejectedUserTdxToken,
@@ -10,6 +16,7 @@ import {
   type TDXEnv,
   type TDXWarning,
 } from '../lib/tdx'
+import type { ScheduleItem } from './schedule'
 
 export type RouteEtaState =
   | { kind: 'realtime' }
@@ -35,6 +42,8 @@ export type RouteEtaResponse = {
 type RouteDetailDependencies = {
   getRouteStopGroups: typeof getRouteStopGroups
   getRouteDetail: typeof getRouteDetail
+  getBusSchedule: typeof getBusSchedule
+  now: () => Date
 }
 
 type RoutePageDetailDependencies = Pick<RouteDetailDependencies, 'getRouteStopGroups'>
@@ -42,6 +51,8 @@ type RoutePageDetailDependencies = Pick<RouteDetailDependencies, 'getRouteStopGr
 const defaultDependencies: RouteDetailDependencies = {
   getRouteStopGroups,
   getRouteDetail,
+  getBusSchedule,
+  now: () => new Date(),
 }
 
 /**
@@ -63,21 +74,46 @@ export async function getRoutePageDetail(
 /**
  * Add route-level realtime ETA as a fail-open enhancement for the browser API.
  * Successful requests reuse the station order already resolved inside
- * getRouteDetail. Static stop groups are fetched separately only after a
- * realtime failure, when they are actually needed to construct degradation.
+ * getRouteDetail. Exact stop-level timetable arrivals fill only provisional or
+ * missing rows; origin-only departures and route-level headways are never
+ * presented as station arrival times.
  */
 export async function getRouteEtaDetail(
   env: TDXEnv,
   query: ResolvedBusQuery,
-  dependencies: RouteDetailDependencies = defaultDependencies,
+  dependencies: Partial<RouteDetailDependencies> = {},
 ): Promise<RouteEtaDetail> {
+  const resolvedDependencies: RouteDetailDependencies = { ...defaultDependencies, ...dependencies }
+
   try {
-    const detail = await dependencies.getRouteDetail(env, query)
-    if (detail.stops.some((stop) => stop.etaLabel !== null)) {
+    let detail = await resolvedDependencies.getRouteDetail(env, query)
+    let schedules: ScheduleItem[] = []
+
+    if (routeTimelineNeedsSchedule(detail.stops)) {
+      try {
+        schedules = await resolvedDependencies.getBusSchedule(env, query.city, query.routeName, query.routeUid)
+      } catch (error) {
+        if (isRejectedUserTdxToken(error, env.TDX_USER_ACCESS_TOKEN)) throw error
+        console.error(JSON.stringify({
+          message: 'route_schedule_fallback_failed',
+          city: query.city,
+        }))
+      }
+
+      detail = {
+        ...detail,
+        stops: applyRouteTimelineFallback(detail.stops, schedules, {
+          direction: query.direction,
+          subRouteUid: query.subRouteUid,
+        }, resolvedDependencies.now()),
+      }
+    }
+
+    if (detail.stops.some((stop) => stop.etaTone === 'live' || stop.etaTone === 'urgent')) {
       return { detail, eta: { kind: 'realtime' } }
     }
     return {
-      detail: withSelectedStopStatus(detail, '暫無即時'),
+      detail: withSelectedStopStatusWhenUnknown(detail, '暫無即時'),
       eta: { kind: 'empty' },
     }
   } catch (error) {
@@ -86,7 +122,7 @@ export async function getRouteEtaDetail(
     const warning = tdxWarningFromError(error)
     if (!warning) throw error
 
-    const groups = await dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
+    const groups = await resolvedDependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
     const group = matchingStopGroup(groups, query)
     if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
 
@@ -143,16 +179,17 @@ function routeDetailWithoutEta(
       stopName: stop.stopName,
       sequence: stop.sequence,
       selected: stop.stopUid === query.stopUid,
-      etaLabel: stop.stopUid === query.stopUid ? selectedStatus : null,
+      etaLabel: stop.stopUid === query.stopUid ? selectedStatus : ROUTE_UNKNOWN_ETA_LABEL,
       etaTone: 'muted',
     })),
   }
 }
 
-function withSelectedStopStatus(detail: RouteDetail, selectedStatus: string): RouteDetail {
+function withSelectedStopStatusWhenUnknown(detail: RouteDetail, selectedStatus: string): RouteDetail {
   return {
     ...detail,
     stops: detail.stops.map((stop) => stop.selected
+      && (stop.etaLabel === null || stop.etaLabel === ROUTE_UNKNOWN_ETA_LABEL)
       ? { ...stop, etaLabel: selectedStatus, etaTone: 'muted' }
       : stop),
   }

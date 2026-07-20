@@ -80,7 +80,7 @@ describe('TDX API degraded-data contract', () => {
       schemaVersion: 1,
       eta: { kind: 'unavailable', warning: 'tdx-rate-limit' },
       stops: [
-        { stopUid: 'TPE100', stopName: '板橋公車站', etaLabel: null, etaTone: 'muted' },
+        { stopUid: 'TPE100', stopName: '板橋公車站', etaLabel: '—', etaTone: 'muted' },
         { stopUid: 'TPE213044', stopName: '捷運西門站', etaLabel: '即時忙線', etaTone: 'muted' },
       ],
     })

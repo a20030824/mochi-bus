@@ -1,5 +1,6 @@
 import type { RoutePageIdentity, RoutePageIdentityStop } from '../../src/domain/route-page-identity'
 import type { RouteEtaResponse, RouteEtaStop } from '../../src/domain/route-page-detail'
+import { ROUTE_UNKNOWN_ETA_LABEL } from '../../src/domain/route-timeline-fallback'
 import { isTdxTokenRejectedError, requestMochiJson } from '../tdx/api-client'
 import { parseRouteEtaResponse } from './contract'
 import { readRoutePageIdentity } from './identity'
@@ -13,6 +14,7 @@ if (routePage) initializeRoutePage(routePage)
 
 function initializeRoutePage(page: HTMLElement): void {
   prepareSelectedEta(page)
+  fillUnknownRouteEta(page)
   try {
     const identity = readRoutePageIdentity()
     const selectedStopUid = new URLSearchParams(window.location.search).get('stopUid')
@@ -75,6 +77,12 @@ function prepareSelectedEta(page: HTMLElement): void {
   etaNodes.forEach((etaNode) => {
     etaNode.setAttribute('aria-live', 'polite')
     etaNode.setAttribute('aria-atomic', 'true')
+  })
+}
+
+function fillUnknownRouteEta(page: HTMLElement): void {
+  page.querySelectorAll<HTMLElement>('.route-stop:not(.selected) .route-eta').forEach((etaNode) => {
+    if (!etaNode.textContent?.trim()) etaNode.textContent = ROUTE_UNKNOWN_ETA_LABEL
   })
 }
 
@@ -146,14 +154,15 @@ function validateStopTarget(
 }
 
 function updateStopEta(etaNode: HTMLElement, stop: RouteEtaStop): void {
-  etaNode.textContent = stop.etaLabel ?? ''
+  etaNode.textContent = stop.etaLabel ?? ROUTE_UNKNOWN_ETA_LABEL
   etaNode.classList.remove('live', 'urgent', 'muted')
   etaNode.classList.add(stop.etaTone)
 }
 
 function clearRouteEta(page: HTMLElement): void {
-  page.querySelectorAll<HTMLElement>('.route-eta').forEach((etaNode) => {
-    etaNode.textContent = ''
+  page.querySelectorAll<HTMLElement>('.route-stop .route-eta').forEach((etaNode) => {
+    const selected = etaNode.closest('.route-stop')?.classList.contains('selected') ?? false
+    etaNode.textContent = selected ? '' : ROUTE_UNKNOWN_ETA_LABEL
     etaNode.classList.remove('live', 'urgent', 'muted')
     etaNode.classList.add('muted')
   })
