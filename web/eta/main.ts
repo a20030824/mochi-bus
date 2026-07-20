@@ -110,11 +110,8 @@ const updatedNode = requiredElement<HTMLSpanElement>('#updated')
 const refreshButton = requiredElement<HTMLButtonElement>('#refresh')
 const onboardNode = requiredElement<HTMLDivElement>('#onboard')
 const onboardSignNode = requiredElement<HTMLDivElement>('#onboard-sign')
-const topActionLinks = document.querySelectorAll<HTMLAnchorElement>('.top-actions a')
-const mapLink = topActionLinks[0]
+const mapLink = document.querySelector<HTMLAnchorElement>('.top-actions a')
 if (!mapLink) throw new Error('ETA page is missing the map link')
-mapLink.removeAttribute('style')
-if (topActionLinks[1]) topActionLinks[1].remove()
 
 function paramsFor(bus: FavoriteBus): URLSearchParams {
   const params = new URLSearchParams({ city: bus.city || currentBoard.city || '', route: bus.routeName, direction: String(bus.direction) })
@@ -161,6 +158,7 @@ function reconcileRows(responses: RefreshResponse[]): void {
     return row
   })
   listNode.replaceChildren(...rows)
+  listNode.removeAttribute('aria-busy')
 }
 
 async function fillDirectionLabel(bus: FavoriteBus): Promise<void> {
@@ -366,6 +364,7 @@ if (useLocalBoard) {
   }
   if (currentBoard.id !== initialBoard.id || currentBoard.buses.length > 1 || firstBus?.stopUid !== initialBoard.buses[0].stopUid || firstBus?.routeName !== initialBoard.buses[0].routeName || firstBus?.direction !== initialBoard.buses[0].direction) {
     listNode.replaceChildren(...currentBoard.buses.map((bus) => makeRow(bus)))
+    listNode.removeAttribute('aria-busy')
     void refreshBoard()
   } else void refreshBoard()
 }

@@ -37,18 +37,27 @@ export function renderETAPage(view: ETAView): string {
   const resultNotice = warningNotice
     ?? (result?.stale ? '資料有些延遲，以現場站牌為準' : result?.source === 'schedule' ? '依時刻表推估，實際到站可能略有出入' : error ?? '')
 
+  // 首頁的看板由 eta.js 依 localStorage 重建:SSR 只出與新版排版一致的
+  // skeleton,不畫任何會被 JS 推翻的內容(避免 flash of stale content)。
+  const boardMarkup = useLocalBoard
+    ? `<div class="bus-row skeleton-row" aria-hidden="true"><span class="skeleton-bar skeleton-name"></span><span class="skeleton-bar skeleton-eta"></span></div><div class="bus-row skeleton-row" aria-hidden="true"><span class="skeleton-bar skeleton-name"></span><span class="skeleton-bar skeleton-eta"></span></div><noscript><p class="empty">需要啟用 JavaScript 才能顯示你的常用站牌。</p></noscript>`
+    : renderBusRow(query, result, error)
+  const headingMarkup = useLocalBoard
+    ? '<span class="skeleton-bar skeleton-title" aria-hidden="true"></span>'
+    : escapeHTML(heading)
+
   return pageShell(pageTitle, `
   <main class="eta-page">
     <header class="topbar">
       <a class="brand" href="/">${brandWordmark}</a>
-      <nav class="top-actions" aria-label="主要功能" style="display:flex;align-items:center;gap:8px"><a class="icon-link" style="border-color:#a9b7ad;color:var(--green-deep)" href="/map">地圖</a><a class="icon-link" href="/setup">我的公車</a></nav>
+      <nav class="top-actions" aria-label="主要功能"><a class="icon-link" href="/map">地圖</a></nav>
     </header>
     <section class="cover" aria-live="polite">
       <div class="onboard-sign" id="onboard-sign" hidden aria-hidden="true">
         <div class="onboard-sign-text"><span class="onboard-sign-track"><span>Understand the network first, then catch the bus.</span><span>Understand the network first, then catch the bus.</span></span></div>
       </div>
-      <h1 class="eyebrow" id="board-title">${escapeHTML(heading)}</h1>
-      <div class="bus-list" id="bus-list">${renderBusRow(query, result, error)}</div>
+      <h1 class="eyebrow" id="board-title">${headingMarkup}</h1>
+      <div class="bus-list" id="bus-list"${useLocalBoard ? ' aria-busy="true"' : ''}>${boardMarkup}</div>
       <div class="onboard" id="onboard" hidden>
         <p>找到你每天在等的那班車，這一頁就會變成你的。</p>
         <a class="onboard-map" href="/map">地圖<span aria-hidden="true">→</span></a>
@@ -233,6 +242,13 @@ const designRefinementStyles = `
 :root{--eta-transition-duration:180ms;--cover-led-to-eta-gap:34px;--control-height-md:44px}
 .notice a{font-weight:850;text-underline-offset:3px}
 .brand span{color:var(--accent)}
+.top-actions{display:flex;align-items:center;gap:8px}
+.skeleton-bar{display:inline-block;border-radius:9px;background:var(--chip-bg)}
+.skeleton-title{width:132px;height:18px;vertical-align:middle}
+.bus-row.skeleton-row{align-items:center;pointer-events:none}
+.skeleton-name{width:104px;height:34px}
+.skeleton-row:nth-child(2) .skeleton-name{width:72px}
+.skeleton-eta{justify-self:end;width:64px;height:26px}
 .onboard-sign-text{position:relative;z-index:1;overflow:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 32px,#000 calc(100% - 32px),transparent);mask-image:linear-gradient(90deg,transparent,#000 32px,#000 calc(100% - 32px),transparent)}
 .onboard-sign::after{z-index:2}
 .onboard-sign{margin-bottom:var(--cover-led-to-eta-gap)}

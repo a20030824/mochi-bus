@@ -314,6 +314,11 @@ async function renderETA(
   const preResolved = query.stopUid && query.stopName
     ? query as BusQuery & { stopUid: string; stopName: string }
     : undefined
+  // 首頁的看板內容一律由 eta.js 依 localStorage 重建,伺服器只出 skeleton;
+  // 這裡抓 ETA 只會浪費 TDX 配額,還讓使用者先看到會被推翻的預設 307。
+  if (useLocalPreset && preResolved) {
+    return c.html(renderETAPage({ query: preResolved, notice, useLocalBoard: true, requestUrl: c.req.url }), 200, pageHeaders)
+  }
   try {
     const env = tdxEnv(c)
     const resolved = alreadyResolved && preResolved ? preResolved : await resolveBusQuery(env, query)
