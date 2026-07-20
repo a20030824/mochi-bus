@@ -2,7 +2,7 @@ export const appearanceSettingsStyles = `
 .appearance-list {
   display: grid;
   margin-top: 10px;
-  border-block: 1px solid #ded6c9;
+  border-block: 1px solid var(--line-soft);
 }
 .appearance-row {
   display: grid;
@@ -11,7 +11,7 @@ export const appearanceSettingsStyles = `
   gap: 18px;
   min-height: 68px;
   padding: 12px 2px;
-  border-bottom: 1px solid #ded6c9;
+  border-bottom: 1px solid var(--line-soft);
 }
 .appearance-row:last-child { border-bottom: 0; }
 .appearance-label { color: inherit; font-size: 14px; }
@@ -22,9 +22,9 @@ export const appearanceSettingsStyles = `
   width: 168px;
   height: 42px;
   padding: 3px;
-  border: 1px solid #d8d0c2;
+  border: 1px solid var(--line);
   border-radius: 999px;
-  background: #e9e1d5;
+  background: var(--well);
   box-sizing: border-box;
   isolation: isolate;
 }
@@ -72,18 +72,13 @@ export const appearanceSettingsStyles = `
   user-select: none;
   transition: color 150ms ease;
 }
-.appearance-segment:hover .appearance-option-input:not(:checked) + span { color: #29251f; }
+.appearance-segment:hover .appearance-option-input:not(:checked) + span { color: var(--ink); }
 .appearance-option-input:checked + span { color: #fffaf0; }
 .appearance-option-input:focus-visible + span {
-  outline: 2px solid #4f685b;
+  outline: 2px solid var(--green);
   outline-offset: -2px;
 }
-html[data-general-theme="dark"] :is(.appearance-list, .appearance-row) { border-color: #4d473e; }
-html[data-general-theme="dark"] .appearance-segmented { border-color: #4d473e; background: #26231e; }
 html[data-general-theme="dark"] .appearance-segmented::before { background: #4d473e; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
-html[data-general-theme="dark"] .appearance-segment:hover .appearance-option-input:not(:checked) + span { color: #f8f0e3; }
-html[data-general-theme="dark"] .appearance-option-input:checked + span { color: #f8f0e3; }
-html[data-general-theme="dark"] .appearance-option-input:focus-visible + span { outline-color: #81a08f; }
 @media (max-width: 360px) {
   .appearance-row { gap: 12px; }
   .appearance-segmented { width: 156px; }

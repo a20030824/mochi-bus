@@ -1,46 +1,8 @@
+// 一般頁的主題色 token 定義在 src/ui.ts(單一 token 層,鍵在 data-general-theme 上);
+// 這裡只負責宣告 color-scheme,讓瀏覽器原生控件與捲軸跟上強制主題。
 export const appearanceStyles = `
-html[data-appearance-page="general"][data-general-theme="dark"] {
-  color-scheme: dark;
-  --text-muted: #aaa197;
-  --text-faint: #8d867a;
-  --accent: #df7357;
-  --accent-deep: #f09b80;
-  --green: #81a08f;
-  --green-deep: #a9c0b2;
-}
-html[data-appearance-page="general"][data-general-theme="dark"] body { background: #211f1b; color: #f8f0e3; }
-html[data-appearance-page="general"][data-general-theme="dark"] .panel { border-color: #464139; background: #2a2722; }
-html[data-appearance-page="general"][data-general-theme="dark"] :is(.board-item, .result-card, .choice, input, select, .route-choice, .check-row) { border-color: #4d473e; background: #302c26; color: #f8f0e3; }
-html[data-appearance-page="general"][data-general-theme="dark"] :is(.icon-link, .chip) { border-color: #4d473e; }
-html[data-appearance-page="general"][data-general-theme="dark"] :is(.chip.active, .route-badge, .flow-steps span.active) { background: #f8f0e3; color: #211f1b; }
-html[data-appearance-page="general"][data-general-theme="dark"] :is(.bus-row, .step, .footer-action) { border-color: #4d473e; }
-html[data-appearance-page="general"][data-general-theme="dark"] :is(.eyebrow, .eta-footer, .board-item .favorite-route-number, .result-card p, .choice span, .route-head p, .route-stop > span:last-child) { color: var(--text-muted); }
-html[data-appearance-page="general"][data-general-theme="dark"] .notice { color: #f09b80; }
-html[data-appearance-page="general"][data-general-theme="dark"] .route-stop::before { background: #4d473e; }
-html[data-appearance-page="general"][data-general-theme="dark"] .route-stop .dot { border-color: #211f1b; }
-html[data-appearance-page="general"][data-general-theme="dark"] .route-grid::after { background: linear-gradient(to bottom, rgba(42, 39, 34, 0), rgba(42, 39, 34, .96)); }
-
-html[data-appearance-page="general"][data-general-theme="light"] {
-  color-scheme: light;
-  --text-muted: #6b6359;
-  --text-faint: #8d867a;
-  --accent: #b85f49;
-  --accent-deep: #9b4735;
-  --green: #4f685b;
-  --green-deep: #3f594c;
-}
-html[data-appearance-page="general"][data-general-theme="light"] body { background: #f7f2e8; color: #29251f; }
-html[data-appearance-page="general"][data-general-theme="light"] .panel { border-color: #ded6c9; background: rgba(255, 250, 240, .62); }
-html[data-appearance-page="general"][data-general-theme="light"] :is(.board-item, .result-card, .choice, input, select, .route-choice, .check-row) { border-color: #ded6c9; background: #fffaf0; color: #29251f; }
-html[data-appearance-page="general"][data-general-theme="light"] :is(.icon-link, .chip) { border-color: #d8d0c2; }
-html[data-appearance-page="general"][data-general-theme="light"] :is(.chip.active, .route-badge, .flow-steps span.active) { background: #29251f; color: #fffaf0; }
-html[data-appearance-page="general"][data-general-theme="light"] .bus-row { border-color: #ddd3c4; }
-html[data-appearance-page="general"][data-general-theme="light"] :is(.step, .footer-action) { border-color: #d8d0c2; }
-html[data-appearance-page="general"][data-general-theme="light"] :is(.eyebrow, .eta-footer, .board-item .favorite-route-number, .result-card p, .choice span, .route-head p, .route-stop > span:last-child) { color: var(--text-muted); }
-html[data-appearance-page="general"][data-general-theme="light"] .notice { color: var(--accent-deep); }
-html[data-appearance-page="general"][data-general-theme="light"] .route-stop::before { background: #d8d0c2; }
-html[data-appearance-page="general"][data-general-theme="light"] .route-stop .dot { border-color: #f7f2e8; }
-html[data-appearance-page="general"][data-general-theme="light"] .route-grid::after { background: linear-gradient(to bottom, rgba(252, 247, 237, 0), rgba(252, 247, 237, .96)); }
+html[data-appearance-page="general"][data-general-theme="dark"] { color-scheme: dark; }
+html[data-appearance-page="general"][data-general-theme="light"] { color-scheme: light; }
 
 html[data-appearance-page="map"][data-map-theme="light"] {
   color-scheme: light;

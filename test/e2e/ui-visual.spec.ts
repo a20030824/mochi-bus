@@ -1,7 +1,13 @@
 import { expect, test } from './fixtures'
 
+// 快照基準是淺色主題拍的;預設外觀是強制深色,所以每個測試先釘住淺色。
+const pinLightAppearance = () => {
+  localStorage.setItem('mochi.bus.appearance.v3', JSON.stringify({ version: 3, general: 'light', map: 'light' }))
+}
+
 test('softens marquee text at the fixed sign edges', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(pinLightAppearance)
   await page.goto('/')
 
   const sign = page.locator('#onboard-sign')
@@ -30,6 +36,7 @@ test('softens marquee text at the fixed sign edges', async ({ page }) => {
 
 test('keeps the setup empty state focused on its primary action', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(pinLightAppearance)
   await page.goto('/setup')
 
   const panel = page.locator('.setup-page > .panel:not([hidden])')
@@ -59,6 +66,7 @@ test('uses rules instead of nested cards for saved boards', async ({ page }) => 
     localStorage.setItem('mochi.bus.boards.v2', JSON.stringify(boards))
     localStorage.setItem('mochi.bus.activeBoard.v2', boards[0].id)
   })
+  await page.addInitScript(pinLightAppearance)
   await page.goto('/setup')
 
   const panel = page.locator('.setup-page > .panel:not([hidden])')
