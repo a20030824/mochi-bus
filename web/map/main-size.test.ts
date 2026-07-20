@@ -6,9 +6,10 @@ import journeyPreviewMapSource from './journey-preview-map.ts?raw'
 import previewMapPrimitivesSource from './preview-map-primitives.ts?raw'
 import placeRoutesSource from './place-routes-controller.ts?raw'
 import placeRoutesViewSource from './place-routes-view.ts?raw'
+import nearbyPlacesViewSource from './nearby-places-view.ts?raw'
 import routeDetailSurfaceSource from './route-detail-surface.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 1828
+const MAP_MAIN_LINE_LIMIT = 1802
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -164,6 +165,38 @@ describe('map main architecture boundary', () => {
     ]) {
       expect(placeRoutesViewSource).not.toContain(dependency)
     }
+  })
+
+  it('delegates Nearby Places Drawer presentation to the Nearby places view', () => {
+    expect(mainSource).toContain('createNearbyPlacesView')
+    expect(mainSource).toContain('nearbyPlacesView.renderLoading({')
+    expect(mainSource).toContain('nearbyPlacesView.renderPlaces({')
+    expect(mainSource).toContain('nearbyPlacesView.renderError({')
+    expect(mainSource).toContain('onOpenPlace: (place) => void openNearbyPlace(place)')
+    const renderPlacesIndex = mainSource.indexOf('nearbyPlacesView.renderPlaces({')
+    expect(mainSource.indexOf('clearStatus()', renderPlacesIndex)).toBeGreaterThan(renderPlacesIndex)
+    expect(mainSource.indexOf('history.replaceState', renderPlacesIndex)).toBeGreaterThan(renderPlacesIndex)
+    expect(mainSource.indexOf('setDocumentTitle', renderPlacesIndex)).toBeGreaterThan(renderPlacesIndex)
+    for (const marker of [
+      "className = 'nearby-list'",
+      "className = 'nearby-place-button'",
+      '正在搜尋附近站牌',
+      '500 公尺內沒有收錄到站牌',
+      '附近站牌讀取失敗',
+    ]) expect(mainSource).not.toContain(marker)
+    expect(nearbyPlacesViewSource).toContain('createNearbyPlacesView')
+    expect(nearbyPlacesViewSource).toContain("className = 'nearby-list'")
+    expect(nearbyPlacesViewSource).toContain('options.onOpenPlace(place)')
+    expect(nearbyPlacesViewSource).toContain('options.createRetryButton(onRetry)')
+    expect(nearbyPlacesViewSource).toContain('options.createTripModeButton()')
+    expect(nearbyPlacesViewSource).toContain('drawerKey(cityCode, origin)')
+    expect(nearbyPlacesViewSource).toContain('options.createBackButton(backLabel, onBack)')
+    for (const dependency of [
+      'leaflet', 'history.', 'window.', 'mapApi.', 'camera.', 'trip.', 'routeDetail',
+      'cityNetwork', 'nearbyLayer', 'beginNavRequest', 'isStaleNav', 'setStatus(',
+      'clearStatus(', 'setDocumentTitle', 'historyRecord', 'readMapView', 'mapViewFromUrl',
+      'openNearbyPlace', 'findNearbyPlaces', 'renderNearbyPlaces', './main',
+    ]) expect(nearbyPlacesViewSource).not.toContain(dependency)
   })
 
   it('delegates Trip result Drawer construction to the Trip results view', () => {

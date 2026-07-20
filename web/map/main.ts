@@ -13,6 +13,7 @@ import {
   type PlaceRoutesPresentation,
 } from './place-routes-controller'
 import { createPlaceRoutesView } from './place-routes-view'
+import { createNearbyPlacesView } from './nearby-places-view'
 import { createPreviewStopDotManager, createSelectablePreviewLineRenderer } from './preview-map-primitives'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
@@ -255,6 +256,14 @@ const placeRoutesView = createPlaceRoutesView({
   onOpenRoute: openChildRoute,
   createFavoriteControl: directionFavoriteControl,
   isCredentialRecovery: isTdxTokenRejectedError,
+})
+const nearbyPlacesView = createNearbyPlacesView({
+  renderDrawer,
+  createBackButton: drawerBack,
+  createHeading: heading,
+  createRetryButton: retryButton,
+  createTripModeButton: tripModeButton,
+  onOpenPlace: (place) => void openNearbyPlace(place),
 })
 const placeRoutes = createPlaceRoutesController({
   currentCityCode: () => activeCity?.code,
@@ -1409,21 +1418,11 @@ async function findNearbyPlaces(
   interactionMode = 'nearby'
   clearPreviewLayer()
   routeDetail.close()
-  const loadingList = document.createElement('div')
-  loadingList.className = 'place-route-loading'
-  for (let index = 0; index < 3; index += 1) {
-    const skeleton = document.createElement('div')
-    skeleton.className = 'place-route-skeleton'
-    loadingList.appendChild(skeleton)
-  }
-  renderDrawer({
-    key: `nearby:${activeCity.code}:${latitude.toFixed(5)}:${longitude.toFixed(5)}`,
-    mode: 'map-list',
-    header: [
-      drawerBack('附近站牌', renderNearbyPlaces),
-      heading('附近站牌', '正在搜尋附近站牌'),
-    ],
-    content: [loadingList],
+  nearbyPlacesView.renderLoading({
+    cityCode: activeCity.code,
+    origin: [latitude, longitude],
+    backLabel: '附近站牌',
+    onBack: renderNearbyPlaces,
   })
   nearbyLayer.clearLayers()
   lastNearbyOrigin = [latitude, longitude]
@@ -1441,17 +1440,15 @@ async function findNearbyPlaces(
     if (autoPreview && lastNearbyPlaces[0]) await openNearbyPlace(lastNearbyPlaces[0])
   } catch (error) {
     if (isStaleNav(requestId)) return
-    const message = error instanceof Error && error.message ? error.message : '附近站牌讀取失敗'
-    setStatus(message, true)
-    renderDrawer({
-      key: `nearby:${activeCity!.code}:${latitude.toFixed(5)}:${longitude.toFixed(5)}`,
-      mode: 'map-list',
-      header: [
-        drawerBack('附近站牌', renderNearbyPlaces),
-        heading('附近站牌讀取失敗', message),
-      ],
-      content: [retryButton(() => void findNearbyPlaces(latitude, longitude, autoPreview, 'replace'))],
+    const message = nearbyPlacesView.renderError({
+      cityCode: city.code,
+      origin: [latitude, longitude],
+      error,
+      backLabel: '附近站牌',
+      onBack: renderNearbyPlaces,
+      onRetry: () => void findNearbyPlaces(latitude, longitude, autoPreview, 'replace'),
     })
+    setStatus(message, true)
   }
 }
 
@@ -1472,21 +1469,6 @@ function renderNearbyPlaces() {
   }
   drawTripEndpoints()
 
-  const list = document.createElement('div')
-  list.className = 'nearby-list'
-  if (!lastNearbyPlaces.length) list.appendChild(paragraph('500 公尺內沒有收錄到站牌，換個位置試試。'))
-  for (const place of lastNearbyPlaces) {
-    const button = document.createElement('button')
-    button.className = 'nearby-place-button'
-    const name = document.createElement('strong')
-    name.textContent = place.name
-    const distance = document.createElement('span')
-    distance.textContent = `${Math.round(place.distanceMeters)} m`
-    button.appendChild(name)
-    button.appendChild(distance)
-    button.addEventListener('click', () => void openNearbyPlace(place))
-    list.appendChild(button)
-  }
   const managedNearbyParent = history.state?.mapView === 'nearby' && history.state?.mapParent
   const nearbyBack = managedNearbyParent
     ? () => history.back()
@@ -1494,20 +1476,12 @@ function renderNearbyPlaces() {
   const nearbyBackLabel = history.state?.mapParent === 'route'
     ? '返回路線'
     : hasTripResults() ? '返回行程候選' : '路線列表'
-  renderDrawer({
-    key: `nearby:${activeCity.code}:${lastNearbyOrigin[0].toFixed(5)}:${lastNearbyOrigin[1].toFixed(5)}`,
-    mode: 'map-list',
-    header: [
-      drawerBack(nearbyBackLabel, nearbyBack),
-      heading(
-        '附近站牌',
-        lastNearbyPlaces.length
-          ? `${lastNearbyPlaces.length} 個附近站牌，點任一站牌預覽所有經過路線。`
-          : '附近沒有站牌。',
-      ),
-    ],
-    content: [list],
-    footer: [tripModeButton()],
+  nearbyPlacesView.renderPlaces({
+    cityCode: activeCity.code,
+    origin: lastNearbyOrigin,
+    places: lastNearbyPlaces,
+    backLabel: nearbyBackLabel,
+    onBack: nearbyBack,
   })
   clearStatus()
   const [latitude, longitude] = lastNearbyOrigin
