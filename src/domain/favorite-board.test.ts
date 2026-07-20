@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { busKey, migrateLegacyPresets, normalizeFavoriteBoards, pruneOtherMapBoards, sameFavoriteDirection, type FavoriteBoard, type FavoriteBus } from './favorite-board'
+import {
+  busKey,
+  mergeFavoriteBuses,
+  migrateLegacyPresets,
+  normalizeFavoriteBoards,
+  sameFavoriteBoardContent,
+  sameFavoriteDirection,
+  type FavoriteBoard,
+  type FavoriteBus,
+} from './favorite-board'
 
 const now = '2026-07-04T00:00:00.000Z'
+
+const board = (id: string, extra: Partial<FavoriteBoard> = {}): FavoriteBoard => ({
+  version: 2,
+  id,
+  title: id,
+  buses: [],
+  createdAt: now,
+  updatedAt: now,
+  ...extra,
+})
 
 describe('migrateLegacyPresets', () => {
   it('converts v1 presets into single-bus boards', () => {
@@ -90,20 +109,37 @@ describe('sameFavoriteDirection', () => {
   })
 })
 
-describe('pruneOtherMapBoards', () => {
-  const board = (id: string, extra: Partial<FavoriteBoard> = {}): FavoriteBoard => ({
-    version: 2, id, title: id, buses: [], createdAt: now, updatedAt: now, ...extra,
+describe('sameFavoriteBoardContent', () => {
+  const busA: FavoriteBus = { routeName: '307', routeUid: 'R1', patternId: 'P1', stopUid: 'S1', direction: 0 }
+  const busB: FavoriteBus = { routeName: '藍1', routeUid: 'R2', patternId: 'P2', stopUid: 'S2', direction: 1 }
+
+  it('matches the same place and direction set regardless of order or metadata', () => {
+    const saved = board('saved', { city: 'Taipei', placeId: 'P', buses: [busA, busB] })
+    const draft = board('draft', {
+      title: '新站名',
+      city: 'Taipei',
+      placeId: 'P',
+      latitude: 25,
+      longitude: 121,
+      buses: [{ ...busB, directionLabel: '往 B' }, { ...busA, directionLabel: '往 A' }],
+      updatedAt: '2026-07-20T00:00:00.000Z',
+    })
+
+    expect(sameFavoriteBoardContent(saved, draft)).toBe(true)
   })
 
-  it('keeps setup boards and the current place, drops other map boards', () => {
-    const boards = [
-      board('setup'),
-      board('same-place', { city: 'Chiayi', placeId: 'P1' }),
-      board('other-place', { city: 'Chiayi', placeId: 'P2' }),
-      board('other-city', { city: 'Taipei', placeId: 'P1' }),
-    ]
-    expect(pruneOtherMapBoards(boards, 'Chiayi', 'P1').map((item) => item.id))
-      .toEqual(['setup', 'same-place'])
+  it('does not merge a different place or a partial direction set', () => {
+    const saved = board('saved', { city: 'Taipei', placeId: 'P', buses: [busA, busB] })
+    expect(sameFavoriteBoardContent(saved, board('other', { city: 'Taipei', placeId: 'Q', buses: [busA, busB] }))).toBe(false)
+    expect(sameFavoriteBoardContent(saved, board('partial', { city: 'Taipei', placeId: 'P', buses: [busA] }))).toBe(false)
+  })
+})
+
+describe('mergeFavoriteBuses', () => {
+  it('preserves existing order and appends only new directions', () => {
+    const first: FavoriteBus = { routeName: '307', routeUid: 'R1', patternId: 'P1', stopUid: 'S1', direction: 0 }
+    const second: FavoriteBus = { routeName: '藍1', routeUid: 'R2', patternId: 'P2', stopUid: 'S2', direction: 1 }
+    expect(mergeFavoriteBuses([first], [{ ...first, directionLabel: '更新文字' }, second])).toEqual([first, second])
   })
 })
 
