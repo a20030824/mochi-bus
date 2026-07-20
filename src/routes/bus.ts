@@ -27,6 +27,7 @@ import {
 import { appIcon, renderAmbiguousPage, renderErrorPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
 import { presentBusApiError } from '../presentation/api-error'
 import { presentPageError, publicErrorMessage } from '../presentation/page-error'
+import { presentShortcutError, presentShortcutEta } from '../presentation/shortcut'
 import {
   getSnapshotRouteCatalog,
   getStopPlaceByStopUid,
@@ -201,11 +202,12 @@ const shortcutHandler = async (c: Context<Env>) => {
     const env = tdxEnv(c)
     const resolved = await resolveBusQuery(env, query)
     const result = await getCommuteETA(env, resolved)
-    const staleText = result.stale ? '\n⚠️ 資料可能延遲' : ''
-    return c.text(`${result.routeName}｜${result.stopName}\n${result.label}${staleText}`, 200, noStoreHeaders)
+    const presentation = presentShortcutEta(result)
+    return c.text(presentation.body, presentation.status, noStoreHeaders)
   } catch (error) {
-    console.error('shortcut_eta_failed', error)
-    return c.text(toPublicError(error), error instanceof QueryValidationError ? 400 : 503)
+    const presentation = presentShortcutError(error)
+    if (presentation.shouldLog) console.error('shortcut_eta_failed', error)
+    return c.text(presentation.body, presentation.status)
   }
 }
 
