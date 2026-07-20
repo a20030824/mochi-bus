@@ -1,9 +1,14 @@
 diff --git a/src/lib/tdx.ts b/src/lib/tdx.ts
 --- a/src/lib/tdx.ts
 +++ b/src/lib/tdx.ts
-@@ -1036,1 +1036,1 @@
+@@ -1030,6 +1030,6 @@
+     })
+     throw error
+   }
+ 
 -  const memoryKey = `tdx/${url.toString()}`
 +  const memoryKey = `tdx/${maxResponseBytes ?? 'unbounded'}/${url.toString()}`
+   const memoized = memoryCacheGet<TDXCacheEntry<T>>(memoryKey)
 @@ -1195,4 +1195,5 @@
    const declaredLength = parsedContentLength(response.headers.get('Content-Length'))
    if (declaredLength !== undefined && declaredLength > maxBytes) {
