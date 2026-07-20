@@ -78,7 +78,21 @@ type TimetableViewOptions = {
   onSelectStop: (stopUid: string) => void
 }
 
+type RouteLoadingViewOptions = {
+  cityCode: string
+  routeName: string
+  backLabel: string
+  onBack: () => void
+}
+
+type RouteErrorViewOptions = RouteLoadingViewOptions & {
+  message: string
+  onRetry: () => void
+}
+
 export type RouteDetailSurface = {
+  showRouteLoading(options: RouteLoadingViewOptions): void
+  showRouteError(options: RouteErrorViewOptions): void
   showVariantPicker(options: VariantPickerOptions): void
   showRoute(options: RouteViewOptions): HTMLButtonElement
   showTimetableLoading(cityCode: string, variant: RouteMapVariant, stopUid: string | undefined, onBack: () => void): void
@@ -121,6 +135,29 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
 
   function clearVehicles(): void {
     options.vehicleLayer.clearLayers()
+  }
+
+  function showRouteLoading(view: RouteLoadingViewOptions): void {
+    options.renderDrawer({
+      key: `route:${view.cityCode}:${view.routeName}`,
+      mode: 'compact',
+      content: [
+        options.drawerBack(view.backLabel, view.onBack),
+        options.heading(view.routeName, '正在拼起路線與站牌…'),
+      ],
+    })
+  }
+
+  function showRouteError(view: RouteErrorViewOptions): void {
+    options.renderDrawer({
+      key: `route:${view.cityCode}:${view.routeName}`,
+      mode: 'compact',
+      content: [
+        options.drawerBack(view.backLabel, view.onBack),
+        options.heading(view.routeName, view.message),
+        options.retryButton(view.onRetry),
+      ],
+    })
   }
 
   function showVariantPicker(view: VariantPickerOptions): void {
@@ -350,6 +387,8 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
   }
 
   return {
+    showRouteLoading,
+    showRouteError,
     showVariantPicker,
     showRoute,
     showTimetableLoading,

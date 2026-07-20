@@ -58,7 +58,13 @@ function timetable(): RouteTimetableResponse {
 
 type Harness = ReturnType<typeof createHarness>
 
-function createHarness(loadVariants = vi.fn(async () => [firstVariant])) {
+function createHarness(
+  loadVariants: (
+    cityCode: string,
+    routeName: string,
+    signal?: AbortSignal,
+  ) => Promise<RouteMapVariant[]> = vi.fn(async () => [firstVariant]),
+) {
   let requestId = 0
   let currentController: AbortController | undefined
   let pickerOptions: Parameters<RouteDetailSurface['showVariantPicker']>[0] | undefined
@@ -136,7 +142,7 @@ describe('route detail controller', () => {
 
     await harness.controller.open(request)
 
-    expect(harness.options.prepareOpen).toHaveBeenCalledWith(request)
+    expect(harness.options.prepareOpen).toHaveBeenCalledWith({ ...request, returnToTrip: false })
     expect(harness.surface.showRouteLoading).toHaveBeenCalledOnce()
     expect(harness.surface.showRoute).toHaveBeenCalledOnce()
     expect(harness.options.enterRouteMode).toHaveBeenCalledOnce()

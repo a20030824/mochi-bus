@@ -1,6 +1,4 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
-import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
-import { selectRouteVariant } from '../../src/domain/map/route-variant-selection'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
@@ -31,6 +29,7 @@ import { createMapCameraController } from './camera-controller'
 import { createDrawerRenderer, type DrawerView } from './drawer-view'
 import { createMapFeatureDiscovery, type MapFeature } from './feature-discovery'
 import { createCityNetworkController } from './city-network-controller'
+import { createRouteDetailController } from './route-detail-controller'
 import { createRouteDetailSurface } from './route-detail-surface'
 import { bindTextTooltip } from './leaflet-tooltip'
 import {
@@ -209,8 +208,6 @@ let lastDirectRoutes: DirectRoute[] = []
 let lastTransferPlans: TransferPlan[] = []
 let journeyWarning: TDXWarning | undefined
 let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = 'browse'
-let routeReturnsToTrip = false
-let activeRouteColor = stopFillAccent
 let previewRequest = 0
 // 行程候選離開前的鏡頭只存可序列化值;路線 detail 的 fit 不應覆蓋它。
 let tripResultsCamera: MapCameraState | undefined
@@ -241,10 +238,6 @@ let selectedTransferIndex = 0
 let selectedDirectIndex = 0
 let pendingFromSelection: PendingTripSelection | undefined
 let pendingToSelection: PendingTripSelection | undefined
-let routeBackAction: (() => void) | undefined
-// 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
-let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
-let variantPickerUsed = false
 
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 
@@ -283,7 +276,7 @@ const routeDetailSurface = createRouteDetailSurface({
 
 const vehicleRefresh = createVehicleRefreshController<RouteMapVariant, VehiclePositionsResponse>({
   load: (cityCode, variant, signal) => mapApi.vehicles(cityCode, variant, signal),
-  isActive: ({ cityCode }) => activeCity?.code === cityCode && interactionMode === 'route',
+  isActive: (session) => routeDetail.isVehicleSessionActive(session),
   onResponse: renderVehiclePositions,
   onError: renderVehicleRefreshError,
   onStop: () => routeDetailSurface.clearVehicles(),
@@ -302,11 +295,67 @@ const routeTimetableSummary = createTimetableSummaryController<
     target.classList.remove('pending')
     target.disabled = false
     target.setAttribute('aria-label', '查看時刻表')
-    target.addEventListener('click', () => void openRouteTimetable(variant))
+    target.addEventListener('click', () => void routeDetail.openTimetable())
   },
   onUnavailable: ({ target }) => target.remove(),
   // 時刻是輔助資訊；拿不到就整列收掉，不打斷路線與車輛定位。
   onError: ({ target }) => target.remove(),
+})
+
+const routeDetail = createRouteDetailController({
+  surface: routeDetailSurface,
+  loadVariants: mapApi.routeVariants,
+  loadTimetable: mapApi.timetable,
+  beginRequest: beginNavRequest,
+  isStaleRequest: isStaleNav,
+  isCityActive: (cityCode) => activeCity?.code === cityCode,
+  prepareOpen: (request) => {
+    cityNetwork.hide()
+    previewRequest += 1
+    previewLayer.clearLayers()
+    nearbyLayer.clearLayers()
+    if (!request.returnToTrip && !hasTripResults()) clearTripState()
+  },
+  invalidatePreview: () => { previewRequest += 1 },
+  clearNearby: () => nearbyLayer.clearLayers(),
+  clearPreview: () => previewLayer.clearLayers(),
+  enterRouteMode: () => { interactionMode = 'route' },
+  clearTripState,
+  hasTripResults,
+  returnToTripResults,
+  returnToRoutePicker,
+  onStopSelect: (latitude, longitude) => void findNearbyPlaces(latitude, longitude, true),
+  writePickerLocation: (cityCode, routeName) => {
+    history.replaceState(
+      history.state,
+      '',
+      `/map?city=${encodeURIComponent(cityCode)}&route=${encodeURIComponent(routeName)}`,
+    )
+  },
+  writeVariantLocation: (cityCode, variant) => {
+    const params = new URLSearchParams({
+      city: cityCode,
+      route: variant.routeName,
+      routeUid: variant.routeUid,
+      direction: String(variant.direction),
+      variant: variant.variantKey,
+    })
+    const currentState = historyRecord()
+    history.replaceState({
+      ...currentState,
+      mapView: 'route',
+      mapParent: readMapView({ mapView: currentState.mapParent }) ?? 'catalogue',
+    }, '', `/map?${params}`)
+  },
+  setDocumentTitle,
+  setStatus,
+  clearStatus,
+  startVehicleRefresh: (cityCode, variant) => vehicleRefresh.start({ cityCode, route: variant }),
+  stopVehicleRefresh: () => vehicleRefresh.stop(),
+  startTimetableSummary: (cityCode, variant, target) => {
+    routeTimetableSummary.start({ cityCode, variant, target })
+  },
+  stopTimetableSummary: () => routeTimetableSummary.stop(),
 })
 
 function browserStorage(): Storage | undefined {
@@ -475,7 +524,7 @@ async function hydrateMapLocation() {
       activeCity = city
       if (routeName) {
         const returnToTrip = history.state?.mapParent === 'trip-results' && restoreTripResultsState()
-        await loadRoute(routeName, params.get('variant'), returnToTrip)
+        await openRouteDetail(routeName, params.get('variant'), returnToTrip)
       } else {
         if (params.get('trip') === 'results' && restoreTripResultsState(params)) {
           returnToTripResults()
@@ -569,14 +618,13 @@ map.on('click', (event) => {
 
 function showTaiwan() {
   cancelLocationHydration()
-  stopVehicleRefresh()
   cancelNavRequest()
   clearPendingTripSelections()
   clearTripResultsCamera()
   activeCity = undefined
   networkButton.hidden = true
   cityNetwork.hide()
-  routeDetailSurface.clearRoute()
+  routeDetail.close()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
@@ -687,7 +735,6 @@ function returnToOverview() {
 }
 
 function showRegion(regionCode: RegionCode) {
-  stopVehicleRefresh()
   cancelNavRequest()
   clearPendingTripSelections()
   clearTripResultsCamera()
@@ -700,7 +747,7 @@ function showRegion(regionCode: RegionCode) {
     mapView: 'region',
     mapParent: currentState.mapView === 'region' ? currentState.mapParent : 'overview',
   }, '', `/map?region=${regionCode}`)
-  routeDetailSurface.clearRoute()
+  routeDetail.close()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
@@ -755,7 +802,6 @@ function returnToRegion() {
 }
 
 async function chooseCity(city: MapCity) {
-  stopVehicleRefresh()
   clearPendingTripSelections()
   clearTripResultsCamera()
   activeCity = city
@@ -767,7 +813,7 @@ async function chooseCity(city: MapCity) {
   networkButton.hidden = false
   cityNetwork.hide()
   selectionLayer.clearLayers()
-  routeDetailSurface.clearRoute()
+  routeDetail.close()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
   selectedFrom = undefined
@@ -813,13 +859,10 @@ async function chooseCity(city: MapCity) {
 
 function renderRoutePicker() {
   if (!activeCity) return
-  stopVehicleRefresh()
   cancelNavRequest()
   interactionMode = 'browse'
-  routeReturnsToTrip = false
-  routeBackAction = undefined
   clearTripState()
-  routeDetailSurface.clearRoute()
+  routeDetail.close()
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
   if (!routes.length || routesCityCode !== activeCity.code) {
@@ -991,7 +1034,7 @@ function openCatalogueRoute(routeName: string) {
     mapView: 'route',
     mapParent: 'catalogue',
   }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}`)
-  void loadRoute(routeName)
+  void openRouteDetail(routeName)
 }
 
 function openChildRoute(routeName: string, preferredVariant?: string | null, color = routeColor(routeName)) {
@@ -1005,7 +1048,7 @@ function openChildRoute(routeName: string, preferredVariant?: string | null, col
     mapView: 'route',
     mapParent: parent,
   }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}`)
-  void loadRoute(routeName, preferredVariant, false, color, parent === 'catalogue' ? undefined : () => history.back())
+  void openRouteDetail(routeName, preferredVariant, false, color, parent === 'catalogue' ? undefined : () => history.back())
 }
 
 async function searchPlaces(query: string, signal?: AbortSignal): Promise<SearchPlace[]> {
@@ -1231,7 +1274,7 @@ function tripModeButton(): HTMLButtonElement {
     interactionMode = 'trip'
     // 全路網開著就留著:小站點正好當選點的瞄準參考,等終點選完才收
     previewLayer.clearLayers()
-    routeDetailSurface.clearRoute()
+    routeDetail.close()
     nearbyLayer.clearLayers()
     renderTripSelectionStep('from')
   })
@@ -1241,7 +1284,6 @@ function tripModeButton(): HTMLButtonElement {
 function cancelTripMode() {
   clearTripState()
   interactionMode = 'browse'
-  routeBackAction = undefined
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
   if (history.state?.mapView === 'trip-select' && history.state?.mapParent) {
@@ -1307,10 +1349,8 @@ function returnToTripResults() {
     return
   }
   interactionMode = 'trip-results'
-  routeReturnsToTrip = false
   // 選中的路線畫在 routeLayer、車輛有自己的計時器,回候選清單時一併收掉
-  stopVehicleRefresh()
-  routeDetailSurface.clearRoute()
+  routeDetail.close()
   nearbyLayer.clearLayers()
   void (async () => {
     if (lastDirectRoutes.length) renderDirectRoutes(lastDirectRoutes)
@@ -1334,21 +1374,6 @@ function returnToTripResults() {
   })()
 }
 
-// 把 route-back.ts 的純決策目標對應回實際的導航動作。
-function backActionFor(target: RouteBackTarget): () => void {
-  if (target === 'trip-results') return returnToTripResults
-  if (target === 'variant-picker') {
-    return () => {
-      if (lastVariantChoices) {
-        renderVariantPicker(lastVariantChoices.routeName, lastVariantChoices.variants)
-      } else {
-        renderRoutePicker()
-      }
-    }
-  }
-  if (target === 'stop-view') return () => (routeBackAction ?? renderRoutePicker)()
-  return returnToRoutePicker
-}
 
 function returnToRoutePicker() {
   if (history.state?.mapView === 'route' && history.state?.mapParent === 'catalogue') {
@@ -1398,161 +1423,29 @@ function openTripRoute(
       mapParent: 'trip-results',
     }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}`)
   }
-  void loadRoute(routeName, preferredVariant, true, color, backAction)
+  void openRouteDetail(routeName, preferredVariant, true, color, backAction)
 }
-
-async function loadRoute(
+function openRouteDetail(
   routeName: string,
   preferredVariant?: string | null,
   returnToTrip = false,
   color = stopFillAccent,
-  backAction?: () => void,
-) {
-  if (!activeCity) return
-  cityNetwork.hide()
-  routeReturnsToTrip = returnToTrip
-  activeRouteColor = color
-  routeBackAction = backAction
-  previewRequest += 1
-  previewLayer.clearLayers()
-  nearbyLayer.clearLayers()
-  if (!returnToTrip && !hasTripResults()) clearTripState()
-  // 載入中(和載入失敗時)的返回也要指對地方:從行程候選進來的,
-  // 退路是候選清單;指到 renderRoutePicker 會把整趟規劃清掉。
-  const loading = routeLoadingBack({ returnToTrip, hasStopBackAction: Boolean(backAction) })
-  const loadingBack = backActionFor(loading.target)
-  const { requestId, signal } = beginNavRequest()
-  setStatus(`${routeName} · 正在讀取城市裡的路徑…`)
-  renderDrawer({
-    key: `route:${activeCity.code}:${routeName}`,
-    mode: 'compact',
-    content: [drawerBack(loading.label, loadingBack), heading(routeName, '正在拼起路線與站牌…')],
-  })
-  try {
-    const variants = await mapApi.routeVariants(activeCity.code, routeName, signal)
-    if (isStaleNav(requestId)) return
-    const selection = selectRouteVariant(variants, preferredVariant)
-    lastVariantChoices = { routeName, variants }
-    variantPickerUsed = selection.pickerUsed
-    if (selection.kind === 'variant') drawVariant(selection.variant)
-    else renderVariantPicker(routeName, variants)
-  } catch (error) {
-    if (isStaleNav(requestId)) return
-    const message = error instanceof Error && error.message ? error.message : '目前無法取得這條路線。'
-    setStatus(message, true)
-    renderDrawer({
-      key: `route:${activeCity.code}:${routeName}`,
-      mode: 'compact',
-      content: [
-        drawerBack(loading.label, loadingBack),
-        heading(routeName, message),
-        retryButton(() => void loadRoute(routeName, preferredVariant, returnToTrip, color, backAction)),
-      ],
-    })
-  }
-}
-function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
-  previewRequest += 1
-  stopVehicleRefresh()
-  nearbyLayer.clearLayers()
-  const decision = routeLoadingBack({ returnToTrip: routeReturnsToTrip, hasStopBackAction: Boolean(routeBackAction) })
-  const variantBack = backActionFor(decision.target)
-  routeDetailSurface.showVariantPicker({
-    cityCode: activeCity!.code,
+  stopBackAction?: () => void,
+): Promise<void> {
+  if (!activeCity) return Promise.resolve()
+  return routeDetail.open({
+    cityCode: activeCity.code,
     routeName,
-    variants,
-    backLabel: decision.label,
-    onBack: variantBack,
-    onSelect: drawVariant,
+    preferredVariant,
+    returnToTrip,
+    color,
+    stopBackAction,
   })
-  clearStatus()
-  history.replaceState(history.state, '', `/map?city=${encodeURIComponent(activeCity!.code)}&route=${encodeURIComponent(routeName)}`)
-}
-
-async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
-  if (!activeCity) return
-  stopVehicleRefresh()
-  const cityCode = activeCity.code
-  const back = () => drawVariant(variant)
-  const { requestId, signal } = beginNavRequest()
-  routeTimetableSummary.stop()
-  routeDetailSurface.showTimetableLoading(cityCode, variant, stopUid, back)
-  setStatus(`${variant.routeName} · 正在讀取時刻`)
-  try {
-    const data = await mapApi.timetable(cityCode, variant, stopUid, signal)
-    if (isStaleNav(requestId)) return
-    const result = routeDetailSurface.showTimetable({
-      cityCode,
-      variant,
-      timetable: data.timetable,
-      onBack: back,
-      onSelectStop: (nextStopUid) => void openRouteTimetable(variant, nextStopUid),
-    })
-    if (result.available) clearStatus()
-    else setStatus(`${variant.routeName} · 無公開時刻資料`)
-  } catch (error) {
-    if (isStaleNav(requestId)) return
-    const message = error instanceof Error ? error.message : '目前無法取得時刻表'
-    routeDetailSurface.showTimetableError(
-      cityCode,
-      variant,
-      stopUid,
-      message,
-      back,
-      () => void openRouteTimetable(variant, stopUid),
-    )
-    setStatus(message, true)
-  }
 }
 
 
 
-function drawVariant(variant: RouteMapVariant) {
-  interactionMode = 'route'
-  if (!routeReturnsToTrip) clearTripState()
-  nearbyLayer.clearLayers()
-  previewLayer.clearLayers()
-  clearStatus()
-  const canReturnToVariantPicker = !routeReturnsToTrip
-    && variantPickerUsed
-    && lastVariantChoices?.routeName === variant.routeName
-    && (lastVariantChoices?.variants.length ?? 0) > 1
-  const backContext = () => ({
-    returnToTrip: routeReturnsToTrip,
-    hasTripResults: hasTripResults(),
-    canReturnToVariantPicker,
-    hasStopBackAction: Boolean(routeBackAction),
-  })
-  const goBack = () => backActionFor(routeViewBack(backContext()).target)()
-  const timetableSummary = routeDetailSurface.showRoute({
-    cityCode: activeCity!.code,
-    variant,
-    color: activeRouteColor,
-    backLabel: routeViewBack(backContext()).label,
-    onBack: goBack,
-    onStopSelect: (latitude, longitude) => void findNearbyPlaces(latitude, longitude, true),
-  })
-  routeTimetableSummary.start({
-    cityCode: activeCity!.code,
-    variant,
-    target: timetableSummary,
-  })
-  const params = new URLSearchParams({
-    city: activeCity!.code,
-    route: variant.routeName,
-    routeUid: variant.routeUid,
-    direction: String(variant.direction),
-    variant: variant.variantKey,
-  })
-  const currentState = historyRecord()
-  history.replaceState({
-    ...currentState,
-    mapView: 'route',
-    mapParent: readMapView({ mapView: currentState.mapParent }) ?? 'catalogue',
-  }, '', `/map?${params}`)
-  setDocumentTitle(`${variant.routeName} 公車路線圖`)
-  startVehicleRefresh(variant)
-}
+
 
 
 function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
@@ -1561,7 +1454,7 @@ function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
   return { radius: 2, weight: 1 }
 }
 function updateStopMarkerSize() {
-  routeDetailSurface.resizeStopMarkers()
+  routeDetail.resizeStopMarkers()
   cityNetwork.resizeStopMarkers()
   const previewStyle = previewDotStyleForZoom(map.getZoom())
   previewStopDots.forEach((dot) => {
@@ -1574,17 +1467,6 @@ function updateStopMarkerSize() {
 }
 
 
-function startVehicleRefresh(variant: RouteMapVariant) {
-  if (!activeCity) {
-    vehicleRefresh.stop()
-    return
-  }
-  vehicleRefresh.start({ cityCode: activeCity.code, route: variant })
-}
-
-function stopVehicleRefresh() {
-  vehicleRefresh.stop()
-}
 function renderVehiclePositions(response: VehiclePositionsResponse) {
   routeDetailSurface.renderVehicles(response.vehicles)
   drawer.querySelector('.vehicle-degraded-notice')?.remove()
@@ -1631,16 +1513,14 @@ async function findNearbyPlaces(
   const nearbyUrl = `/map?city=${encodeURIComponent(activeCity.code)}&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`
   if (historyMode === 'push' && currentView !== 'nearby') history.pushState(nearbyState, '', nearbyUrl)
   else history.replaceState(nearbyState, '', nearbyUrl)
-  stopVehicleRefresh()
   cityNetwork.hide()
   // 只有「選點進行中」需要中止規劃;已有行程結果就保留,
   // 點站牌不再把整趟規劃清掉,附近站牌視圖會給「返回行程候選」的退路。
   if (interactionMode === 'trip') clearTripState()
   interactionMode = 'nearby'
-  routeReturnsToTrip = false
   previewRequest += 1
   previewLayer.clearLayers()
-  routeDetailSurface.clearRoute()
+  routeDetail.close()
   const loadingList = document.createElement('div')
   loadingList.className = 'place-route-loading'
   for (let index = 0; index < 3; index += 1) {
@@ -2250,7 +2130,7 @@ function addSelectablePreview(
   target.on('mouseout', () => line.setStyle(normalStyle))
   target.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
-    if (returnToTrip) void loadRoute(variant.routeName, variant.variantKey, true, color, backAction)
+    if (returnToTrip) void openRouteDetail(variant.routeName, variant.variantKey, true, color, backAction)
     else openChildRoute(variant.routeName, variant.variantKey, color)
   })
   return line
@@ -2600,7 +2480,7 @@ async function showPlaceRoutes(place: NearbyPlace) {
   if (!activeCity) return
   const placeRequest = ++previewRequest
   previewLayer.clearLayers()
-  routeDetailSurface.clearRoute()
+  routeDetail.close()
   const loadingList = document.createElement('div')
   loadingList.className = 'place-route-loading'
   for (let index = 0; index < 3; index += 1) {
