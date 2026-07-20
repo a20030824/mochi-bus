@@ -2,8 +2,10 @@ export const ROUTE_REFRESH_INTERVAL_MS = 30_000
 
 type TimerHandle = unknown
 
+export type VisibleRefreshResult = 'stop' | void
+
 type VisibleRefreshOptions = {
-  refresh: () => Promise<void>
+  refresh: (signal: AbortSignal) => Promise<VisibleRefreshResult>
   intervalMs?: number
   isVisible?: () => boolean
   now?: () => number
@@ -19,8 +21,8 @@ export type VisibleRefreshController = {
 
 /**
  * Refresh immediately while visible, then wait one full interval after each
- * settled request. Hidden pages keep no timer, and visibility restoration only
- * refreshes immediately when the previous result is already old enough.
+ * settled request. Hidden pages keep no timer and abort any active request;
+ * terminal refresh results stop the controller instead of retrying forever.
  */
 export function createVisibleRefreshController(options: VisibleRefreshOptions): VisibleRefreshController {
   const intervalMs = options.intervalMs ?? ROUTE_REFRESH_INTERVAL_MS
@@ -37,11 +39,16 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
   let running = false
   let stopped = false
   let lastSettledAt: number | undefined
+  let activeAbortController: AbortController | undefined
 
   function clearScheduled(): void {
     if (timer === undefined) return
     clearTimer(timer)
     timer = undefined
+  }
+
+  function abortActive(): void {
+    activeAbortController?.abort()
   }
 
   function schedule(delayMs: number): void {
@@ -57,19 +64,46 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
     if (stopped || running || !isVisible()) return
     clearScheduled()
     running = true
+    const abortController = new AbortController()
+    activeAbortController = abortController
+    let result: VisibleRefreshResult = undefined
+    let failed = false
+    let failure: unknown
+
     try {
-      await options.refresh()
+      result = await options.refresh(abortController.signal)
+    } catch (error) {
+      failed = true
+      failure = error
     } finally {
+      if (activeAbortController === abortController) activeAbortController = undefined
       running = false
-      lastSettledAt = now()
-      schedule(intervalMs)
     }
+
+    if (abortController.signal.aborted) {
+      if (!stopped && isVisible()) schedule(0)
+      return
+    }
+
+    lastSettledAt = now()
+    if (result === 'stop') {
+      stopped = true
+      clearScheduled()
+      return
+    }
+
+    schedule(intervalMs)
+    if (failed) throw failure
   }
 
   async function visibilityChanged(): Promise<void> {
     if (stopped) return
     clearScheduled()
-    if (!isVisible() || running) return
+    if (!isVisible()) {
+      abortActive()
+      return
+    }
+    if (running) return
 
     if (lastSettledAt === undefined) {
       await runRefresh()
@@ -87,6 +121,7 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
     stop() {
       stopped = true
       clearScheduled()
+      abortActive()
     },
   }
 }
