@@ -5,7 +5,7 @@ export default defineConfig({
   build: {
     outDir: 'public/assets',
     emptyOutDir: true,
-    sourcemap: true,
+    sourcemap: false,
     rollupOptions: {
       // 外觀 bootstrap 是所有 HTML 頁面的獨立 entry，由 Worker 統一注入；
       // 各互動頁只載入自己的功能 entry，避免 route/error 等靜態頁漏套外觀。
