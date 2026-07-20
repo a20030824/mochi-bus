@@ -47,7 +47,7 @@ const realtimeDetail: RouteDetail = {
 const fullyRealtimeDetail: RouteDetail = {
   ...realtimeDetail,
   stops: realtimeDetail.stops.map((stop, index) => index === 2
-    ? { ...stop, etaLabel: '18 分', etaTone: 'live' }
+    ? { ...stop, etaLabel: '18 分', etaTone: 'live' as const }
     : stop),
 }
 
