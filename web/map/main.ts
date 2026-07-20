@@ -38,6 +38,7 @@ import {
   planInitialMapHistory,
   readMapView,
 } from './history-state'
+import { createTimetableSummaryController } from './timetable-summary-controller'
 import { createVehicleRefreshController } from './vehicle-refresh-controller'
 import { routeCasingColor, routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './theme'
 import {
@@ -51,6 +52,7 @@ import {
   type RouteItem,
   type RouteMapVariant,
   type RouteTimetable,
+  type RouteTimetableResponse,
   type SearchPlace,
   type TimetableStop,
   type TransferPlan,
@@ -211,7 +213,6 @@ let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = '
 let routeReturnsToTrip = false
 let activeRouteColor = stopFillAccent
 let previewRequest = 0
-let timetableRequest = 0
 // 行程候選離開前的鏡頭只存可序列化值;路線 detail 的 fit 不應覆蓋它。
 let tripResultsCamera: MapCameraState | undefined
 let tripResultsCameraCity: string | undefined
@@ -269,6 +270,26 @@ const vehicleRefresh = createVehicleRefreshController<RouteMapVariant, VehiclePo
   onResponse: renderVehiclePositions,
   onError: renderVehicleRefreshError,
   onStop: () => vehicleLayer.clearLayers(),
+})
+
+const routeTimetableSummary = createTimetableSummaryController<
+  RouteMapVariant,
+  RouteTimetableResponse,
+  HTMLButtonElement
+>({
+  load: (cityCode, variant, signal) => mapApi.timetable(cityCode, variant, undefined, signal),
+  isTargetActive: (target) => drawer.contains(target),
+  isAvailable: ({ timetable }) => timetable.mode !== 'none' && timetable.services.length > 0,
+  onAvailable: ({ variant, target }, data) => {
+    renderTimetableSummary(target, timetableSummaryText(data.timetable) ?? '查看時刻表')
+    target.classList.remove('pending')
+    target.disabled = false
+    target.setAttribute('aria-label', '查看時刻表')
+    target.addEventListener('click', () => void openRouteTimetable(variant))
+  },
+  onUnavailable: ({ target }) => target.remove(),
+  // 時刻是輔助資訊；拿不到就整列收掉，不打斷路線與車輛定位。
+  onError: ({ target }) => target.remove(),
 })
 
 function browserStorage(): Storage | undefined {
@@ -1500,38 +1521,12 @@ function renderVariantPicker(routeName: string, variants: RouteMapVariant[]) {
 }
 
 
-// 摘要列從一開始就佔位(pending),資料到了原地變成可點的時刻表入口;
-// 版面高度不變,就不需要第二次 fitBounds,畫面也不會跳。
-async function hydrateRouteTimetableSummary(
-  variant: RouteMapVariant,
-  summary: HTMLButtonElement,
-  requestId: number,
-) {
-  if (!activeCity) return
-  try {
-    const data = await mapApi.timetable(activeCity.code, variant)
-    if (requestId !== timetableRequest || !drawer.contains(summary)) return
-    if (data.timetable.mode === 'none' || !data.timetable.services.length) {
-      summary.remove()
-      return
-    }
-    renderTimetableSummary(summary, timetableSummaryText(data.timetable) ?? '查看時刻表')
-    summary.classList.remove('pending')
-    summary.disabled = false
-    summary.setAttribute('aria-label', '查看時刻表')
-    summary.addEventListener('click', () => void openRouteTimetable(variant))
-  } catch {
-    // 時刻是輔助資訊,拿不到就整列收掉,不打斷路線地圖與車輛定位。
-    if (requestId === timetableRequest && drawer.contains(summary)) summary.remove()
-  }
-}
-
 async function openRouteTimetable(variant: RouteMapVariant, stopUid?: string) {
   if (!activeCity) return
   stopVehicleRefresh()
   const back = () => drawVariant(variant)
   const { requestId, signal } = beginNavRequest()
-  timetableRequest += 1
+  routeTimetableSummary.stop()
   renderDrawer({
     key: `timetable:${activeCity.code}:${variant.variantKey}:${stopUid ?? ''}`,
     mode: 'timetable',
@@ -1673,8 +1668,11 @@ function drawVariant(variant: RouteMapVariant) {
     ],
   })
   if (bounds.isValid()) camera.focusBounds(bounds)
-  const summaryRequest = ++timetableRequest
-  void hydrateRouteTimetableSummary(variant, timetableSummary, summaryRequest)
+  routeTimetableSummary.start({
+    cityCode: activeCity!.code,
+    variant,
+    target: timetableSummary,
+  })
   const params = new URLSearchParams({
     city: activeCity!.code,
     route: variant.routeName,
