@@ -32,21 +32,21 @@ jobs:
           path.write_text(source)
           PY
       - run: npx vitest run web/map/trip-state.test.ts web/map/trip-runtime-store.test.ts web/map/trip-results-snapshot.test.ts
-      - name: Capture typecheck
-        id: typecheck
+      - run: npx tsc --noEmit
+      - name: Capture full check
+        id: check
         continue-on-error: true
-        run: npx tsc --noEmit > trip-runtime-typecheck.log 2>&1
+        run: npm run check > trip-runtime-check.log 2>&1
       - uses: actions/upload-artifact@v4
-        if: steps.typecheck.outcome == 'failure'
+        if: steps.check.outcome == 'failure'
         with:
-          name: trip-runtime-typecheck
-          path: trip-runtime-typecheck.log
-      - name: Require typecheck
-        if: steps.typecheck.outcome == 'failure'
+          name: trip-runtime-check
+          path: trip-runtime-check.log
+      - name: Require full check
+        if: steps.check.outcome == 'failure'
         run: |
-          cat trip-runtime-typecheck.log
+          tail -n 160 trip-runtime-check.log
           exit 1
-      - run: npm run check
       - run: git diff --check
       - name: Commit clean runtime migration
         run: |
