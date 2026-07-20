@@ -2,6 +2,7 @@ import { expect, test } from './fixtures'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE } from '../../src/domain/tdx-api-error'
 
 const routeUrl = '/route?city=Taipei&route=307&routeUid=TPE19108&direction=0&stop=%E6%8D%B7%E9%81%8B%E8%A5%BF%E9%96%80%E7%AB%99&stopUid=TPE213044'
+const routeUrlWithoutStopUid = '/route?city=Taipei&route=307&routeUid=TPE19108&direction=0&stop=%E6%8D%B7%E9%81%8B%E8%A5%BF%E9%96%80%E7%AB%99'
 
 const routeHtml = `<!doctype html><html><body>
 <main class="route-page">
@@ -50,6 +51,15 @@ test.describe('Route progressive ETA', () => {
     expect(apiUrl?.pathname).toBe('/api/v1/route-eta')
     expect(apiUrl?.searchParams.get('routeUid')).toBe('TPE19108')
     expect(apiUrl?.searchParams.get('stopUid')).toBe('TPE213044')
+  })
+
+  test('keeps hydrating a legacy shared link without stopUid', async ({ page }) => {
+    await page.route('**/api/v1/route-eta*', (route) => route.fulfill({ json: realtime }))
+
+    await page.goto(routeUrlWithoutStopUid)
+
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('12 分')
+    await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即將進站')
   })
 
   test('pauses while hidden and resumes only when the previous result is stale', async ({ page }) => {
