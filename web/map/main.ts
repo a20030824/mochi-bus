@@ -1,12 +1,16 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
-import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import type { TripSelectionKind } from '../../src/domain/map/trip-selection'
 import { createTripRuntimeStore } from './trip-runtime-store'
 import { createTripController, type TripPlanContext, type TripResultsPresentation } from './trip-controller'
 import { createTripPlanLoader, type TripPlanLoadPhase } from './trip-plan-loader'
 import { createTripResultsSnapshot, parseTripResultsSnapshot } from './trip-results-snapshot'
 import { createTripResultsView } from './trip-results-view'
+import {
+  createJourneyPreviewController,
+  type JourneyPreviewLeg,
+  type JourneyPreviewRenderResult,
+} from './journey-preview-controller'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
 import {
@@ -39,7 +43,6 @@ import { createVehicleRefreshController } from './vehicle-refresh-controller'
 import { routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './theme'
 import {
   mapApi,
-  type DirectRoute,
   type MapCity,
   type NearbyPlace,
   type PlaceRoute,
@@ -48,7 +51,6 @@ import {
   type RouteMapVariant,
   type RouteTimetableResponse,
   type SearchPlace,
-  type TransferPlan,
   type VehiclePositionsResponse,
 } from './map-api-client'
 import { renderTimetableSummary, timetableSummaryText } from './timetable-view'
@@ -61,15 +63,6 @@ import {
 } from './trip-selection-view'
 import 'leaflet/dist/leaflet.css'
 import './style.css'
-
-type JourneyLegPreviewOptions = {
-  selected?: boolean
-  onSelect?: () => void
-}
-
-type JourneyPreviewOptions = {
-  fitCamera: boolean
-}
 
 const regions: Array<{
   code: RegionCode
@@ -227,6 +220,37 @@ const tripResultsView = createTripResultsView({
   onSelectTransfer: (index) => void tripController.selectTransfer(index),
   onOpenRoute: openTripRoute,
 })
+const journeyPreview = createJourneyPreviewController({
+  currentCityCode: () => activeCity?.code,
+  loadVariant: mapApi.routeVariant,
+  clearPreview: () => previewLayer.clearLayers(),
+  invalidateOtherPreviews: () => { previewRequest += 1 },
+  routeColor,
+  transferLegColors,
+  renderLeg: renderJourneyPreviewLeg,
+  focusCoordinates: (coordinates) => {
+    const bounds = L.latLngBounds(coordinates)
+    if (bounds.isValid()) camera.focusBounds(bounds, { maxZoom: 16 })
+  },
+  onSelectDirect: (index) => void tripController.selectDirect(index),
+  onOpenRoute: openTripRoute,
+})
+
+function invalidatePreviewRequests(): void {
+  previewRequest += 1
+  journeyPreview.cancel()
+}
+
+function clearPreviewLayer(): void {
+  invalidatePreviewRequests()
+  previewLayer.clearLayers()
+}
+
+function beginOtherPreviewRequest(): number {
+  journeyPreview.cancel()
+  previewRequest += 1
+  return previewRequest
+}
 // 全路網是可疊加的輔助圖層，不是 drawer 主視圖。它不能取消路線、站牌或
 // 行程查詢；關閉圖層時則只作廢自己的載入。
 const networkRequests = createNavRequestCoordinator()
@@ -307,14 +331,13 @@ const routeDetail = createRouteDetailController({
   isCityActive: (cityCode) => activeCity?.code === cityCode,
   prepareOpen: (request) => {
     cityNetwork.hide()
-    previewRequest += 1
-    previewLayer.clearLayers()
+    clearPreviewLayer()
     nearbyLayer.clearLayers()
     if (!request.returnToTrip && !hasTripResults()) clearTripState()
   },
-  invalidatePreview: () => { previewRequest += 1 },
+  invalidatePreview: invalidatePreviewRequests,
   clearNearby: () => nearbyLayer.clearLayers(),
-  clearPreview: () => previewLayer.clearLayers(),
+  clearPreview: clearPreviewLayer,
   enterRouteMode: () => { interactionMode = 'route' },
   clearTripState,
   hasTripResults,
@@ -623,7 +646,7 @@ function showTaiwan() {
   routeDetail.close()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
-  previewLayer.clearLayers()
+  clearPreviewLayer()
   tripController.reset()
   setStatus('選一個區域，看看公車如何穿過城市。')
   renderRegionMarkers()
@@ -739,7 +762,7 @@ function showRegion(regionCode: RegionCode) {
   routeDetail.close()
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
-  previewLayer.clearLayers()
+  clearPreviewLayer()
   clearStatus()
   const regionCities = cities.filter((city) => city.region === regionCode)
   for (const city of regionCities) {
@@ -805,7 +828,7 @@ async function chooseCity(city: MapCity) {
   selectionLayer.clearLayers()
   routeDetail.close()
   nearbyLayer.clearLayers()
-  previewLayer.clearLayers()
+  clearPreviewLayer()
   setDocumentTitle(`${city.name}公車地圖`)
   setStatus(`${city.name} · 正在整理路線…`)
   renderDrawer({
@@ -845,7 +868,7 @@ function renderRoutePicker() {
   interactionMode = 'browse'
   clearTripState()
   routeDetail.close()
-  previewLayer.clearLayers()
+  clearPreviewLayer()
   nearbyLayer.clearLayers()
   if (!routes.length || routesCityCode !== activeCity.code) {
     // 深連結直接進路線(沒經過 chooseCity)後按返回會走到這:目錄還沒載,
@@ -1100,7 +1123,7 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
 function showTripSelectionStep(nextKind: TripSelectionKind) {
   clearTripResultsCamera()
   interactionMode = 'trip'
-  previewLayer.clearLayers()
+  clearPreviewLayer()
   nearbyLayer.clearLayers()
   drawTripEndpoints()
   renderTripSelectionStep(nextKind)
@@ -1188,7 +1211,7 @@ function cancelTripMode() {
   clearTripState()
   interactionMode = 'browse'
   nearbyLayer.clearLayers()
-  previewLayer.clearLayers()
+  clearPreviewLayer()
   if (history.state?.mapView === 'trip-select' && history.state?.mapParent) {
     history.back()
     return
@@ -1218,7 +1241,7 @@ function clearTripResultsCamera() {
   tripResultsCamera = undefined
   tripResultsCameraCity = undefined
   // 清除行程也要讓尚未完成的 preview 失效,避免舊回應重新畫線或 fit。
-  previewRequest += 1
+  invalidatePreviewRequests()
 }
 function hasTripResults(): boolean {
   return tripController.hasResults()
@@ -1400,8 +1423,7 @@ async function findNearbyPlaces(
   // 點站牌不再把整趟規劃清掉,附近站牌視圖會給「返回行程候選」的退路。
   if (interactionMode === 'trip') clearTripState()
   interactionMode = 'nearby'
-  previewRequest += 1
-  previewLayer.clearLayers()
+  clearPreviewLayer()
   routeDetail.close()
   const loadingList = document.createElement('div')
   loadingList.className = 'place-route-loading'
@@ -1523,9 +1545,7 @@ async function presentTripResults({ fitCamera }: TripResultsPresentation): Promi
   writeTripResultsUrl()
   tripResultsView.render(results)
   clearStatus()
-  return results.resultKind === 'direct'
-    ? previewDirectRoutes(results.directRoutes, { fitCamera })
-    : previewTransferPlans(results.transferPlans, { fitCamera })
+  return journeyPreview.preview(results, { fitCamera })
 }
 
 function renderTripPlanError(error: unknown, context: TripPlanContext) {
@@ -1538,81 +1558,9 @@ function renderTripPlanError(error: unknown, context: TripPlanContext) {
   })
 }
 
-async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {
-  if (!activeCity) return false
-  const requestId = ++previewRequest
-  previewLayer.clearLayers()
-  const plan = plans[trip.selectedTransferIndex]
-  if (!plan) return false
-  const previewLegColors = transferLegColors(plan.first.routeName, plan.second.routeName)
-  const legs = [
-    { ...plan.first, color: previewLegColors[0] },
-    { ...plan.second, color: previewLegColors[1] },
-  ]
-  const previews = await Promise.all(legs.map(async (leg) => {
-    const variant = await mapApi.routeVariant(activeCity!.code, leg.routeName, leg.variantKey)
-    return variant ? { variant, color: leg.color, leg } : null
-  }))
-  if (requestId !== previewRequest) return false
-  const bounds = L.latLngBounds([])
-  previews.forEach((preview) => {
-    if (!preview) return
-    const labels = previews.indexOf(preview) % 2 === 0
-      ? ['上車', '轉乘'] as const
-      : ['轉乘', '下車'] as const
-    const previewLine = addJourneyLegPreview(
-      preview.variant,
-      preview.color,
-      preview.leg.boardSequence,
-      preview.leg.alightSequence,
-      labels,
-      { onSelect: () => openTripRoute(preview.leg.routeName, preview.leg.variantKey, preview.color) },
-    )
-    bounds.extend(previewLine.focusBounds)
-  })
-  if (trip.fromCoordinate) bounds.extend(trip.fromCoordinate)
-  if (trip.toCoordinate) bounds.extend(trip.toCoordinate)
-  if (fitCamera && bounds.isValid()) camera.focusBounds(bounds, { maxZoom: 16 })
-  return true
-}
-
-async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {
-  if (!activeCity) return false
-  const selectedIndex = trip.selectedDirectIndex
-  const requestId = ++previewRequest
-  previewLayer.clearLayers()
-  const previews = await Promise.all(selectDirectPreviewEntries(directRoutes, selectedIndex).map(async ({ route, index }) => {
-    const variant = await mapApi.routeVariant(activeCity!.code, route.routeName, route.variantKey)
-    return variant ? { variant, color: routeColor(route.routeName), route, index } : null
-  }))
-  if (requestId !== previewRequest) return false
-  const bounds = L.latLngBounds([])
-  let focusBounds: L.LatLngBounds | undefined
-  previews.forEach((preview) => {
-    if (!preview) return
-    const previewLine = addJourneyLegPreview(
-      preview.variant,
-      preview.color,
-      preview.route.boardSequence,
-      preview.route.alightSequence,
-      ['上車', '下車'],
-      {
-        selected: preview.index === selectedIndex,
-        onSelect: () => void tripController.selectDirect(preview.index),
-      },
-    )
-    if (preview.index === selectedIndex && previewLine.hasSegment) focusBounds = previewLine.focusBounds
-  })
-  if (focusBounds) bounds.extend(focusBounds)
-  if (trip.from) bounds.extend([trip.from.latitude, trip.from.longitude])
-  if (trip.to) bounds.extend([trip.to.latitude, trip.to.longitude])
-  if (fitCamera && bounds.isValid()) camera.focusBounds(bounds, { maxZoom: 16 })
-  return true
-}
-
 async function previewPlaceRoutes(placeRoutes: PlaceRoute[], place: NearbyPlace) {
   if (!activeCity) return
-  const requestId = ++previewRequest
+  const requestId = beginOtherPreviewRequest()
   previewLayer.clearLayers()
   const previews = await Promise.all(placeRoutes.slice(0, 8).map(async (route) => {
     const variant = await mapApi.routeVariant(activeCity!.code, route.routeName, route.variantKey)
@@ -1648,28 +1596,22 @@ function addSelectablePreview(
   return line
 }
 
-function addJourneyLegPreview(
-  variant: RouteMapVariant,
-  color: string,
-  boardSequence: number,
-  alightSequence: number,
-  labels: readonly [string, string],
-  options: JourneyLegPreviewOptions = {},
-): {
-  fullLine: LeafletGeoJSON
-  segmentLine?: LeafletGeoJSON
-  focusBounds: L.LatLngBounds
-  hasSegment: boolean
-} {
-  const selected = options.selected !== false
-  const { line: fullLine, target: fullLineTarget } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, {
+function renderJourneyPreviewLeg({
+  variant,
+  color,
+  boardSequence,
+  alightSequence,
+  labels,
+  selected,
+  onSelect,
+}: JourneyPreviewLeg): JourneyPreviewRenderResult {
+  const { target: fullLineTarget } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, {
     color, weight: selected ? 3.5 : 2.5, opacity: selected ? .18 : .08, lineCap: 'round', lineJoin: 'round',
   })
   bindHoverTooltip(fullLineTarget, `${variant.routeName} · ${variant.label}`, { sticky: true })
   fullLineTarget.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
-    if (options.onSelect) options.onSelect()
-    else openTripRoute(variant.routeName, variant.variantKey, color)
+    onSelect()
   })
 
   const board = variant.stops.features.find((stop) => stop.properties.sequence === boardSequence)
@@ -1680,10 +1622,10 @@ function addJourneyLegPreview(
     coordinates: stop.geometry.coordinates as [number, number],
   }))
   const segmentCoordinates = getJourneySegmentCoordinates(coordinates, stops, boardSequence, alightSequence)
-  const focusBounds = L.latLngBounds([])
+  const focusCoordinates: Array<[number, number]> = []
   let segmentLine: LeafletGeoJSON | undefined
   if (segmentCoordinates && board && alight) {
-    segmentCoordinates.forEach(([longitude, latitude]) => focusBounds.extend([latitude, longitude]))
+    segmentCoordinates.forEach(([longitude, latitude]) => focusCoordinates.push([latitude, longitude]))
     const segmentFeature: GeoJSON.Feature<GeoJSON.LineString> = {
       type: 'Feature',
       properties: {},
@@ -1702,14 +1644,13 @@ function addJourneyLegPreview(
     bindHoverTooltip(segment, `${variant.routeName} · ${board.properties.stopName} → ${alight.properties.stopName}`, { sticky: true })
     segment.on('click', (event) => {
       L.DomEvent.stopPropagation(event)
-      if (options.onSelect) options.onSelect()
-      else openTripRoute(variant.routeName, variant.variantKey, color)
+      onSelect()
     })
     segmentLine = segment
   }
 
-  if (board) focusBounds.extend([board.geometry.coordinates[1], board.geometry.coordinates[0]])
-  if (alight) focusBounds.extend([alight.geometry.coordinates[1], alight.geometry.coordinates[0]])
+  if (board) focusCoordinates.push([board.geometry.coordinates[1], board.geometry.coordinates[0]])
+  if (alight) focusCoordinates.push([alight.geometry.coordinates[1], alight.geometry.coordinates[0]])
 
   if (board && alight && selected) {
     addPreviewStopDots(variant.stops, color, previewLayer)
@@ -1723,7 +1664,7 @@ function addJourneyLegPreview(
       ).addTo(previewLayer)
     })
   }
-  return { fullLine, segmentLine, focusBounds, hasSegment: Boolean(segmentLine) }
+  return { focusCoordinates, hasSegment: Boolean(segmentLine) }
 }
 
 async function openPlaceById(
@@ -1877,7 +1818,7 @@ function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLBu
 
 async function showPlaceRoutes(place: NearbyPlace) {
   if (!activeCity) return
-  const placeRequest = ++previewRequest
+  const placeRequest = beginOtherPreviewRequest()
   previewLayer.clearLayers()
   routeDetail.close()
   const loadingList = document.createElement('div')
