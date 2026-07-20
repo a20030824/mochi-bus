@@ -1,0 +1,185 @@
+diff --git a/src/infrastructure/tdx/stop-arrivals.ts b/src/infrastructure/tdx/stop-arrivals.ts
+index fa730428..2f30c54b 100644
+--- a/src/infrastructure/tdx/stop-arrivals.ts
++++ b/src/infrastructure/tdx/stop-arrivals.ts
+@@ -26,18 +26,16 @@ const STOP_ARRIVAL_SELECT = [
+   'Direction',
+   'EstimateTime',
+   'StopStatus',
+-  'DataTime',
+-  'SrcUpdateTime',
+-  'SrcTransTime',
+-  'UpdateTime',
+ ].join(',')
+ 
+ export function buildStopArrivalBatches(
+   city: string,
+   candidates: StopArrivalCandidate[],
+   maxStopUidsPerBatch = MAX_STOP_UIDS_PER_BATCH,
+ ): StopArrivalBatch[] {
+-  const safeBatchSize = Math.max(1, Math.floor(maxStopUidsPerBatch))
++  const safeBatchSize = Number.isFinite(maxStopUidsPerBatch)
++    ? Math.max(1, Math.floor(maxStopUidsPerBatch))
++    : MAX_STOP_UIDS_PER_BATCH
+   const candidatesByScope = new Map<string, StopArrivalCandidate[]>()
+@@ -60,7 +58,7 @@ export function buildStopArrivalBatches(
+           scope,
+           stopUids: chunk,
+           candidates: scopedCandidates.filter((candidate) => allowed.has(candidate.stopUid)),
+-          cacheKey: `stop-batch:v1:${scope}:${chunk.join(',')}`,
++          cacheKey: `stop-batch:v1:${scope}:${JSON.stringify(chunk)}`,
+           url: stopArrivalBatchUrl(scope, chunk),
+         })
+@@ -79,17 +77,14 @@ export function isStopArrivalBatchPayload(
+   return value.every((item) => {
+     if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+     const record = item as Record<string, unknown>
+-    return typeof record.StopUID === 'string'
++    return typeof record.RouteUID === 'string'
++      && typeof record.StopUID === 'string'
+       && allowed.has(record.StopUID)
+-      && optionalString(record.RouteUID)
+       && optionalString(record.SubRouteUID)
+-      && optionalNumber(record.Direction)
++      && validDirection(record.Direction)
+       && optionalNullableNumber(record.EstimateTime)
+       && optionalNumber(record.StopStatus)
+-      && optionalString(record.DataTime)
+-      && optionalString(record.SrcUpdateTime)
+-      && optionalString(record.SrcTransTime)
+-      && optionalString(record.UpdateTime)
+   })
+ }
+@@ -115,6 +110,10 @@ function optionalNumber(value: unknown): boolean {
+   return value === undefined || typeof value === 'number'
+ }
+ 
++function validDirection(value: unknown): boolean {
++  return value === 0 || value === 1 || value === 2
++}
++
+ function optionalNullableNumber(value: unknown): boolean {
+   return value === undefined || value === null || typeof value === 'number'
+ }
+diff --git a/src/infrastructure/tdx/stop-arrivals.test.ts b/src/infrastructure/tdx/stop-arrivals.test.ts
+index bc28884d..8abb67af 100644
+--- a/src/infrastructure/tdx/stop-arrivals.test.ts
++++ b/src/infrastructure/tdx/stop-arrivals.test.ts
+@@ -16,7 +16,7 @@ describe('stop arrival TDX batches', () => {
+     expect(batch.candidates).toHaveLength(3)
+     expect(batch.url.pathname).toBe('/api/basic/v2/Bus/EstimatedTimeOfArrival/City/Taipei')
+     expect(batch.url.searchParams.get('$filter')).toBe("StopUID eq 'STOP1' or StopUID eq 'STOP2'")
+-    expect(batch.url.searchParams.get('$select')).toContain('RouteUID,SubRouteUID,StopUID,Direction,EstimateTime')
++    expect(batch.url.searchParams.get('$select')).toBe('RouteUID,SubRouteUID,StopUID,Direction,EstimateTime,StopStatus')
+     expect(batch.url.searchParams.get('$format')).toBe('JSON')
+   })
+@@ -43,7 +43,7 @@ describe('stop arrival TDX batches', () => {
+       .toEqual(['TPE1', 'TPE2', 'TPE3'])
+   })
+ 
+-  it('accepts only bounded records for requested StopUIDs', () => {
++  it('accepts only bounded, attributable records for requested StopUIDs', () => {
+     expect(isStopArrivalBatchPayload([{
+       RouteUID: 'TPE1',
+       SubRouteUID: 'TPE1-0',
+@@ -53,6 +53,22 @@ describe('stop arrival TDX batches', () => {
+       StopStatus: 0,
+     }], ['STOP1'])).toBe(true)
+ 
++    expect(isStopArrivalBatchPayload([{
++      RouteUID: 'TPE1',
++      StopUID: 'STOP1',
++      Direction: 2,
++      EstimateTime: null,
++    }], ['STOP1'])).toBe(true)
++
++    expect(isStopArrivalBatchPayload([{
++      StopUID: 'STOP1',
++      Direction: 0,
++    }], ['STOP1'])).toBe(false)
++
++    expect(isStopArrivalBatchPayload([{
++      RouteUID: 'TPE1',
++      StopUID: 'STOP1',
++      Direction: 9,
++    }], ['STOP1'])).toBe(false)
++
+     expect(isStopArrivalBatchPayload([{
+       RouteUID: 'TPE1',
+       StopUID: 'OTHER_STOP',
+diff --git a/src/routes/map.ts b/src/routes/map.ts
+index d4247eb9..2079466a 100644
+--- a/src/routes/map.ts
++++ b/src/routes/map.ts
+@@ -542,6 +542,7 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
+     let warning: TDXWarning | undefined = rateLimited ? 'tdx-rate-limit' : undefined
+     let realtimeQueries = 0
+     for (const batch of batches) {
++      const candidateRouteUids = new Set(batch.candidates.map((candidate) => candidate.routeUid))
+       try {
+         const resolved = await resolveTDXJson<BusETAItem[]>(env, batch.url, 15, {
+           operation: 'place_arrivals',
+@@ -555,7 +556,10 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
+             } : undefined
+           },
+         })
+-        etaItems.push(...resolved.data)
++        // StopUID 查詢會回傳該站所有路線；只採用原本候選 RouteUID，維持既有
++        // 「最多五條即時候選」語意，也避免 stale batch 讓其他路線被誤標成新鮮即時。
++        etaItems.push(...resolved.data.filter((item) =>
++          typeof item.RouteUID === 'string' && candidateRouteUids.has(item.RouteUID)))
+         if (resolved.resolution === 'stale_replay') {
+           batch.candidates.forEach((candidate) => {
+             staleRouteIdentities.add(routeIdentity(candidate.routeName, candidate.routeUid))
+diff --git a/src/routes/map-place-arrivals.test.ts b/src/routes/map-place-arrivals.test.ts
+index 9c8edda7..8ca18442 100644
+--- a/src/routes/map-place-arrivals.test.ts
++++ b/src/routes/map-place-arrivals.test.ts
+@@ -116,6 +116,47 @@ describe('map place arrivals batching', () => {
+     ]))
+   })
+ 
++  it('does not promote non-candidate routes returned for the same StopUID', async () => {
++    const routes: BundleRoute[] = Array.from({ length: 6 }, (_, index) => ({
++      routeUid: `TPE${index + 1}`,
++      routeName: String(index + 1),
++      variantKey: `TPE${index + 1}:0`,
++      direction: 0,
++      label: 'A → B',
++      subRouteName: String(index + 1),
++      stopUid: 'SHARED_STOP',
++      stopSequence: 1,
++      stopName: '測試站',
++      schedules: [],
++    }))
++    const fetchMock = vi.fn(async () => new Response(JSON.stringify(
++      routes.map((route, index) => ({
++        RouteUID: route.routeUid,
++        StopUID: route.stopUid,
++        Direction: route.direction,
++        EstimateTime: (index + 1) * 60,
++        StopStatus: 0,
++      })),
++    ), { status: 200, headers: { 'Content-Type': 'application/json' } }))
++    vi.stubGlobal('fetch', fetchMock)
++
++    const response = await map.request(
++      'https://bus.example/api/v1/map/place/PLACE1/arrivals?city=Taipei',
++      { headers: { Authorization: 'Bearer personal-token' } },
++      environment(routes),
++    )
++    const body = await response.json<{
++      routes: Array<{ routeUid: string; source: string }>
++      realtime: { candidates: number; queries: number; rateLimited: boolean }
++    }>()
++
++    expect(response.status).toBe(200)
++    expect(fetchMock).toHaveBeenCalledTimes(1)
++    expect(body.realtime).toEqual({ candidates: 5, queries: 1, rateLimited: false })
++    expect(body.routes.filter((route) => route.source === 'realtime')).toHaveLength(5)
++    expect(body.routes.find((route) => route.routeUid === 'TPE6')).toMatchObject({ source: 'none' })
++  })
++
+   it('uses at most one request per City and InterCity scope', async () => {
+     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+       const url = requestUrl(input)
