@@ -32,5 +32,6 @@ jobs:
           }
           echo "TABLES=$(query "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('snapshot_watchdog_runs','snapshot_watchdog_city_attempts','snapshot_watchdog_city_results','public_probe_runs','public_probe_city_attempts','public_probe_city_results') ORDER BY name;")"
           echo "WATCHDOG=$(query "SELECT schedule_date,status,COUNT(*) AS cities FROM snapshot_watchdog_city_results WHERE schedule_date=(SELECT MAX(schedule_date) FROM snapshot_watchdog_city_results) GROUP BY schedule_date,status ORDER BY status;")"
+          echo "WATCHDOG_DETAILS=$(query "SELECT schedule_date,city_code,status,active_version,signal_age_bucket,diagnostic_class,evaluated_at FROM snapshot_watchdog_city_results WHERE schedule_date=(SELECT MAX(schedule_date) FROM snapshot_watchdog_city_results) ORDER BY city_code;")"
           echo "PUBLIC_PROBE=$(query "SELECT probe_date,status,COUNT(*) AS cities FROM public_probe_city_results WHERE probe_date=(SELECT MAX(probe_date) FROM public_probe_city_results) GROUP BY probe_date,status ORDER BY status;")"
           echo "RELEASE=$(curl --fail --silent --show-error "https://bus.moc96336.com/api/v1/health/release?a6-compact=${GITHUB_RUN_ID}" | jq -c .)"
