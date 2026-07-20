@@ -20,13 +20,6 @@ function replaceOnce(path, before, after, label) {
 
 replaceOnce(
   'src/routes/bus.ts',
-  "import { presentPageError, publicErrorMessage } from '../presentation/page-error'",
-  "import { presentPageError } from '../presentation/page-error'",
-  'page error import',
-)
-
-replaceOnce(
-  'src/routes/bus.ts',
   `// 舊版 API 相容端點。
 bus.get('/api/eta', async (c) => {
   try {
@@ -59,17 +52,6 @@ bus.get('/text', shortcutHandler)
 `,
   '',
   'retired endpoint block',
-)
-
-replaceOnce(
-  'src/routes/bus.ts',
-  `function toPublicError(error: unknown): string {
-  return publicErrorMessage(error)
-}
-
-`,
-  '',
-  'shortcut public error helper',
 )
 
 replaceOnce(
@@ -120,6 +102,13 @@ replaceOnce(
   '    "snapshot:chiayi": "node scripts/sync-transit-snapshot.mjs Chiayi",\n',
   '',
   'Chiayi-only package script',
+)
+
+replaceOnce(
+  'vite.config.ts',
+  '    sourcemap: true,',
+  '    sourcemap: false,',
+  'production source map flag',
 )
 
 if (!read('src/routes/retired-endpoints.test.ts').includes("'/api/eta'")) {
