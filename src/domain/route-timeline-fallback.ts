@@ -1,7 +1,5 @@
-import {
-  nextScheduledMinutes,
-  type ScheduleItem,
-} from './schedule'
+import { buildRouteScheduleArrivalIndex } from './route-schedule-arrival-index'
+import type { ScheduleItem } from './schedule'
 
 export const ROUTE_UNKNOWN_ETA_LABEL = '—'
 
@@ -28,15 +26,17 @@ export function applyRouteTimelineFallback<T extends RouteTimelineStopPresentati
   query: RouteTimelineScheduleQuery,
   now: Date,
 ): T[] {
+  const scheduledArrivals = buildRouteScheduleArrivalIndex(schedules, {
+    direction: query.direction,
+    subRouteUid: query.subRouteUid,
+    stopUids: stops.filter(isScheduleEligible).map((stop) => stop.stopUid),
+  }, now)
+
   return stops.map((stop) => {
     if (!isScheduleEligible(stop)) return stop
 
-    const estimate = nextScheduledMinutes(schedules, {
-      stopUid: stop.stopUid,
-      direction: query.direction,
-      subRouteUid: query.subRouteUid,
-    }, now)
-    const scheduledLabel = estimate && !estimate.departureBased && !estimate.headwayMinutes
+    const estimate = scheduledArrivals.get(stop.stopUid)
+    const scheduledLabel = estimate
       ? routeScheduledClockLabel(estimate.minutes, Boolean(estimate.nextDay), now)
       : null
 
