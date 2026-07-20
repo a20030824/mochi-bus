@@ -75,15 +75,25 @@ export function busKey(bus: Pick<FavoriteBus, 'routeUid' | 'subRouteUid' | 'patt
   return `${routePatternKey(bus, bus.routeName)}|stop:${bus.stopUid ?? ''}`
 }
 
-// 封面只留一個具 placeId 的站點；保留無法解析 placeId 的舊看板與目前站點。
-export function pruneOtherMapBoards(boards: FavoriteBoard[], city: string, placeId: string): FavoriteBoard[] {
-  return boards.filter((board) => !board.placeId || (board.city === city && board.placeId === placeId))
-}
-
 // 收藏比對以穩定路線身分為準；directionLabel 只是可能變動的顯示文字。
 export function sameFavoriteDirection(a: FavoriteBus, b: FavoriteBus): boolean {
   return sameRoutePattern(a, b)
     && a.stopUid === b.stopUid
+}
+
+// 封面暫存與正式常用只比較站點身分及方向集合；時間、顯示文字與排序不影響相等性。
+export function sameFavoriteBoardContent(a: FavoriteBoard, b: FavoriteBoard): boolean {
+  if (!a.placeId || !b.placeId || a.city !== b.city || a.placeId !== b.placeId) return false
+  if (a.buses.length !== b.buses.length) return false
+  return a.buses.every((bus) => b.buses.some((candidate) => sameFavoriteDirection(candidate, bus)))
+}
+
+export function mergeFavoriteBuses(existing: FavoriteBus[], incoming: FavoriteBus[]): FavoriteBus[] {
+  const merged = [...existing]
+  for (const bus of incoming) {
+    if (!merged.some((candidate) => sameFavoriteDirection(candidate, bus))) merged.push(bus)
+  }
+  return merged
 }
 
 export function normalizeFavoriteBoards(value: unknown): FavoriteBoard[] {
