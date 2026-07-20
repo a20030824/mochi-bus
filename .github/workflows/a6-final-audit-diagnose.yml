@@ -24,5 +24,23 @@ jobs:
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             'https://api.github.com/repos/a20030824/mochi-bus/actions/jobs/88262136284/logs' \
             --output failed-audit.log
-      - name: Show audit failure tail
-        run: tail -n 180 failed-audit.log
+      - name: Show isolated D1 failure evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          lines = Path('failed-audit.log').read_text(encoding='utf-8-sig', errors='replace').splitlines()
+          pattern = re.compile(r'results|schedule_date|probe_date|city_count|accepted|rejected|snapshot_watchdog|public_probe|Process completed|exit code|wrangler|ERROR|Error|test \"\$', re.I)
+          selected = []
+          for i, line in enumerate(lines):
+              if pattern.search(line):
+                  selected.extend(lines[max(0, i - 1):min(len(lines), i + 3)])
+          seen = set()
+          output = []
+          for line in selected:
+              if line not in seen:
+                  seen.add(line)
+                  output.append(line)
+          print('\n'.join(output[-100:]))
+          PY
