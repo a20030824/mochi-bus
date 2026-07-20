@@ -75,27 +75,29 @@ describe('getRoutePageDetail', () => {
 })
 
 describe('getRouteEtaDetail', () => {
-  it('resolves station order before realtime detail and preserves successful ETA', async () => {
-    const calls: string[] = []
-    const result = await getRouteEtaDetail(env, query, {
-      getRouteStopGroups: vi.fn(async () => { calls.push('groups'); return [group] }),
-      getRouteDetail: vi.fn(async () => { calls.push('detail'); return realtimeDetail }),
-    })
+  it('does not perform a separate static lookup after successful realtime detail', async () => {
+    const getRouteStopGroups = vi.fn(async () => [group])
+    const getRouteDetail = vi.fn(async () => realtimeDetail)
 
-    expect(calls).toEqual(['groups', 'detail'])
+    const result = await getRouteEtaDetail(env, query, { getRouteStopGroups, getRouteDetail })
+
+    expect(getRouteDetail).toHaveBeenCalledOnce()
+    expect(getRouteStopGroups).not.toHaveBeenCalled()
     expect(result).toEqual({ detail: realtimeDetail, eta: { kind: 'realtime' } })
   })
 
-  it('marks the selected stop when TDX returns no usable ETA information', async () => {
+  it('marks the selected stop without a separate static lookup when realtime has no ETA', async () => {
     const emptyDetail: RouteDetail = {
       ...realtimeDetail,
       stops: realtimeDetail.stops.map((stop) => ({ ...stop, etaLabel: null, etaTone: 'muted' })),
     }
+    const getRouteStopGroups = vi.fn(async () => [group])
     const result = await getRouteEtaDetail(env, query, {
-      getRouteStopGroups: vi.fn(async () => [group]),
+      getRouteStopGroups,
       getRouteDetail: vi.fn(async () => emptyDetail),
     })
 
+    expect(getRouteStopGroups).not.toHaveBeenCalled()
     expect(result.eta).toEqual({ kind: 'empty' })
     expect(result.detail.stops.find((stop) => stop.selected)).toMatchObject({
       etaLabel: '暫無即時',
@@ -104,14 +106,16 @@ describe('getRouteEtaDetail', () => {
     expect(result.detail.stops.filter((stop) => !stop.selected).every((stop) => stop.etaLabel === null)).toBe(true)
   })
 
-  it('keeps the complete station order when realtime ETA is rate limited', async () => {
+  it('loads static station order only after realtime ETA is rate limited', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const error = new TDXServiceError('rate limited', 429)
+    const calls: string[] = []
     const result = await getRouteEtaDetail(env, query, {
-      getRouteStopGroups: vi.fn(async () => [group]),
-      getRouteDetail: vi.fn(async () => { throw error }),
+      getRouteStopGroups: vi.fn(async () => { calls.push('groups'); return [group] }),
+      getRouteDetail: vi.fn(async () => { calls.push('detail'); throw error }),
     })
 
+    expect(calls).toEqual(['detail', 'groups'])
     expect(result.eta).toEqual({ kind: 'unavailable', warning: 'tdx-rate-limit' })
     expect(result.detail.stops.map((stop) => stop.stopUid)).toEqual(['TPE1', 'TPE2', 'TPE3'])
     expect(result.detail.stops.find((stop) => stop.selected)).toMatchObject({
@@ -138,23 +142,27 @@ describe('getRouteEtaDetail', () => {
     expect(result.eta).toEqual({ kind: 'unavailable', warning: 'tdx-quota' })
   })
 
-  it('does not hide a rejected user token behind route degradation', async () => {
+  it('does not hide a rejected user token or load fallback station order', async () => {
     const error = new TDXServiceError('token rejected', 401)
+    const getRouteStopGroups = vi.fn(async () => [group])
     await expect(getRouteEtaDetail({ ...env, TDX_USER_ACCESS_TOKEN: 'user-token' }, query, {
-      getRouteStopGroups: vi.fn(async () => [group]),
+      getRouteStopGroups,
       getRouteDetail: vi.fn(async () => { throw error }),
     })).rejects.toBe(error)
+    expect(getRouteStopGroups).not.toHaveBeenCalled()
   })
 
-  it('does not convert programming errors into a fake TDX warning', async () => {
+  it('does not convert programming errors into a fake TDX warning or fallback lookup', async () => {
     const error = new TypeError('broken mapper')
+    const getRouteStopGroups = vi.fn(async () => [group])
     await expect(getRouteEtaDetail(env, query, {
-      getRouteStopGroups: vi.fn(async () => [group]),
+      getRouteStopGroups,
       getRouteDetail: vi.fn(async () => { throw error }),
     })).rejects.toBe(error)
+    expect(getRouteStopGroups).not.toHaveBeenCalled()
   })
 
-  it('fails closed when prefetched station groups cannot identify the requested pattern', async () => {
+  it('fails closed when fallback station groups cannot identify the requested pattern', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const error = new TDXServiceError('unavailable', 503)
     await expect(getRouteEtaDetail(env, query, {
