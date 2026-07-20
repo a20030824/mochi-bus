@@ -5,17 +5,24 @@ const MAX_ROUTE_STOPS = 1_000
 const MAX_STOP_UID_LENGTH = 100
 const MAX_STOP_NAME_LENGTH = 160
 
+export class RouteIdentityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RouteIdentityError'
+  }
+}
+
 export function readRoutePageIdentity(documentRoot: Document = document): RoutePageIdentity {
   const node = documentRoot.getElementById(ROUTE_IDENTITY_SCRIPT_ID)
   if (!(node instanceof HTMLScriptElement) || node.type !== 'application/json') {
-    throw new Error('Route page identity island is missing')
+    throw new RouteIdentityError('Route page identity island is missing')
   }
 
   let value: unknown
   try {
     value = JSON.parse(node.textContent ?? '')
   } catch {
-    throw new Error('Route page identity island contains invalid JSON')
+    throw new RouteIdentityError('Route page identity island contains invalid JSON')
   }
 
   return parseRoutePageIdentity(value)
@@ -27,16 +34,16 @@ export function parseRoutePageIdentity(value: unknown): RoutePageIdentity {
     || !Array.isArray(value.stops)
     || value.stops.length === 0
     || value.stops.length > MAX_ROUTE_STOPS) {
-    throw new Error('Route page identity has an invalid envelope')
+    throw new RouteIdentityError('Route page identity has an invalid envelope')
   }
 
   const stops = value.stops.map(parseIdentityStop)
   if (stops.filter((stop) => stop.selected).length !== 1) {
-    throw new Error('Route page identity must contain exactly one selected stop')
+    throw new RouteIdentityError('Route page identity must contain exactly one selected stop')
   }
   for (let index = 1; index < stops.length; index += 1) {
     if (stops[index].sequence <= stops[index - 1].sequence) {
-      throw new Error('Route page identity station order is invalid')
+      throw new RouteIdentityError('Route page identity station order is invalid')
     }
   }
 
@@ -55,7 +62,7 @@ function parseIdentityStop(value: unknown): RoutePageIdentityStop {
     || !Number.isSafeInteger(value.sequence)
     || value.sequence < 0
     || typeof value.selected !== 'boolean') {
-    throw new Error('Route page identity contains an invalid stop')
+    throw new RouteIdentityError('Route page identity contains an invalid stop')
   }
 
   return {

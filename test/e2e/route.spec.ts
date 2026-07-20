@@ -208,6 +208,23 @@ test.describe('Route progressive ETA', () => {
     await expect.poll(() => requests).toBe(3)
   })
 
+  test('stops retrying a malformed ETA contract', async ({ page }) => {
+    let requests = 0
+    await page.clock.install()
+    await page.route('**/api/v1/route-eta*', (route) => {
+      requests += 1
+      return route.fulfill({ json: { ...realtime, schemaVersion: 2 } })
+    })
+
+    await page.goto(routeUrl)
+
+    await expect.poll(() => requests).toBe(1)
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('—')
+    await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時未更新')
+    await page.clock.fastForward(10 * 60_000)
+    expect(requests).toBe(1)
+  })
+
   test('keeps the station order and stops retrying a rejected personal token', async ({ page }) => {
     let requests = 0
     await page.clock.install()
@@ -230,20 +247,28 @@ test.describe('Route progressive ETA', () => {
     expect(requests).toBe(1)
   })
 
-  test('rejects a same-name selected stop with the wrong physical identity', async ({ page }) => {
-    await page.route('**/api/v1/route-eta*', (route) => route.fulfill({
-      json: {
-        ...realtime,
-        stops: realtime.stops.map((stop, index) => index === 1
-          ? { ...stop, stopUid: 'TPE-WRONG' }
-          : stop),
-      },
-    }))
+  test('rejects a same-name selected stop with the wrong physical identity without retrying', async ({ page }) => {
+    let requests = 0
+    await page.clock.install()
+    await page.route('**/api/v1/route-eta*', (route) => {
+      requests += 1
+      return route.fulfill({
+        json: {
+          ...realtime,
+          stops: realtime.stops.map((stop, index) => index === 1
+            ? { ...stop, stopUid: 'TPE-WRONG' }
+            : stop),
+        },
+      })
+    })
 
     await page.goto(routeUrl)
 
+    await expect.poll(() => requests).toBe(1)
     await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('—')
     await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時未更新')
+    await page.clock.fastForward(10 * 60_000)
+    expect(requests).toBe(1)
   })
 
   test('rejects a non-selected row whose name matches but UID does not', async ({ page }) => {

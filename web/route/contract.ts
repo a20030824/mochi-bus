@@ -9,19 +9,26 @@ const MAX_STOP_UID_LENGTH = 128
 const MAX_STOP_NAME_LENGTH = 256
 const MAX_ETA_LABEL_LENGTH = 64
 
+export class RouteContractError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RouteContractError'
+  }
+}
+
 export function parseRouteEtaResponse(value: unknown): RouteEtaResponse {
   if (!isRecord(value)
     || value.schemaVersion !== 1
     || !Array.isArray(value.stops)
     || value.stops.length === 0
     || value.stops.length > MAX_ROUTE_STOPS) {
-    throw new Error('Route ETA response has an invalid envelope')
+    throw new RouteContractError('Route ETA response has an invalid envelope')
   }
 
   const stops = value.stops.map(parseStop)
   for (let index = 1; index < stops.length; index += 1) {
     if (stops[index].sequence <= stops[index - 1].sequence) {
-      throw new Error('Route ETA response has an invalid station order')
+      throw new RouteContractError('Route ETA response has an invalid station order')
     }
   }
 
@@ -34,7 +41,7 @@ export function parseRouteEtaResponse(value: unknown): RouteEtaResponse {
 
 function parseEtaState(value: unknown): RouteEtaState {
   if (!isRecord(value) || typeof value.kind !== 'string') {
-    throw new Error('Route ETA response has an invalid state')
+    throw new RouteContractError('Route ETA response has an invalid state')
   }
   if (value.kind === 'realtime' || value.kind === 'empty') return { kind: value.kind }
   if (value.kind === 'unavailable'
@@ -42,7 +49,7 @@ function parseEtaState(value: unknown): RouteEtaState {
     && TDX_WARNINGS.has(value.warning as RouteEtaWarning)) {
     return { kind: 'unavailable', warning: value.warning as RouteEtaWarning }
   }
-  throw new Error('Route ETA response has an invalid state')
+  throw new RouteContractError('Route ETA response has an invalid state')
 }
 
 function parseStop(value: unknown): RouteEtaStop {
@@ -60,7 +67,7 @@ function parseStop(value: unknown): RouteEtaStop {
     || (typeof value.etaLabel === 'string' && value.etaLabel.length > MAX_ETA_LABEL_LENGTH)
     || typeof value.etaTone !== 'string'
     || !ETA_TONES.has(value.etaTone as RouteEtaStop['etaTone'])) {
-    throw new Error('Route ETA response has an invalid stop')
+    throw new RouteContractError('Route ETA response has an invalid stop')
   }
 
   return {
