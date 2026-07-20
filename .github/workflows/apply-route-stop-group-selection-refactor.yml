@@ -24,7 +24,12 @@ jobs:
       - run: npm ci
       - run: node scripts/apply-route-stop-group-selection-refactor.mjs
       - run: npx vitest run src/domain/route-stop-group-selection.test.ts src/domain/route-page-detail.test.ts
-      - run: npm run check
+      - name: Run full check
+        run: |
+          if ! npm run check > /tmp/route-refactor-check.log 2>&1; then
+            tail -n 180 /tmp/route-refactor-check.log
+            exit 1
+          fi
       - run: git diff --check
       - name: Commit clean refactor
         run: |
