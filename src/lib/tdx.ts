@@ -1031,7 +1031,7 @@ export async function resolveTDXJson<T>(
     throw error
   }
 
-  const memoryKey = `tdx/${url.toString()}`
+  const memoryKey = `tdx/${maxResponseBytes ?? 'unbounded'}/${url.toString()}`
   const memoized = memoryCacheGet<TDXCacheEntry<T>>(memoryKey)
   if (memoized !== undefined && validPayload(memoized.data, options.validate)) {
     return completeData(
@@ -1193,6 +1193,7 @@ async function readJsonResponse(response: Response, maxBytes?: number): Promise<
 
   const declaredLength = parsedContentLength(response.headers.get('Content-Length'))
   if (declaredLength !== undefined && declaredLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined)
     throw new TDXPayloadTooLargeError(maxBytes, declaredLength)
   }
   if (!response.body) return response.json()

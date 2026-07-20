@@ -294,6 +294,49 @@ describe('TDX logical resolution instrumentation', () => {
     })
   })
 
+  it('cancels the body immediately when declared length exceeds the limit', async () => {
+    let cancelCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCount += 1
+      },
+    }), {
+      headers: { 'Content-Length': '4096' },
+    })))
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn() },
+    })
+
+    await expect(fetchTDXJson(
+      observedEnv([]),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=declared-cancel'),
+      30,
+      { ...options, maxResponseBytes: 64 },
+    )).rejects.toThrow('byte limit')
+
+    expect(cancelCount).toBe(1)
+  })
+
+  it('keeps capped and uncapped memory-cache identities separate', async () => {
+    const payload = [{ id: 'x'.repeat(64) }]
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload)))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+    const url = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=memory-limit')
+
+    await expect(fetchTDXJson(observedEnv([]), url, 30, options)).resolves.toEqual(payload)
+    await expect(fetchTDXJson(
+      observedEnv([]),
+      url,
+      30,
+      { ...options, maxResponseBytes: 32 },
+    )).rejects.toThrow('byte limit')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('cancels streamed oversized bodies without opening the TDX circuit', async () => {
     const events: TelemetryEnvelope[] = []
     const encoder = new TextEncoder()
