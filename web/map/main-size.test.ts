@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import mainSource from './main.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 2852
+const MAP_MAIN_LINE_LIMIT = 2732
 
 describe('map main architecture boundary', () => {
   it('does not grow without extracting another responsibility', () => {
