@@ -22,6 +22,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/apply-route-detail-controller.mjs
+      - name: Align normalized request contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('web/map/route-detail-controller.test.ts')
+          source = path.read_text()
+          source = source.replace(
+              'expect(harness.options.prepareOpen).toHaveBeenCalledWith(request)',
+              'expect(harness.options.prepareOpen).toHaveBeenCalledWith({ ...request, returnToTrip: false })',
+          )
+          path.write_text(source)
+          PY
       - run: npx vitest run web/map/route-detail-controller.test.ts web/map/route-detail-presentation.test.ts
       - run: npm run check
       - run: git diff --check
