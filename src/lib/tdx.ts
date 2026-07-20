@@ -1122,7 +1122,14 @@ export async function resolveTDXJson<T>(
   }
   const { token, isShared, credentialKey } = tokenInfo
   const circuitKey = dataCircuitKey(credentialKey)
-  const flightKey = dataFlightKey(credentialKey, url, maxResponseBytes, options.operation)
+  const flightKey = dataFlightKey(
+    credentialKey,
+    url,
+    maxResponseBytes,
+    ttlSeconds,
+    options.operation,
+    Boolean(options.validate),
+  )
   const existingFlight = dataFlights.get(flightKey)
   if (!existingFlight) {
     try {
@@ -1171,9 +1178,18 @@ function dataFlightKey(
   credentialKey: string,
   url: URL,
   maxResponseBytes: number,
-  operation?: TelemetryTdxOperation,
+  ttlSeconds: number,
+  operation: TelemetryTdxOperation | undefined,
+  validatesPayload: boolean,
 ): string {
-  return `${credentialKey}\0${operation ?? 'default'}\0${maxResponseBytes}\0${url.toString()}`
+  return [
+    credentialKey,
+    operation ?? 'default',
+    maxResponseBytes,
+    ttlSeconds,
+    validatesPayload ? 'validated' : 'unvalidated',
+    url.toString(),
+  ].join('\0')
 }
 
 function joinSingleflight<T>(

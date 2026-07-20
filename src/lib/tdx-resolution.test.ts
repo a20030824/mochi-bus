@@ -97,6 +97,39 @@ describe('TDX logical resolution instrumentation', () => {
     expect(eventSets.every((events) => events.length === 1 && events[0]?.resolution === 'upstream')).toBe(true)
   })
 
+  it('does not coalesce requests with different cache or validation policies', async () => {
+    const responders: Array<(response: Response) => void> = []
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      responders.push(resolve)
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+
+    const ttlUrl = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=singleflight-ttl')
+    const ttlRequests = [
+      fetchTDXJson(observedEnv([]), ttlUrl, 15, options),
+      fetchTDXJson(observedEnv([]), ttlUrl, 30, options),
+    ]
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    responders.splice(0).forEach((resolve) => resolve(new Response(JSON.stringify([{ id: 'ttl' }]))))
+    await expect(Promise.all(ttlRequests)).resolves.toHaveLength(2)
+
+    resetMemoryCacheForTests()
+    const validationUrl = new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=singleflight-validation')
+    const validationRequests = [
+      fetchTDXJson(observedEnv([]), validationUrl, 0, options),
+      fetchTDXJson(observedEnv([]), validationUrl, 0, {
+        operation: options.operation,
+        city: options.city,
+      }),
+    ]
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+    responders.splice(0).forEach((resolve) => resolve(new Response(JSON.stringify([{ id: 'validation' }]))))
+    await expect(Promise.all(validationRequests)).resolves.toHaveLength(2)
+  })
+
   it('coalesces concurrent shared-token requests without mixing data URLs', async () => {
     let releaseToken: (response: Response) => void = () => undefined
     const pendingToken = new Promise<Response>((resolve) => {
