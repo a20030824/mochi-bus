@@ -1,0 +1,149 @@
++type PreviewStopDotManagerOptions = {
++  map: L.Map
++  pane?: string
++  haloColor?: string
++  className?: string
++}
++
++// Mouse pointers interact with the visible SVG path so hover enters and leaves exactly
++// under the cursor. Touch gets the same visible path plus a transparent wide hit path.
++export function createSelectablePreviewLineRenderer(
++  options: SelectablePreviewLineRendererOptions,
++): SelectablePreviewLineRenderer {
++  const touchHitWeight = options.touchHitWeight ?? 26
++  if (!Number.isFinite(touchHitWeight) || touchHitWeight <= 0) {
++    throw new Error('Preview touch hit weight must be positive')
++  }
++
++  return (shape, pane, layer, style) => {
++    if (options.hoverCapable) {
++      const line = L.geoJSON(shape, { pane, style }).addTo(layer)
++      return { line, target: line }
++    }
++    const line = L.geoJSON(shape, {
++      pane,
++      style: { ...style, interactive: false },
++    }).addTo(layer)
++    const target = L.geoJSON(shape, {
++      pane,
++      style: {
++        color: '#000',
++        opacity: 0,
++        weight: touchHitWeight,
++        lineCap: 'round',
++        lineJoin: 'round',
++      },
++    }).addTo(layer)
++    return { line, target }
++  }
++}
++
++// A manager tracks only the dots created through itself. Different preview surfaces can
++// therefore share one Leaflet layer without retaining or resizing each other's markers.
++export function createPreviewStopDotManager(
++  options: PreviewStopDotManagerOptions,
++): PreviewStopDotManager {
++  const pane = options.pane ?? 'previewDotPane'
++  const haloColor = options.haloColor ?? stopHaloColor
++  const className = options.className ?? 'preview-stop-dot'
++  const dots = new Set<L.CircleMarker>()
++
++  return {
++    add(stops, color, layer) {
++      const { radius, weight } = previewDotStyleForZoom(options.map.getZoom())
++      L.geoJSON(stops, {
++        pane,
++        pointToLayer: (_feature, latlng) => {
++          const dot = L.circleMarker(latlng, {
++            pane,
++            radius,
++            weight,
++            color: haloColor,
++            fillColor: color,
++            fillOpacity: .6,
++            className,
++            interactive: false,
++          })
++          dots.add(dot)
++          return dot
++        },
++      }).addTo(layer)
++    },
++    resize() {
++      const style = previewDotStyleForZoom(options.map.getZoom())
++      for (const dot of dots) {
++        if (!options.map.hasLayer(dot)) {
++          dots.delete(dot)
++          continue
++        }
++        dot.setStyle(style)
++      }
++    },
++    reset() {
++      dots.clear()
++    },
++  }
++}
++
++export function previewDotStyleForZoom(zoom: number): { radius: number; weight: number } {
++  if (zoom >= 16) return { radius: 5, weight: 1.4 }
++  if (zoom >= 14) return { radius: 3.5, weight: 1.2 }
++  if (zoom >= 12) return { radius: 2.4, weight: 1 }
++  return { radius: 1.8, weight: 1 }
++}
+diff --git a/web/map/route-detail-surface.ts b/web/map/route-detail-surface.ts
+index 1f106fd..d6de732 100644
+--- a/web/map/route-detail-surface.ts
++++ b/web/map/route-detail-surface.ts
+@@ -8,6 +8,7 @@ import type {
+ } from './map-api-client'
+ import { tooltipText } from './leaflet-tooltip'
+ import { createTimetablePanel } from './timetable-view'
++import type { PreviewStopDotManager, SelectablePreviewLineRenderer } from './preview-map-primitives'
+ import {
+   initialRouteStopMarkerMetrics,
+   normalizedVehicleAzimuth,
+@@ -30,13 +31,6 @@ type BindHoverTooltip = <T extends L.Layer>(
+   options?: L.TooltipOptions,
+ ) => T
+ 
+-type BindSelectableLine = (
+-  shape: RouteMapVariant['shape'],
+-  pane: string,
+-  layerGroup: L.LayerGroup,
+-  style: L.PathOptions,
+-) => { line: LeafletGeoJSON; target: LeafletGeoJSON }
+-
+ type RouteDetailSurfaceOptions = {
+   map: L.Map
+   routeLayer: L.LayerGroup
+@@ -47,8 +41,8 @@ type RouteDetailSurfaceOptions = {
+   focusBounds: (bounds: L.LatLngBounds) => void
+   focusPoint: (position: L.LatLngExpression, zoom: number) => void
+   bindHoverTooltip: BindHoverTooltip
+-  bindSelectableLine: BindSelectableLine
+-  addPreviewStopDots: (stops: RouteMapVariant['stops'], color: string, layer: L.LayerGroup) => void
++  selectablePreviewLine: SelectablePreviewLineRenderer
++  previewStopDots: PreviewStopDotManager
+   drawerBack: (label: string, onClick: () => void) => HTMLButtonElement
+   heading: (title: string, description: string) => HTMLElement
+   paragraph: (text: string) => HTMLElement
+@@ -187,6 +181,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
+   }
+ 
+   function showVariantPicker(view: VariantPickerOptions): void {
++    options.previewStopDots.reset()
+     options.previewLayer.clearLayers()
+     clearRoute()
+     const bounds = L.latLngBounds([])
+@@ -195,8 +190,8 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
+     view.variants.map((variant, index) => ({ variant, index })).reverse().forEach(({ variant, index }) => {
+       const color = routePalette[index % routePalette.length]
+       const style = routeVariantPreviewStyle(color, index)
+-      const { line, target } = options.bindSelectableLine(variant.shape, 'routePreviewPane', options.previewLayer, style)
+-      options.addPreviewStopDots(variant.stops, color, options.previewLayer)
++      const { line, target } = options.selectablePreviewLine(variant.shape, 'routePreviewPane', options.previewLayer, style)
++      options.previewStopDots.add(variant.stops, color, options.previewLayer)
+       options.bindHoverTooltip(target, `${variant.label} · ${variant.subRouteName}`, { sticky: true })
+       target.on('mouseover', () => {
+         line.setStyle({ ...style, weight: 8, opacity: .9 })
