@@ -1,0 +1,523 @@
+diff --git a/web/map/journey-preview-map.test.ts b/web/map/journey-preview-map.test.ts
+new file mode 100644
+index 0000000..110b56f
+--- /dev/null
++++ b/web/map/journey-preview-map.test.ts
+@@ -0,0 +1,89 @@
++import { describe, expect, it, vi } from 'vitest'
++
++vi.mock('leaflet', () => ({ default: {} }))
++import type { RouteMapVariant } from './map-api-client'
++import { previewDotStyleForZoom, resolveJourneyPreviewGeometry } from './journey-preview-map'
++
++function variant(): RouteMapVariant {
++  return {
++    variantKey: '307:0',
++    routeName: '307',
++    routeUid: 'TPE-307',
++    direction: 0,
++    label: '往撫遠街',
++    subRouteName: '307',
++    shape: {
++      type: 'Feature',
++      properties: {},
++      geometry: {
++        type: 'LineString',
++        coordinates: [
++          [121.0000, 25.0000],
++          [121.0100, 25.0100],
++          [121.0200, 25.0200],
++          [121.0300, 25.0300],
++        ],
++      },
++    },
++    stops: {
++      type: 'FeatureCollection',
++      features: [
++        stop(1, '起點', 121.0000, 25.0000),
++        stop(2, '上車站', 121.0100, 25.0100),
++        stop(3, '下車站', 121.0200, 25.0200),
++        stop(4, '終點', 121.0300, 25.0300),
++      ],
++    },
++    updatedAt: null,
++  }
++}
++
++function stop(sequence: number, stopName: string, longitude: number, latitude: number) {
++  return {
++    type: 'Feature' as const,
++    properties: {
++      stopUid: `stop-${sequence}`,
++      stopName,
++      sequence,
++    },
++    geometry: {
++      type: 'Point' as const,
++      coordinates: [longitude, latitude],
++    },
++  }
++}
++
++describe('Journey preview map geometry', () => {
++  it('extracts the selected segment and latitude-longitude focus coordinates', () => {
++    const geometry = resolveJourneyPreviewGeometry(variant(), 2, 3)
++
++    expect(geometry.board?.properties.stopName).toBe('上車站')
++    expect(geometry.alight?.properties.stopName).toBe('下車站')
++    expect(geometry.segmentCoordinates).toEqual([
++      [121.0100, 25.0100],
++      [121.0200, 25.0200],
++    ])
++    expect(geometry.focusCoordinates).toEqual([
++      [25.0100, 121.0100],
++      [25.0200, 121.0200],
++      [25.0100, 121.0100],
++      [25.0200, 121.0200],
++    ])
++  })
++
++  it('keeps any resolved endpoint focus when a complete segment cannot be built', () => {
++    const geometry = resolveJourneyPreviewGeometry(variant(), 2, 99)
++
++    expect(geometry.board?.properties.stopName).toBe('上車站')
++    expect(geometry.alight).toBeUndefined()
++    expect(geometry.segmentCoordinates).toBeUndefined()
++    expect(geometry.focusCoordinates).toEqual([[25.0100, 121.0100]])
++  })
++
++  it('preserves the existing preview-dot zoom scale', () => {
++    expect(previewDotStyleForZoom(11)).toEqual({ radius: 1.8, weight: 1 })
++    expect(previewDotStyleForZoom(12)).toEqual({ radius: 2.4, weight: 1 })
++    expect(previewDotStyleForZoom(14)).toEqual({ radius: 3.5, weight: 1.2 })
++    expect(previewDotStyleForZoom(16)).toEqual({ radius: 5, weight: 1.4 })
++  })
++})
+diff --git a/web/map/journey-preview-map.ts b/web/map/journey-preview-map.ts
+new file mode 100644
+index 0000000..eb61a14
+--- /dev/null
++++ b/web/map/journey-preview-map.ts
+@@ -0,0 +1,230 @@
++import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
++import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
++import { bindTextTooltip } from './leaflet-tooltip'
++import { stopHaloColor } from './theme'
++import type { JourneyPreviewLeg, JourneyPreviewRenderResult } from './journey-preview-controller'
++import type { RouteMapVariant } from './map-api-client'
++import type { TripCoordinate } from './trip-state'
++
++type JourneyPreviewMapOptions = {
++  map: L.Map
++  layer: L.LayerGroup
++  hoverCapable: boolean
++  routePane?: string
++  dotPane?: string
++  stopPane?: string
++}
++
++export type JourneyPreviewGeometry = {
++  board?: RouteMapVariant['stops']['features'][number]
++  alight?: RouteMapVariant['stops']['features'][number]
++  segmentCoordinates?: Array<[number, number]>
++  focusCoordinates: TripCoordinate[]
++}
++
++export type JourneyPreviewMap = {
++  renderLeg(leg: JourneyPreviewLeg): JourneyPreviewRenderResult
++  resizeStopMarkers(): void
++  reset(): void
++}
++
++// Leaflet-specific Trip drawing surface. Async loading, stale-request rejection, result
++// selection, History and camera execution deliberately remain outside this module.
++export function createJourneyPreviewMap(options: JourneyPreviewMapOptions): JourneyPreviewMap {
++  const routePane = options.routePane ?? 'routePreviewPane'
++  const dotPane = options.dotPane ?? 'previewDotPane'
++  const stopPane = options.stopPane ?? 'stopPane'
++  const stopDots = new Set<L.CircleMarker>()
++
++  function bindHoverTooltip<T extends L.Layer>(layer: T, content: string, tooltipOptions?: L.TooltipOptions): T {
++    if (options.hoverCapable) bindTextTooltip(layer, content, tooltipOptions)
++    return layer
++  }
++
++  // Touch uses a transparent wide hit target; hover-capable pointers keep events on
++  // the visible line so mouseover/mouseout follows the cursor precisely.
++  function bindSelectableLine(
++    shape: RouteMapVariant['shape'],
++    style: L.PathOptions,
++  ): { line: LeafletGeoJSON; target: LeafletGeoJSON } {
++    if (options.hoverCapable) {
++      const line = L.geoJSON(shape, { pane: routePane, style }).addTo(options.layer)
++      return { line, target: line }
++    }
++    const line = L.geoJSON(shape, {
++      pane: routePane,
++      style: { ...style, interactive: false },
++    }).addTo(options.layer)
++    const target = L.geoJSON(shape, {
++      pane: routePane,
++      style: { color: '#000', opacity: 0, weight: 26, lineCap: 'round', lineJoin: 'round' },
++    }).addTo(options.layer)
++    return { line, target }
++  }
++
++  // Only the selected Trip leg receives stop dots. Track them separately from the
++  // shared Place/route-detail dots so each surface can resize its own markers.
++  function addStopDots(stops: RouteMapVariant['stops'], color: string): void {
++    const { radius, weight } = previewDotStyleForZoom(options.map.getZoom())
++    L.geoJSON(stops, {
++      pane: dotPane,
++      pointToLayer: (_feature, latlng) => {
++        const dot = L.circleMarker(latlng, {
++          pane: dotPane,
++          radius,
++          weight,
++          color: stopHaloColor,
++          fillColor: color,
++          fillOpacity: .6,
++          className: 'preview-stop-dot',
++          interactive: false,
++        })
++        stopDots.add(dot)
++        return dot
++      },
++    }).addTo(options.layer)
++  }
++
++  function addEndpointLabel(
++    stop: RouteMapVariant['stops']['features'][number],
++    label: string,
++    color: string,
++  ): void {
++    const [longitude, latitude] = stop.geometry.coordinates
++    const radius = options.map.getZoom() >= 16 ? 11 : 9
++    const marker = L.circleMarker([latitude, longitude], {
++      pane: stopPane,
++      radius,
++      color: stopHaloColor,
++      weight: 2.4,
++      fillColor: color,
++      fillOpacity: .96,
++    })
++    bindTextTooltip(marker, `${label} · ${stop.properties.stopName}`, {
++      permanent: true,
++      direction: 'top',
++    }).addTo(options.layer)
++  }
++
++  function renderLeg({
++    variant,
++    color,
++    boardSequence,
++    alightSequence,
++    labels,
++    selected,
++    onSelect,
++  }: JourneyPreviewLeg): JourneyPreviewRenderResult {
++    const { target: fullLineTarget } = bindSelectableLine(variant.shape, {
++      color,
++      weight: selected ? 3.5 : 2.5,
++      opacity: selected ? .18 : .08,
++      lineCap: 'round',
++      lineJoin: 'round',
++    })
++    bindHoverTooltip(fullLineTarget, `${variant.routeName} · ${variant.label}`, { sticky: true })
++    fullLineTarget.on('click', (event) => {
++      L.DomEvent.stopPropagation(event)
++      onSelect()
++    })
++
++    const geometry = resolveJourneyPreviewGeometry(variant, boardSequence, alightSequence)
++    let hasSegment = false
++    if (geometry.segmentCoordinates && geometry.board && geometry.alight) {
++      const segmentFeature: GeoJSON.Feature<GeoJSON.LineString> = {
++        type: 'Feature',
++        properties: {},
++        geometry: { type: 'LineString', coordinates: geometry.segmentCoordinates },
++      }
++      const segment = L.geoJSON(segmentFeature, {
++        pane: routePane,
++        style: {
++          color,
++          weight: selected ? 7 : 4,
++          opacity: selected ? .92 : .26,
++          lineCap: 'round',
++          lineJoin: 'round',
++        },
++      }).addTo(options.layer)
++      bindHoverTooltip(
++        segment,
++        `${variant.routeName} · ${geometry.board.properties.stopName} → ${geometry.alight.properties.stopName}`,
++        { sticky: true },
++      )
++      segment.on('click', (event) => {
++        L.DomEvent.stopPropagation(event)
++        onSelect()
++      })
++      hasSegment = true
++    }
++
++    if (geometry.board && geometry.alight && selected) {
++      addStopDots(variant.stops, color)
++      addEndpointLabel(geometry.board, labels[0], color)
++      addEndpointLabel(geometry.alight, labels[1], color)
++    }
++
++    return {
++      focusCoordinates: geometry.focusCoordinates,
++      hasSegment,
++    }
++  }
++
++  return {
++    renderLeg,
++    resizeStopMarkers() {
++      const style = previewDotStyleForZoom(options.map.getZoom())
++      for (const dot of stopDots) {
++        if (!options.map.hasLayer(dot)) {
++          stopDots.delete(dot)
++          continue
++        }
++        dot.setStyle(style)
++      }
++    },
++    reset() {
++      stopDots.clear()
++    },
++  }
++}
++
++export function resolveJourneyPreviewGeometry(
++  variant: RouteMapVariant,
++  boardSequence: number,
++  alightSequence: number,
++): JourneyPreviewGeometry {
++  const board = variant.stops.features.find((stop) => stop.properties.sequence === boardSequence)
++  const alight = variant.stops.features.find((stop) => stop.properties.sequence === alightSequence)
++  const coordinates = variant.shape.geometry.coordinates as Array<[number, number]>
++  const stops = variant.stops.features.map((stop) => ({
++    sequence: stop.properties.sequence,
++    coordinates: stop.geometry.coordinates as [number, number],
++  }))
++  const segmentCoordinates = getJourneySegmentCoordinates(
++    coordinates,
++    stops,
++    boardSequence,
++    alightSequence,
++  )
++  const focusCoordinates: TripCoordinate[] = []
++  if (segmentCoordinates && board && alight) {
++    for (const [longitude, latitude] of segmentCoordinates) {
++      focusCoordinates.push([latitude, longitude])
++    }
++  }
++  if (board) focusCoordinates.push([board.geometry.coordinates[1], board.geometry.coordinates[0]])
++  if (alight) focusCoordinates.push([alight.geometry.coordinates[1], alight.geometry.coordinates[0]])
++  return {
++    board,
++    alight,
++    segmentCoordinates: segmentCoordinates ?? undefined,
++    focusCoordinates,
++  }
++}
++
++export function previewDotStyleForZoom(zoom: number): { radius: number; weight: number } {
++  if (zoom >= 16) return { radius: 5, weight: 1.4 }
++  if (zoom >= 14) return { radius: 3.5, weight: 1.2 }
++  if (zoom >= 12) return { radius: 2.4, weight: 1 }
++  return { radius: 1.8, weight: 1 }
++}
+diff --git a/web/map/main-size.test.ts b/web/map/main-size.test.ts
+index bb59557..f92382d 100644
+--- a/web/map/main-size.test.ts
++++ b/web/map/main-size.test.ts
+@@ -2,8 +2,9 @@
+ import { describe, expect, it } from 'vitest'
+ import mainSource from './main.ts?raw'
+ import journeyPreviewSource from './journey-preview-controller.ts?raw'
++import journeyPreviewMapSource from './journey-preview-map.ts?raw'
+ 
+-const MAP_MAIN_LINE_LIMIT = 2072
++const MAP_MAIN_LINE_LIMIT = 1997
+ 
+ const TRIP_TRANSITION_CALLS = [
+   'trip.start(',
+@@ -39,6 +40,15 @@ describe('map main architecture boundary', () => {
+     }
+   })
+ 
++  it('delegates Leaflet Trip preview drawing to the Journey preview map surface', () => {
++    expect(mainSource).toContain('createJourneyPreviewMap')
++    expect(mainSource).not.toContain('function renderJourneyPreviewLeg(')
++    expect(mainSource).not.toContain('getJourneySegmentCoordinates')
++    for (const dependency of ['mapApi.', 'history.', 'camera.', 'trip.', 'document.', 'window.', 'loadVariant']) {
++      expect(journeyPreviewMapSource).not.toContain(dependency)
++    }
++  })
++
+   it('delegates Trip result Drawer construction to the Trip results view', () => {
+     expect(mainSource).toContain('createTripResultsView')
+     expect(mainSource).not.toContain("className = 'direct-route-list'")
+diff --git a/web/map/main.ts b/web/map/main.ts
+index b9460aa..ff10de2 100644
+--- a/web/map/main.ts
++++ b/web/map/main.ts
+@@ -1,16 +1,12 @@
+ import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
+-import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
+ import type { TripSelectionKind } from '../../src/domain/map/trip-selection'
+ import { createTripRuntimeStore } from './trip-runtime-store'
+ import { createTripController, type TripPlanContext, type TripResultsPresentation } from './trip-controller'
+ import { createTripPlanLoader, type TripPlanLoadPhase } from './trip-plan-loader'
+ import { createTripResultsSnapshot, parseTripResultsSnapshot } from './trip-results-snapshot'
+ import { createTripResultsView } from './trip-results-view'
+-import {
+-  createJourneyPreviewController,
+-  type JourneyPreviewLeg,
+-  type JourneyPreviewRenderResult,
+-} from './journey-preview-controller'
++import { createJourneyPreviewController } from './journey-preview-controller'
++import { createJourneyPreviewMap, previewDotStyleForZoom } from './journey-preview-map'
+ import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
+ import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
+ import {
+@@ -148,6 +144,7 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+ const selectionLayer = L.layerGroup().addTo(map)
+ const routeLayer = L.layerGroup().addTo(map)
+ const previewLayer = L.layerGroup().addTo(map)
++const journeyPreviewMap = createJourneyPreviewMap({ map, layer: previewLayer, hoverCapable })
+ const nearbyLayer = L.layerGroup().addTo(map)
+ const networkLayer = L.layerGroup().addTo(map)
+ const vehicleLayer = L.layerGroup().addTo(map)
+@@ -223,11 +220,14 @@ const tripResultsView = createTripResultsView({
+ const journeyPreview = createJourneyPreviewController({
+   currentCityCode: () => activeCity?.code,
+   loadVariant: mapApi.routeVariant,
+-  clearPreview: () => previewLayer.clearLayers(),
++  clearPreview: () => {
++    previewLayer.clearLayers()
++    journeyPreviewMap.reset()
++  },
+   invalidateOtherPreviews: () => { previewRequest += 1 },
+   routeColor,
+   transferLegColors,
+-  renderLeg: renderJourneyPreviewLeg,
++  renderLeg: journeyPreviewMap.renderLeg,
+   focusCoordinates: (coordinates) => {
+     const bounds = L.latLngBounds(coordinates)
+     if (bounds.isValid()) camera.focusBounds(bounds, { maxZoom: 16 })
+@@ -244,10 +244,12 @@ function invalidatePreviewRequests(): void {
+ function clearPreviewLayer(): void {
+   invalidatePreviewRequests()
+   previewLayer.clearLayers()
++  journeyPreviewMap.reset()
+ }
+ 
+ function beginOtherPreviewRequest(): number {
+   journeyPreview.cancel()
++  journeyPreviewMap.reset()
+   previewRequest += 1
+   return previewRequest
+ }
+@@ -459,13 +461,6 @@ function bindSelectableLine(
+ // 尺寸隨 zoom 走但始終小於 stopPane 的互動圓點,放大才不會縮成針尖。
+ const previewStopDots = new Set<L.CircleMarker>()
+ 
+-function previewDotStyleForZoom(zoom: number): { radius: number; weight: number } {
+-  if (zoom >= 16) return { radius: 5, weight: 1.4 }
+-  if (zoom >= 14) return { radius: 3.5, weight: 1.2 }
+-  if (zoom >= 12) return { radius: 2.4, weight: 1 }
+-  return { radius: 1.8, weight: 1 }
+-}
+-
+ function addPreviewStopDots(
+   stops: RouteMapVariant['stops'],
+   color: string,
+@@ -1361,6 +1356,7 @@ function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
+ function updateStopMarkerSize() {
+   routeDetail.resizeStopMarkers()
+   cityNetwork.resizeStopMarkers()
++  journeyPreviewMap.resizeStopMarkers()
+   const previewStyle = previewDotStyleForZoom(map.getZoom())
+   previewStopDots.forEach((dot) => {
+     if (!map.hasLayer(dot)) {
+@@ -1596,77 +1592,6 @@ function addSelectablePreview(
+   return line
+ }
+ 
+-function renderJourneyPreviewLeg({
+-  variant,
+-  color,
+-  boardSequence,
+-  alightSequence,
+-  labels,
+-  selected,
+-  onSelect,
+-}: JourneyPreviewLeg): JourneyPreviewRenderResult {
+-  const { target: fullLineTarget } = bindSelectableLine(variant.shape, 'routePreviewPane', previewLayer, {
+-    color, weight: selected ? 3.5 : 2.5, opacity: selected ? .18 : .08, lineCap: 'round', lineJoin: 'round',
+-  })
+-  bindHoverTooltip(fullLineTarget, `${variant.routeName} · ${variant.label}`, { sticky: true })
+-  fullLineTarget.on('click', (event) => {
+-    L.DomEvent.stopPropagation(event)
+-    onSelect()
+-  })
+-
+-  const board = variant.stops.features.find((stop) => stop.properties.sequence === boardSequence)
+-  const alight = variant.stops.features.find((stop) => stop.properties.sequence === alightSequence)
+-  const coordinates = variant.shape.geometry.coordinates as Array<[number, number]>
+-  const stops = variant.stops.features.map((stop) => ({
+-    sequence: stop.properties.sequence,
+-    coordinates: stop.geometry.coordinates as [number, number],
+-  }))
+-  const segmentCoordinates = getJourneySegmentCoordinates(coordinates, stops, boardSequence, alightSequence)
+-  const focusCoordinates: Array<[number, number]> = []
+-  let segmentLine: LeafletGeoJSON | undefined
+-  if (segmentCoordinates && board && alight) {
+-    segmentCoordinates.forEach(([longitude, latitude]) => focusCoordinates.push([latitude, longitude]))
+-    const segmentFeature: GeoJSON.Feature<GeoJSON.LineString> = {
+-      type: 'Feature',
+-      properties: {},
+-      geometry: { type: 'LineString', coordinates: segmentCoordinates },
+-    }
+-    const segment = L.geoJSON(segmentFeature, {
+-      pane: 'routePreviewPane',
+-      style: {
+-        color,
+-        weight: selected ? 7 : 4,
+-        opacity: selected ? .92 : .26,
+-        lineCap: 'round',
+-        lineJoin: 'round',
+-      },
+-    }).addTo(previewLayer)
+-    bindHoverTooltip(segment, `${variant.routeName} · ${board.properties.stopName} → ${alight.properties.stopName}`, { sticky: true })
+-    segment.on('click', (event) => {
+-      L.DomEvent.stopPropagation(event)
+-      onSelect()
+-    })
+-    segmentLine = segment
+-  }
+-
+-  if (board) focusCoordinates.push([board.geometry.coordinates[1], board.geometry.coordinates[0]])
+-  if (alight) focusCoordinates.push([alight.geometry.coordinates[1], alight.geometry.coordinates[0]])
+-
+-  if (board && alight && selected) {
+-    addPreviewStopDots(variant.stops, color, previewLayer)
+-    ;[[board, labels[0]], [alight, labels[1]]].forEach(([stop, label]) => {
+-      const feature = stop as typeof board
+-      const [longitude, latitude] = feature.geometry.coordinates
+-      bindTextTooltip(
+-        unifiedStopMarker([latitude, longitude], true, color),
+-        `${label} · ${feature.properties.stopName}`,
+-        { permanent: true, direction: 'top' },
+-      ).addTo(previewLayer)
+-    })
+-  }
+-  return { focusCoordinates, hasSegment: Boolean(segmentLine) }
+-}
+-
+ async function openPlaceById(
+   placeId: string | null,
+   signal?: AbortSignal,
