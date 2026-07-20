@@ -7,11 +7,11 @@ import {
   toBusSearchParams,
   type BusQuery,
 } from '../domain/bus-query'
+import { getRoutePageDetail } from '../domain/route-page-detail'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
   getRouteCatalog,
-  getRouteDetail,
   getRouteStopGroups,
   getStopRouteSuggestions,
   isRejectedUserTdxToken,
@@ -99,7 +99,7 @@ bus.get('/route', async (c) => {
   try {
     const env = tdxEnv(c)
     const resolved = await resolveBusQuery(env, query)
-    const detail = await getRouteDetail(env, resolved)
+    const { detail } = await getRoutePageDetail(env, resolved)
     return c.html(renderRoutePage(resolved, detail, c.req.url), 200, pageHeaders)
   } catch (error) {
     try {
@@ -143,7 +143,7 @@ async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQue
         stopName: stop.properties.stopName,
         sequence: stop.properties.sequence,
         selected: stop.properties.stopUid === query.stopUid,
-        etaLabel: null,
+        etaLabel: stop.properties.stopUid === query.stopUid ? '僅站序' : null,
         etaTone: 'muted' as const,
       })),
   }
