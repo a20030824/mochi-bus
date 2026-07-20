@@ -46,20 +46,18 @@ export function createJourneyPreviewMap(options: JourneyPreviewMapOptions): Jour
   function bindSelectableLine(
     shape: RouteMapVariant['shape'],
     style: L.PathOptions,
-  ): { line: LeafletGeoJSON; target: LeafletGeoJSON } {
+  ): LeafletGeoJSON {
     if (options.hoverCapable) {
-      const line = L.geoJSON(shape, { pane: routePane, style }).addTo(options.layer)
-      return { line, target: line }
+      return L.geoJSON(shape, { pane: routePane, style }).addTo(options.layer)
     }
-    const line = L.geoJSON(shape, {
+    L.geoJSON(shape, {
       pane: routePane,
       style: { ...style, interactive: false },
     }).addTo(options.layer)
-    const target = L.geoJSON(shape, {
+    return L.geoJSON(shape, {
       pane: routePane,
       style: { color: '#000', opacity: 0, weight: 26, lineCap: 'round', lineJoin: 'round' },
     }).addTo(options.layer)
-    return { line, target }
   }
 
   // Only the selected Trip leg receives stop dots. Track them separately from the
@@ -115,7 +113,7 @@ export function createJourneyPreviewMap(options: JourneyPreviewMapOptions): Jour
     selected,
     onSelect,
   }: JourneyPreviewLeg): JourneyPreviewRenderResult {
-    const { target: fullLineTarget } = bindSelectableLine(variant.shape, {
+    const fullLineTarget = bindSelectableLine(variant.shape, {
       color,
       weight: selected ? 3.5 : 2.5,
       opacity: selected ? .18 : .08,
