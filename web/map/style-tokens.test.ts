@@ -45,8 +45,9 @@ describe('map design tokens', () => {
 
   it('keeps paper grain subtle, drawer-only, and non-interactive', () => {
     const opacity = Number(css.match(/--paper-grain-opacity:\s*([\d.]+)/)?.[1])
+    // 蛋殼點紋的覆蓋面積比舊的纖維劃線小,同樣的「克制」允許到 .05。
     expect(opacity).toBeGreaterThanOrEqual(.02)
-    expect(opacity).toBeLessThanOrEqual(.04)
+    expect(opacity).toBeLessThanOrEqual(.05)
     expect(css).toMatch(/\.map-drawer::before\s*\{[^}]*pointer-events:\s*none/s)
     expect(css).not.toMatch(/#map::before|#map\s*\{[^}]*paper-grain/s)
   })
