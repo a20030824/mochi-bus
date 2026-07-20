@@ -1,0 +1,22 @@
+name: Export Place routes controller workspace
+
+on:
+  push:
+    branches:
+      - agent/extract-place-routes-controller
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: place-routes-controller-workspace
+          include-hidden-files: true
+          path: |
+            .
+            !.git
