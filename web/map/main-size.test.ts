@@ -4,9 +4,10 @@ import mainSource from './main.ts?raw'
 import journeyPreviewSource from './journey-preview-controller.ts?raw'
 import journeyPreviewMapSource from './journey-preview-map.ts?raw'
 import previewMapPrimitivesSource from './preview-map-primitives.ts?raw'
+import placeRoutesSource from './place-routes-controller.ts?raw'
 import routeDetailSurfaceSource from './route-detail-surface.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 1950
+const MAP_MAIN_LINE_LIMIT = 1930
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -81,6 +82,40 @@ describe('map main architecture boundary', () => {
       './main',
     ]) {
       expect(previewMapPrimitivesSource).not.toContain(dependency)
+    }
+  })
+
+  it('delegates Place route loading, ranking, and preview completion to the Place routes controller', () => {
+    expect(mainSource).toContain('createPlaceRoutesController')
+    expect(mainSource).not.toContain('async function previewPlaceRoutes(')
+    expect(mainSource).not.toContain('function placeRouteRank(')
+    expect(mainSource).not.toContain('beginOtherPreviewRequest')
+    expect(mainSource).not.toContain('previewRequest')
+    expect(mainSource).not.toContain('await mapApi.placeRoutes(')
+    expect(placeRoutesSource).toContain('options.onRoutes(presentation)')
+    expect(placeRoutesSource).toContain('options.renderPreview(preview)')
+    expect(placeRoutesSource).toContain('options.onComplete(presentation)')
+    for (const dependency of [
+      'leaflet',
+      'history.',
+      'document.',
+      'window.',
+      'camera.',
+      'trip.',
+      'drawer',
+      'readBoards',
+      'mapApi.',
+      'journey-preview',
+      'route-detail',
+      './main',
+      'AbortController',
+      'setStatus(',
+      'renderDrawer(',
+      'isTdxTokenRejectedError',
+      'tdxWarningMessages',
+      'toggleFavoriteDirection',
+    ]) {
+      expect(placeRoutesSource).not.toContain(dependency)
     }
   })
 
