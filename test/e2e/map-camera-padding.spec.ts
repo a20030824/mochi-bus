@@ -1,4 +1,4 @@
-import { expect, test, type Page } from './fixtures'
+import { expect, mockMapBootstrapCities, test, type Page } from './fixtures'
 
 const city = {
   code: 'Taipei',
@@ -70,6 +70,7 @@ async function mockTiles(page: Page) {
 
 async function mockDirectJourney(page: Page) {
   await mockTiles(page)
+  await mockMapBootstrapCities(page, [city])
   await page.route('**/api/v1/map/cities', async (route) => {
     await route.fulfill({ json: { cities: [city] } })
   })
@@ -108,6 +109,7 @@ async function mockDirectJourney(page: Page) {
 
 async function mockMobileEntry(page: Page) {
   await mockTiles(page)
+  await mockMapBootstrapCities(page, southCities)
   await page.route('**/api/v1/map/cities', async (route) => {
     await route.fulfill({ json: { cities: southCities } })
   })

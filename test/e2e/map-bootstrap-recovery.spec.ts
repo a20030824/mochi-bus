@@ -1,10 +1,12 @@
-import { expect, test } from './fixtures'
+import { expect, mockMapBootstrapCities, test } from './fixtures'
 
 const city = { code: 'Tainan', name: '臺南', region: 'south', center: [22.99, 120.21] }
 
 test('recovers map bootstrap in place after the network becomes available', async ({ page }) => {
   await page.setViewportSize({ width: 636, height: 381 })
   await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
+  // SSR 內嵌清單一律缺席,逼前端第一次一定要走網路回退,才測得到離線恢復。
+  await mockMapBootstrapCities(page, null)
   let cityRequests = 0
   await page.route('**/api/v1/map/cities', (route) => {
     cityRequests += 1

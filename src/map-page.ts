@@ -1,3 +1,4 @@
+import { mapCities } from './config/map-cities'
 import { canonicalUrl, renderWebsiteStructuredData, siteOrigin, siteSearchDescription, siteSocialDescription, siteSocialImage, siteTitle } from './seo'
 
 export type MapPageMeta = {
@@ -14,6 +15,9 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
   const description = meta.description ?? siteSearchDescription
   const heading = meta.heading ?? '台灣公車地圖'
   const canonical = meta.requestUrl ? canonicalUrl(meta.requestUrl) : `${siteOrigin}/map`
+  // 城市清單是靜態設定,直接內嵌成 bootstrap:main.ts 不用先打一次
+  // /api/v1/map/cities 才能開始還原 URL,深連結少一趟往返就少一段閃現。
+  const statusText = meta.heading ? `${meta.heading} · 正在載入…` : '選一個區域，看看公車如何穿過城市。'
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -51,9 +55,10 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
       <a id="map-brand" href="/map" class="map-brand" title="回到全台總覽">MOCHI <span>MAP</span></a>
       <a class="quiet-button map-home" href="/">首頁</a>
     </header>
-    <div id="map-status" class="map-status" aria-live="polite">選一個區域，看看公車如何穿過城市。</div>
+    <div id="map-status" class="map-status" aria-live="polite">${escapeHTML(statusText)}</div>
     <aside id="map-drawer" class="map-drawer" aria-live="polite"></aside>
   </div>
+  <script id="map-bootstrap" type="application/json">${safeJSON({ cities: mapCities })}</script>
   <script type="module" src="/assets/map.js"></script>
 </body>
 </html>`
@@ -61,4 +66,13 @@ export function renderMapPage(meta: MapPageMeta = {}): string {
 
 function escapeHTML(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;')
+}
+
+function safeJSON(value: unknown): string {
+  return JSON.stringify(value)
+    .replaceAll('<', '\\u003c')
+    .replaceAll('>', '\\u003e')
+    .replaceAll('&', '\\u0026')
+    .replaceAll(' ', '\u2028')
+    .replaceAll(' ', '\u2029')
 }

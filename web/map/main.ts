@@ -220,7 +220,7 @@ const previewLayer = L.layerGroup().addTo(map)
 const nearbyLayer = L.layerGroup().addTo(map)
 const networkLayer = L.layerGroup().addTo(map)
 const vehicleLayer = L.layerGroup().addTo(map)
-let cities: MapCity[] = []
+let cities: MapCity[] = readBootstrapCities()
 let activeCity: MapCity | undefined
 let routes: RouteItem[] = []
 // routes 屬於哪個縣市:深連結直接進路線不會經過 chooseCity,目錄是空的
@@ -415,7 +415,7 @@ async function initialise() {
   if (initialising) return
   initialising = true
   try {
-    cities = await mapApi.cities()
+    if (!cities.length) cities = await mapApi.cities()
     seedInitialMapHistory()
     await hydrateMapLocation()
   } catch {
@@ -3069,4 +3069,16 @@ function requiredElement<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id)
   if (!element) throw new Error(`Missing #${id}`)
   return element as T
+}
+
+// SSR 內嵌靜態縣市清單,initialise() 就不用先打一次 /api/v1/map/cities 才能
+// 開始還原 URL——省下的那趟往返正是深連結會先閃過總覽殼的主因之一。
+function readBootstrapCities(): MapCity[] {
+  try {
+    const node = document.getElementById('map-bootstrap') as HTMLScriptElement | null
+    const raw = node?.textContent
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as { cities?: unknown }
+    return Array.isArray(parsed.cities) ? parsed.cities as MapCity[] : []
+  } catch { return [] }
 }
