@@ -7,7 +7,7 @@ const routeHtml = `<!doctype html><html><body>
 <main class="route-page">
   <ol class="route-timeline">
     <li class="route-stop"><span class="dot"></span><div><strong>板橋公車站</strong></div><span class="route-eta muted"></span></li>
-    <li class="route-stop selected"><span class="dot"></span><div><strong>捷運西門站</strong><em>你的站牌</em></div><span class="route-eta muted" aria-live="polite" aria-atomic="true">更新中</span></li>
+    <li class="route-stop selected"><span class="dot"></span><div><strong>捷運西門站</strong><em>你的站牌</em></div><span class="route-eta muted">更新中</span></li>
   </ol>
 </main>
 <script type="module" src="/assets/route.js"></script>
@@ -40,10 +40,13 @@ test.describe('Route progressive ETA', () => {
     await page.goto(routeUrl)
 
     const rows = page.locator('.route-stop')
+    const selectedEta = rows.nth(1).locator('.route-eta')
     await expect(rows.nth(0).locator('.route-eta')).toHaveText('12 分')
     await expect(rows.nth(0).locator('.route-eta')).toHaveClass(/live/)
-    await expect(rows.nth(1).locator('.route-eta')).toHaveText('即將進站')
-    await expect(rows.nth(1).locator('.route-eta')).toHaveClass(/urgent/)
+    await expect(selectedEta).toHaveText('即將進站')
+    await expect(selectedEta).toHaveClass(/urgent/)
+    await expect(selectedEta).toHaveAttribute('aria-live', 'polite')
+    await expect(selectedEta).toHaveAttribute('aria-atomic', 'true')
     expect(apiUrl?.pathname).toBe('/api/v1/route-eta')
     expect(apiUrl?.searchParams.get('routeUid')).toBe('TPE19108')
     expect(apiUrl?.searchParams.get('stopUid')).toBe('TPE213044')
