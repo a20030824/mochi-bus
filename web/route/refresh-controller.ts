@@ -2,7 +2,7 @@ export const ROUTE_REFRESH_INTERVAL_MS = 30_000
 
 type TimerHandle = unknown
 
-export type VisibleRefreshResult = 'stop' | void
+export type VisibleRefreshResult = 'stop' | { nextDelayMs: number } | void
 
 type VisibleRefreshOptions = {
   refresh: (signal: AbortSignal) => Promise<VisibleRefreshResult>
@@ -20,7 +20,7 @@ export type VisibleRefreshController = {
 }
 
 /**
- * Refresh immediately while visible, then wait one full interval after each
+ * Refresh immediately while visible, then wait for the delay selected by the
  * settled request. Hidden pages keep no timer and abort any active request;
  * terminal refresh results stop the controller instead of retrying forever.
  */
@@ -39,6 +39,7 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
   let running = false
   let stopped = false
   let lastSettledAt: number | undefined
+  let settledDelayMs = intervalMs
   let activeAbortController: AbortController | undefined
 
   function clearScheduled(): void {
@@ -60,6 +61,14 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
     }, Math.max(0, delayMs))
   }
 
+  function delayAfter(result: VisibleRefreshResult): number {
+    if (!result || result === 'stop') return intervalMs
+    if (!Number.isFinite(result.nextDelayMs) || result.nextDelayMs <= 0) {
+      throw new Error('Route refresh delay must be a positive finite number')
+    }
+    return result.nextDelayMs
+  }
+
   async function runRefresh(): Promise<void> {
     if (stopped || running || !isVisible()) return
     clearScheduled()
@@ -67,11 +76,13 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
     const abortController = new AbortController()
     activeAbortController = abortController
     let result: VisibleRefreshResult = undefined
+    let nextDelayMs = intervalMs
     let failed = false
     let failure: unknown
 
     try {
       result = await options.refresh(abortController.signal)
+      nextDelayMs = delayAfter(result)
     } catch (error) {
       failed = true
       failure = error
@@ -92,7 +103,8 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
       return
     }
 
-    schedule(intervalMs)
+    settledDelayMs = nextDelayMs
+    schedule(settledDelayMs)
     if (failed) throw failure
   }
 
@@ -111,8 +123,8 @@ export function createVisibleRefreshController(options: VisibleRefreshOptions): 
     }
 
     const elapsed = Math.max(0, now() - lastSettledAt)
-    if (elapsed >= intervalMs) await runRefresh()
-    else schedule(intervalMs - elapsed)
+    if (elapsed >= settledDelayMs) await runRefresh()
+    else schedule(settledDelayMs - elapsed)
   }
 
   return {

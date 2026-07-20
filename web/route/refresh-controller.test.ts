@@ -54,6 +54,27 @@ describe('createVisibleRefreshController', () => {
     expect(refresh).toHaveBeenCalledTimes(2)
   })
 
+  it('uses the delay selected by the settled refresh result', async () => {
+    const clock = createClock()
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ nextDelayMs: 120_000 })
+      .mockResolvedValue(undefined)
+    const controller = createVisibleRefreshController({
+      refresh,
+      intervalMs: 30_000,
+      isVisible: () => true,
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    })
+
+    await controller.start()
+    await clock.advance(119_999)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    await clock.advance(1)
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps no timer while hidden and refreshes on a stale return', async () => {
     const clock = createClock()
     const refresh = vi.fn(async () => {})
@@ -100,6 +121,35 @@ describe('createVisibleRefreshController', () => {
     await controller.visibilityChanged()
 
     await clock.advance(9_999)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    await clock.advance(1)
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the remaining adaptive delay after a hidden-page pause', async () => {
+    const clock = createClock()
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ nextDelayMs: 300_000 })
+      .mockResolvedValue(undefined)
+    let visible = true
+    const controller = createVisibleRefreshController({
+      refresh,
+      intervalMs: 30_000,
+      isVisible: () => visible,
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    })
+
+    await controller.start()
+    await clock.advance(60_000)
+    visible = false
+    await controller.visibilityChanged()
+    await clock.advance(60_000)
+    visible = true
+    await controller.visibilityChanged()
+
+    await clock.advance(179_999)
     expect(refresh).toHaveBeenCalledTimes(1)
     await clock.advance(1)
     expect(refresh).toHaveBeenCalledTimes(2)

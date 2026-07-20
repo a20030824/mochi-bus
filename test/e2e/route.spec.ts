@@ -23,6 +23,18 @@ const realtime = {
   ],
 }
 
+function unavailableEta(warning: 'tdx-rate-limit' | 'tdx-quota' | 'tdx-unavailable', selectedLabel: string) {
+  return {
+    ...realtime,
+    eta: { kind: 'unavailable', warning },
+    stops: realtime.stops.map((stop, index) => ({
+      ...stop,
+      etaLabel: index === 1 ? selectedLabel : null,
+      etaTone: 'muted',
+    })),
+  }
+}
+
 test.describe('Route progressive ETA', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/route?*', (route) => route.fulfill({
@@ -103,6 +115,42 @@ test.describe('Route progressive ETA', () => {
     await expect(selectedEta).toHaveText('即將進站')
   })
 
+  test('backs off rate-limited ETA responses for two minutes', async ({ page }) => {
+    let requests = 0
+    await page.clock.install()
+    await page.route('**/api/v1/route-eta*', (route) => {
+      requests += 1
+      return route.fulfill({ json: requests === 1 ? unavailableEta('tdx-rate-limit', '即時忙線') : realtime })
+    })
+
+    await page.goto(routeUrl)
+    await expect.poll(() => requests).toBe(1)
+    await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時忙線')
+
+    await page.clock.fastForward(119_999)
+    expect(requests).toBe(1)
+    await page.clock.fastForward(1)
+    await expect.poll(() => requests).toBe(2)
+  })
+
+  test('backs off exhausted quota responses for five minutes', async ({ page }) => {
+    let requests = 0
+    await page.clock.install()
+    await page.route('**/api/v1/route-eta*', (route) => {
+      requests += 1
+      return route.fulfill({ json: requests === 1 ? unavailableEta('tdx-quota', '額度不可用') : realtime })
+    })
+
+    await page.goto(routeUrl)
+    await expect.poll(() => requests).toBe(1)
+    await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('額度不可用')
+
+    await page.clock.fastForward(299_999)
+    expect(requests).toBe(1)
+    await page.clock.fastForward(1)
+    await expect.poll(() => requests).toBe(2)
+  })
+
   test('clears previously live ETA when a later browser request fails', async ({ page }) => {
     let requests = 0
     await page.clock.install()
@@ -125,6 +173,11 @@ test.describe('Route progressive ETA', () => {
     await expect(firstEta).toHaveClass(/muted/)
     await expect(firstEta).not.toHaveClass(/live/)
     await expect(selectedEta).toHaveText('即時未更新')
+
+    await page.clock.fastForward(119_999)
+    expect(requests).toBe(2)
+    await page.clock.fastForward(1)
+    await expect.poll(() => requests).toBe(3)
   })
 
   test('keeps the station order and stops retrying a rejected personal token', async ({ page }) => {
