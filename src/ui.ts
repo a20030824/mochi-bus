@@ -258,7 +258,9 @@ const designRefinementStyles = `
 .board-list{gap:0;border-top:1px solid #ded6c9}
 .board-list.has-boards{margin-bottom:18px}
 .board-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;max-height:126px;padding:18px 12px;border:0;border-bottom:1px solid #ded6c9;border-radius:0;background:transparent}
-.board-item[data-active="true"]:not(.deleted){border-radius:14px;background:rgba(184,95,73,.055)}
+.board-item[data-active="true"]:not(.deleted){border-radius:14px;border-bottom-color:transparent;background:rgba(184,95,73,.055)}
+.board-list:has(>.board-item[data-active="true"]:not(.deleted):first-child){border-top-color:transparent}
+.board-item:has(+.board-item[data-active="true"]:not(.deleted)){border-bottom-color:transparent}
 .board-copy{display:grid;min-width:0;gap:6px}
 .board-title-line{display:flex;align-items:center;gap:8px;min-width:0}
 .favorite-stop-name{overflow:hidden;font-size:17px;font-weight:650;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}

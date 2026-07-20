@@ -155,10 +155,10 @@ function renderBoards() {
     const detail = document.createElement('div')
     detail.className = 'board-route-chips'
     const ambiguous = board.buses.some((bus) => bus.identityStatus === 'legacy-ambiguous')
-    for (const bus of board.buses) {
+    for (const routeName of new Set(board.buses.map((bus) => bus.routeName))) {
       const chip = document.createElement('span')
       chip.className = 'favorite-route-number'
-      chip.textContent = bus.routeName
+      chip.textContent = routeName
       detail.appendChild(chip)
     }
     if (ambiguous) {
