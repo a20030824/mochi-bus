@@ -34,6 +34,7 @@ export type TripLoadingState = {
   phase: 'loading'
   from: TripEndpoint
   to: TripEndpoint
+  warning?: TDXWarning
   pending: TripPendingSelections
 }
 
@@ -173,6 +174,7 @@ export function selectTripEndpoint(
       phase: 'loading',
       from,
       to,
+      warning: undefined,
       pending,
     }
   }
@@ -261,6 +263,11 @@ export function clearTripPendingSelections(state: TripState): TripState {
     ...state,
     pending: {},
   }
+}
+
+export function setTripWarning(state: TripState, warning: TDXWarning | undefined): TripState {
+  if (state.phase !== 'loading' && state.phase !== 'results') return state
+  return { ...state, warning }
 }
 
 export function selectDirectTripResult(state: TripResultsState, index: number): TripResultsState {

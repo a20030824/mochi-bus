@@ -40,6 +40,7 @@ export type TripRuntimeStore = {
   start(): void
   reset(): void
   focus(kind: TripSelectionKind): void
+  reselect(kind: TripSelectionKind): void
   selectEndpoint(kind: TripSelectionKind, place: NearbyPlace, coordinate: TripCoordinate): boolean
   begin(from: TripEndpoint, to: TripEndpoint): void
   restore(state: TripResultsState): void
@@ -157,6 +158,9 @@ export function createTripRuntimeStore(initialState: TripState = idleTripState()
       current = idleTripState()
     },
     focus,
+    reselect(kind) {
+      current = resumeTripEndpoint(current, kind)
+    },
     selectEndpoint,
     begin,
     restore(state) {
