@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { getSnapshotRoutePage } from '../application/snapshot-route-page'
 import { defaultBusQuery, supportedCities, supportedCityCodes } from '../config'
 import {
   canonicalBusPath,
@@ -8,11 +9,7 @@ import {
   type BusQuery,
 } from '../domain/bus-query'
 import { embedRoutePageIdentity } from '../domain/route-page-identity'
-import { buildRouteDetailWithoutEta, getRoutePageDetail } from '../domain/route-page-detail'
-import {
-  buildResolvedSnapshotRouteQuery,
-  selectUniqueSnapshotRouteVariant,
-} from '../domain/snapshot-route-selection'
+import { getRoutePageDetail } from '../domain/route-page-detail'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
@@ -33,7 +30,6 @@ import {
 import { appIcon, renderAmbiguousPage, renderErrorPage, renderETAPage, renderRoutePage, renderSetupPage } from '../ui'
 import {
   getSnapshotRouteCatalog,
-  getSnapshotRouteVariants,
   getStopPlaceByStopUid,
   type TransitBindings,
 } from '../infrastructure/transit/snapshot-repository'
@@ -122,40 +118,6 @@ bus.get('/route', async (c) => {
     return renderPageError(c, error)
   }
 })
-
-async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQuery) {
-  if (!query.stopUid) return null
-  const variants = await getSnapshotRouteVariants(env, query.city, query.routeName)
-  const selection = selectUniqueSnapshotRouteVariant(variants, query)
-  if (!selection) return null
-  const resolved = buildResolvedSnapshotRouteQuery(query, selection)
-  const detail = buildSnapshotRouteDetail(selection.variant, resolved.stopUid)
-  return { resolved, detail }
-}
-
-type SnapshotRouteVariant = Awaited<ReturnType<typeof getSnapshotRouteVariants>>[number]
-
-export function buildSnapshotRouteDetail(
-  variant: SnapshotRouteVariant,
-  selectedStopUid: string,
-) {
-  const stops = [...variant.stops.features]
-    .sort((a, b) => a.properties.sequence - b.properties.sequence)
-    .map((stop) => ({
-      stopUid: stop.properties.stopUid,
-      stopName: stop.properties.stopName,
-      sequence: stop.properties.sequence,
-    }))
-
-  return buildRouteDetailWithoutEta({
-    routeName: variant.routeName,
-    direction: variant.direction,
-    stopUid: selectedStopUid,
-  }, {
-    label: variant.label,
-    stops,
-  })
-}
 
 bus.get('/api/v1/eta', async (c) => {
   try {
