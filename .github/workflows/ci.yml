@@ -30,7 +30,7 @@ jobs:
       - name: Route domain tests
         run: npx vitest run src/domain/route-page-detail.test.ts
       - name: Route shell tests
-        run: npx vitest run src/route-shell.test.ts
+        run: npx vitest run test/workers/route-shell.test.ts
       - name: Route browser contract tests
         run: npx vitest run web/route/contract.test.ts
       - name: Route API contract tests
