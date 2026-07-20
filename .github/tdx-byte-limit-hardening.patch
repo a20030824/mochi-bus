@@ -4,7 +4,7 @@ diff --git a/src/lib/tdx.ts b/src/lib/tdx.ts
 @@ -1036,1 +1036,1 @@
 -  const memoryKey = `tdx/${url.toString()}`
 +  const memoryKey = `tdx/${maxResponseBytes ?? 'unbounded'}/${url.toString()}`
-@@ -1195,3 +1195,4 @@
+@@ -1195,4 +1195,5 @@
    const declaredLength = parsedContentLength(response.headers.get('Content-Length'))
    if (declaredLength !== undefined && declaredLength > maxBytes) {
 +    await response.body?.cancel().catch(() => undefined)
