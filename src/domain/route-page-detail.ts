@@ -1,4 +1,10 @@
 import type { ResolvedBusQuery } from './bus-query'
+import {
+  routeEtaHasRealtimeEstimate,
+  routeEtaIsUnknown,
+  routeEtaStatesFromStops,
+  type RouteEtaPresentationState,
+} from './route-eta-status'
 import { selectRouteStopGroup } from './route-stop-group-selection'
 import {
   applyRouteTimelineFallback,
@@ -88,9 +94,10 @@ export async function getRouteEtaDetail(
 
   try {
     let detail = await resolvedDependencies.getRouteDetail(env, query)
+    let states = routeEtaStatesFromStops(detail.stops)
     let schedules: ScheduleItem[] = []
 
-    if (routeTimelineNeedsSchedule(detail.stops)) {
+    if (routeTimelineNeedsSchedule(detail.stops, states)) {
       try {
         schedules = await resolvedDependencies.getBusSchedule(env, query.city, query.routeName, query.routeUid)
       } catch (error) {
@@ -101,20 +108,19 @@ export async function getRouteEtaDetail(
         }))
       }
 
-      detail = {
-        ...detail,
-        stops: applyRouteTimelineFallback(detail.stops, schedules, {
-          direction: query.direction,
-          subRouteUid: query.subRouteUid,
-        }, resolvedDependencies.now()),
-      }
+      const fallback = applyRouteTimelineFallback(detail.stops, states, schedules, {
+        direction: query.direction,
+        subRouteUid: query.subRouteUid,
+      }, resolvedDependencies.now())
+      detail = { ...detail, stops: fallback.stops }
+      states = fallback.states
     }
 
-    if (detail.stops.some((stop) => stop.etaTone === 'live' || stop.etaTone === 'urgent')) {
+    if (states.some(routeEtaHasRealtimeEstimate)) {
       return { detail, eta: { kind: 'realtime' } }
     }
     return {
-      detail: withSelectedStopStatusWhenUnknown(detail, '暫無即時'),
+      detail: withSelectedStopStatusWhenUnknown(detail, states, '暫無即時'),
       eta: { kind: 'empty' },
     }
   } catch (error) {
@@ -174,11 +180,17 @@ function routeDetailWithoutEta(
   }
 }
 
-function withSelectedStopStatusWhenUnknown(detail: RouteDetail, selectedStatus: string): RouteDetail {
+function withSelectedStopStatusWhenUnknown(
+  detail: RouteDetail,
+  states: readonly RouteEtaPresentationState[],
+  selectedStatus: string,
+): RouteDetail {
+  if (detail.stops.length !== states.length) {
+    throw new Error('Route ETA presentation state does not match the station timeline')
+  }
   return {
     ...detail,
-    stops: detail.stops.map((stop) => stop.selected
-      && (stop.etaLabel === null || stop.etaLabel === ROUTE_UNKNOWN_ETA_LABEL)
+    stops: detail.stops.map((stop, index) => stop.selected && routeEtaIsUnknown(states[index])
       ? { ...stop, etaLabel: selectedStatus, etaTone: 'muted' }
       : stop),
   }
