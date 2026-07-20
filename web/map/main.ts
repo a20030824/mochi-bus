@@ -1,10 +1,10 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
-import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
-import type { TripPendingSelection } from './trip-state'
+import type { TripSelectionKind } from '../../src/domain/map/trip-selection'
 import { createTripRuntimeStore } from './trip-runtime-store'
-import { createTripPlanLoader } from './trip-plan-loader'
+import { createTripController, type TripPlanContext, type TripResultsPresentation } from './trip-controller'
+import { createTripPlanLoader, type TripPlanLoadPhase } from './trip-plan-loader'
 import { createTripResultsSnapshot, parseTripResultsSnapshot } from './trip-results-snapshot'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
@@ -175,7 +175,6 @@ const tripPlanLoader = createTripPlanLoader({
   loadJourneyEta: mapApi.journeyEta,
   isCredentialRejectedError: isTdxTokenRejectedError,
 })
-let tripSelecting = false
 let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = 'browse'
 let previewRequest = 0
 // 行程候選離開前的鏡頭只存可序列化值;路線 detail 的 fit 不應覆蓋它。
@@ -194,6 +193,25 @@ function cancelNavRequest(): void {
 function isStaleNav(requestId: number): boolean {
   return navRequests.isStale(requestId)
 }
+
+const tripController = createTripController({
+  store: trip,
+  planLoader: tripPlanLoader,
+  currentCityCode: () => activeCity?.code,
+  nearbyRadius: () => map.getZoom() >= 15 ? 300 : 500,
+  loadNearby: mapApi.nearby,
+  beginRequest: beginNavRequest,
+  cancelRequest: cancelNavRequest,
+  isStaleRequest: isStaleNav,
+  onSelectionStep: showTripSelectionStep,
+  onCandidates: renderPendingTripCandidates,
+  onEndpointReady: prepareTripPlan,
+  onStatus: setStatus,
+  onPlanStart: () => clearTripResultsCamera(),
+  onPlanPhase: renderTripPlanPhase,
+  onResults: presentTripResults,
+  onPlanError: renderTripPlanError,
+})
 // 全路網是可疊加的輔助圖層，不是 drawer 主視圖。它不能取消路線、站牌或
 // 行程查詢；關閉圖層時則只作廢自己的載入。
 const networkRequests = createNavRequestCoordinator()
@@ -203,8 +221,6 @@ const locationHydrations = createNavRequestCoordinator()
 function cancelLocationHydration(): void {
   locationHydrations.cancel()
 }
-
-const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 
 const cityNetwork = createCityNetworkController({
   map,
@@ -501,7 +517,7 @@ async function hydrateMapLocation() {
         }
         if (params.get('trip') === 'select') {
           clearTripState()
-          renderTripSelectionStep('from')
+          tripController.start()
           return
         }
         await chooseCity(city)
@@ -562,8 +578,8 @@ map.on('click', (event) => {
   const pick = cityNetwork.pickAt(event.latlng, hoverCapable ? 8 : 14, hoverCapable ? 10 : 16)
   if (trip.stage !== 'idle') {
     // 規劃選點中,點到小站點就吸附站點座標;點到線只是瞄準地圖,照點的位置處理
-    if (pick?.kind === 'place') void selectTripCoordinate(pick.place.latitude, pick.place.longitude)
-    else void selectTripCoordinate(event.latlng.lat, event.latlng.lng)
+    if (pick?.kind === 'place') void tripController.selectCoordinate(pick.place.latitude, pick.place.longitude)
+    else void tripController.selectCoordinate(event.latlng.lat, event.latlng.lng)
     return
   }
   if (pick?.kind === 'place') {
@@ -584,7 +600,7 @@ map.on('click', (event) => {
 function showTaiwan() {
   cancelLocationHydration()
   cancelNavRequest()
-  clearPendingTripSelections()
+  tripController.clearPending()
   clearTripResultsCamera()
   activeCity = undefined
   networkButton.hidden = true
@@ -593,7 +609,7 @@ function showTaiwan() {
   selectionLayer.clearLayers()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
-  trip.reset()
+  tripController.reset()
   setStatus('選一個區域，看看公車如何穿過城市。')
   renderRegionMarkers()
   renderDrawer({
@@ -694,7 +710,7 @@ function returnToOverview() {
 
 function showRegion(regionCode: RegionCode) {
   cancelNavRequest()
-  clearPendingTripSelections()
+  tripController.clearPending()
   clearTripResultsCamera()
   networkButton.hidden = true
   cityNetwork.hide()
@@ -760,13 +776,14 @@ function returnToRegion() {
 }
 
 async function chooseCity(city: MapCity) {
-  clearPendingTripSelections()
+  tripController.clearPending()
   clearTripResultsCamera()
   activeCity = city
   setActiveCity(city.code)
   category = '全部'
   routeSearchQuery = ''
   routeScrollTop = 0
+  tripController.reset()
   const { requestId, signal } = beginNavRequest()
   networkButton.hidden = false
   cityNetwork.hide()
@@ -774,7 +791,6 @@ async function chooseCity(city: MapCity) {
   routeDetail.close()
   nearbyLayer.clearLayers()
   previewLayer.clearLayers()
-  trip.reset()
   setDocumentTitle(`${city.name}公車地圖`)
   setStatus(`${city.name} · 正在整理路線…`)
   renderDrawer({
@@ -1010,48 +1026,23 @@ async function searchPlaces(query: string, signal?: AbortSignal): Promise<Search
     return []
   }
 }
-function pendingTripSelection(kind: TripSelectionKind): TripPendingSelection | undefined {
-  return trip.pending(kind)
-}
-
-function setPendingTripSelection(selection: TripPendingSelection) {
-  trip.setPending(selection)
-}
-
-function clearPendingTripSelection(kind: TripSelectionKind) {
-  trip.clearPending(kind)
-}
-
-function clearPendingTripSelections() {
-  trip.clearPending()
-}
-
-
-function tripSelectionConflict(kind: TripSelectionKind, candidate: NearbyPlace): string | undefined {
-  return getTripSelectionConflict(kind, candidate, trip.from, trip.to)
-}
-
 function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
   const selected = kind === 'from' ? trip.from : trip.to
   if (!selected) return
-  const pending = pendingTripSelection(kind)
+  const pending = trip.pending(kind)
   return createTripEndpointSummary({
     kind,
     selected,
     matchedDistanceMeters: pending?.selected.distanceMeters,
     onActivate: () => {
-      if (pendingTripSelection(kind)) {
-        renderPendingTripCandidates(kind)
-        return
-      }
-      resumeTripEndpointSelection(kind)
+      if (pending) tripController.showCandidates(kind)
+      else tripController.resume(kind)
     },
   })
 }
 
 function resumeTripEndpointSelection(kind: TripSelectionKind) {
-  if (kind === 'from') resumeOriginSelection()
-  else resumeDestinationSelection()
+  tripController.resume(kind)
 }
 
 function tripMatchedControls(compact = false): HTMLElement | undefined {
@@ -1067,17 +1058,14 @@ function tripMatchedControls(compact = false): HTMLElement | undefined {
 }
 
 function renderPendingTripCandidates(kind: TripSelectionKind) {
-  const pending = pendingTripSelection(kind)
-  if (!pending) {
-    renderTripSelectionStep(kind)
-    return
-  }
+  const pending = trip.pending(kind)
+  if (!pending) return
   const list = createTripCandidateList({
     candidates: pending.candidates,
     selectedPlaceId: pending.selected.placeId,
-    onSelect: (candidate) => void selectTripCandidate(kind, candidate),
+    onSelect: (candidate) => void tripController.selectCandidate(kind, candidate),
   })
-  const backAction = hasTripResults() ? returnToTripResults : () => renderTripSelectionStep(kind)
+  const backAction = hasTripResults() ? returnToTripResults : () => tripController.focus(kind)
   renderDrawer({
     key: `trip-candidates:${kind}`,
     mode: 'map-list',
@@ -1089,17 +1077,21 @@ function renderPendingTripCandidates(kind: TripSelectionKind) {
       ),
     ],
     content: [list],
-    footer: [createReselectTripEndpointButton(kind, () => resumeTripEndpointSelection(kind))],
+    footer: [createReselectTripEndpointButton(kind, () => tripController.resume(kind))],
   })
   setStatus(`${kind === 'from' ? '出發' : '目的地'} · ${pending.candidates.length} 個附近站牌`)
 }
 
-function renderTripSelectionStep(nextKind: TripSelectionKind) {
-  trip.focus(nextKind)
+function showTripSelectionStep(nextKind: TripSelectionKind) {
+  clearTripResultsCamera()
   interactionMode = 'trip'
   previewLayer.clearLayers()
   nearbyLayer.clearLayers()
   drawTripEndpoints()
+  renderTripSelectionStep(nextKind)
+}
+
+function renderTripSelectionStep(nextKind: TripSelectionKind) {
   const existingKind: TripSelectionKind = nextKind === 'from' ? 'to' : 'from'
   const existingSummary = tripMatchedSummary(existingKind)
   const searchLabel = nextKind === 'from' ? '搜尋出發站牌' : '搜尋目的地站牌'
@@ -1110,7 +1102,7 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   const searchBox = createPlaceSearchBox({
     placeholder: searchLabel,
     search: searchPlaces,
-    onPick: (place) => void selectTripPlace(nextKind, place),
+    onPick: (place) => void tripController.selectPlace(nextKind, place),
   })
   const drawerSession = renderDrawer({
     key: `trip-select:${nextKind}`,
@@ -1125,40 +1117,12 @@ function renderTripSelectionStep(nextKind: TripSelectionKind) {
   drawerSession.onDispose(searchBox.dispose)
   clearStatus()
 }
-async function applyTripSelection(
-  kind: TripSelectionKind,
-  candidate: NearbyPlace,
-  coordinate: [number, number],
-): Promise<boolean> {
-  const conflict = tripSelectionConflict(kind, candidate)
-  if (conflict) {
-    setStatus(conflict, true)
-    return false
-  }
-  const ready = trip.selectEndpoint(kind, candidate, coordinate)
-  if (ready) {
-    interactionMode = 'trip-results'
-    cityNetwork.hide()
-    nearbyLayer.clearLayers()
-    drawTripEndpoints()
-    await loadDirectRoutes()
-    return true
-  }
-  renderTripSelectionStep(kind === 'from' ? 'to' : 'from')
-  return true
-}
 
-
-async function selectTripCandidate(kind: TripSelectionKind, candidate: NearbyPlace) {
-  const pending = pendingTripSelection(kind)
-  if (!pending) return
-  await applyTripSelection(kind, candidate, pending.coordinate)
-}
-
-async function selectTripPlace(kind: TripSelectionKind, place: SearchPlace) {
-  clearPendingTripSelection(kind)
-  const candidate: NearbyPlace = { ...place, distanceMeters: 0 }
-  await applyTripSelection(kind, candidate, [place.latitude, place.longitude])
+function prepareTripPlan() {
+  interactionMode = 'trip-results'
+  cityNetwork.hide()
+  nearbyLayer.clearLayers()
+  drawTripEndpoints()
 }
 
 // 搜尋選中的站牌直接開站牌路線視圖(跟 deep link 進站牌同一條路)。
@@ -1198,14 +1162,9 @@ function tripModeButton(): HTMLButtonElement {
       if (currentState.mapView === 'trip-results') history.replaceState(nextState, '', url)
       else history.pushState(nextState, '', url)
     }
-    clearTripResultsCamera()
-    trip.start()
-    interactionMode = 'trip'
     // 全路網開著就留著:小站點正好當選點的瞄準參考,等終點選完才收
-    previewLayer.clearLayers()
     routeDetail.close()
-    nearbyLayer.clearLayers()
-    renderTripSelectionStep('from')
+    tripController.start()
   })
   return button
 }
@@ -1222,7 +1181,7 @@ function cancelTripMode() {
   renderRoutePicker()
 }
 function clearTripState() {
-  trip.reset()
+  tripController.reset()
   clearTripResultsCamera()
 }
 
@@ -1246,13 +1205,8 @@ function clearTripResultsCamera() {
   // 清除行程也要讓尚未完成的 preview 失效,避免舊回應重新畫線或 fit。
   previewRequest += 1
 }
-function normalizeDirectIndex(directRoutes: DirectRoute[]): number {
-  if (!directRoutes.length) return 0
-  return Math.min(Math.max(trip.selectedDirectIndex, 0), directRoutes.length - 1)
-}
-
 function hasTripResults(): boolean {
-  return trip.hasResults()
+  return tripController.hasResults()
 }
 
 
@@ -1274,13 +1228,9 @@ function returnToTripResults() {
   routeDetail.close()
   nearbyLayer.clearLayers()
   void (async () => {
-    if (trip.directRoutes.length) renderDirectRoutes(trip.directRoutes)
-    else renderTransferPlans(trip.transferPlans)
     let previewCompleted = false
     try {
-      previewCompleted = trip.directRoutes.length
-        ? await previewDirectRoutes(trip.directRoutes, { fitCamera: false })
-        : await previewTransferPlans(trip.transferPlans, { fitCamera: false })
+      previewCompleted = await tripController.showResults({ fitCamera: false })
     } catch {
       // 預覽資料失敗時仍保留候選抽屜與離開前鏡頭,不讓錯誤的 fallback fit 搶走視角。
       if (hasTripResults()) {
@@ -1545,93 +1495,43 @@ function renderNearbyPlaces() {
   setDocumentTitle(`${activeCity.name}公車地圖`)
 }
 
-async function selectTripCoordinate(latitude: number, longitude: number) {
-  if (!activeCity) return
-  // 連點(桌機雙擊尤其)會發出兩次選點;第二發會在第一發把階段推進之後
-  // 才回來,被誤當成目的地。一次只處理一發,其餘直接丟掉。
-  if (tripSelecting) return
-  const kind = trip.stage
-  if (kind === 'idle') return
-  const cityCode = activeCity.code
-  const { requestId, signal } = beginNavRequest()
-  tripSelecting = true
-  clearPendingTripSelection(kind)
-  const radius = map.getZoom() >= 15 ? 300 : 500
-  setStatus('正在尋找附近站牌…')
-  try {
-    const places = await mapApi.nearby(cityCode, latitude, longitude, radius, signal)
-    if (signal.aborted || isStaleNav(requestId) || activeCity?.code !== cityCode || trip.stage !== kind) return
-    const candidates = places.slice(0, TRIP_NEARBY_CANDIDATE_LIMIT)
-    const nearest = candidates[0]
-    if (!nearest) throw new Error('這附近沒有站牌')
-    setPendingTripSelection({ kind, coordinate: [latitude, longitude], candidates, selected: nearest })
-    await applyTripSelection(kind, nearest, [latitude, longitude])
-  } catch (error) {
-    if (signal.aborted || isStaleNav(requestId)) return
-    setStatus(error instanceof Error ? error.message : '附近站牌讀取失敗', true)
-  } finally {
-    tripSelecting = false
-  }
-}
-async function loadDirectRoutes() {
-  const from = trip.from
-  const to = trip.to
-  if (!activeCity || !from || !to) return
-  clearTripResultsCamera()
-  const { requestId, signal } = beginNavRequest()
-  trip.setWarning(undefined)
-  setStatus(`正在找 ${from.name} → ${to.name} 的直達車…`)
-  try {
-    const result = await tripPlanLoader.load({
-      cityCode: activeCity.code,
-      fromPlaceId: from.placeId,
-      toPlaceId: to.placeId,
-      signal,
-      onPhase: (phase) => {
-        if (phase === 'transfer') setStatus('沒有直達車，正在找一次轉乘…')
-      },
-    })
-    if (isStaleNav(requestId) || !result) return
-    trip.setWarning(result.warning)
-    if (result.kind === 'direct') {
-      trip.completeDirect(result.routes)
-      renderDirectRoutes(result.routes)
-      await previewDirectRoutes(result.routes, { fitCamera: true })
-      return
-    }
-    if (result.kind === 'transfer') {
-      trip.completeTransfer(result.plans)
-      renderTransferPlans(result.plans)
-      await previewTransferPlans(result.plans, { fitCamera: true })
-      return
-    }
-    trip.completeEmpty()
-    renderTransferPlans([])
-    await previewTransferPlans([], { fitCamera: true })
-  } catch (error) {
-    if (isStaleNav(requestId)) return
-    const message = error instanceof Error && error.message ? error.message : '直達路線查詢失敗'
-    const credentialRejected = isTdxTokenRejectedError(error)
-    setStatus(message, true)
-    renderDrawer({
-      key: `trip-results:${from.placeId}:${to.placeId}`,
-      mode: 'compact',
-      content: [
-        drawerBack('重新選目的地', resumeDestinationSelection),
-        heading('查詢失敗了', `${from.name} → ${to.name} 暫時查不到，稍等一下再試。`),
-        degradedNotice(message, () => void loadDirectRoutes(), credentialRejected),
-      ],
-    })
-  }
+function renderTripPlanPhase(phase: TripPlanLoadPhase, context: TripPlanContext) {
+  setStatus(phase === 'direct'
+    ? `正在找 ${context.from.name} → ${context.to.name} 的直達車…`
+    : '沒有直達車，正在找一次轉乘…')
 }
 
+async function presentTripResults({ fitCamera }: TripResultsPresentation): Promise<boolean> {
+  const results = trip.results()
+  if (!results) return false
+  if (results.resultKind === 'direct') {
+    renderDirectRoutes(results.directRoutes)
+    return previewDirectRoutes(results.directRoutes, { fitCamera })
+  }
+  renderTransferPlans(results.transferPlans)
+  return previewTransferPlans(results.transferPlans, { fitCamera })
+}
+
+function renderTripPlanError(error: unknown, context: TripPlanContext) {
+  const message = error instanceof Error && error.message ? error.message : '直達路線查詢失敗'
+  const credentialRejected = isTdxTokenRejectedError(error)
+  setStatus(message, true)
+  renderDrawer({
+    key: `trip-results:${context.from.placeId}:${context.to.placeId}`,
+    mode: 'compact',
+    content: [
+      drawerBack('重新選目的地', () => tripController.resume('to')),
+      heading('查詢失敗了', `${context.from.name} → ${context.to.name} 暫時查不到，稍等一下再試。`),
+      degradedNotice(message, () => void tripController.loadPlan(), credentialRejected),
+    ],
+  })
+}
 
 function renderDirectRoutes(directRoutes: DirectRoute[]) {
   if (!trip.from || !trip.to) return
   interactionMode = 'trip-results'
   writeTripResultsUrl()
-  const selectedIndex = normalizeDirectIndex(directRoutes)
-  trip.selectDirect(selectedIndex)
+  const selectedIndex = trip.selectedDirectIndex
   const list = document.createElement('div')
   list.className = 'direct-route-list'
   if (!directRoutes.length) list.appendChild(paragraph('目前沒有找到直達車。'))
@@ -1663,11 +1563,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     detail.textContent = route.label
     button.appendChild(top)
     button.appendChild(detail)
-    button.addEventListener('click', () => {
-      trip.selectDirect(index)
-      renderDirectRoutes(directRoutes)
-      void previewDirectRoutes(directRoutes, { fitCamera: true })
-    })
+    button.addEventListener('click', () => void tripController.selectDirect(index))
     const detailButton = document.createElement('button')
     detailButton.type = 'button'
     detailButton.className = 'direct-route-detail'
@@ -1681,7 +1577,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
     card.appendChild(detailButton)
     list.appendChild(card)
   })
-  const back = drawerBack('重新選目的地', resumeDestinationSelection)
+  const back = drawerBack('重新選目的地', () => tripController.resume('to'))
   const reset = tripModeButton()
   const matchedControls = tripMatchedControls(true)
   renderDrawer({
@@ -1693,7 +1589,7 @@ function renderDirectRoutes(directRoutes: DirectRoute[]) {
       ...(matchedControls ? [matchedControls] : []),
     ],
     content: [
-      ...(trip.warning ? [degradedNotice(tdxWarningMessages[trip.warning], () => void loadDirectRoutes())] : []),
+      ...(trip.warning ? [degradedNotice(tdxWarningMessages[trip.warning], () => void tripController.loadPlan())] : []),
       list,
     ],
     footer: [reset],
@@ -1713,11 +1609,7 @@ function renderTransferPlans(plans: TransferPlan[]) {
     card.className = 'transfer-plan'
     card.classList.toggle('selected', index === trip.selectedTransferIndex)
     card.tabIndex = 0
-    card.addEventListener('click', () => {
-      trip.selectTransfer(index)
-      renderTransferPlans(plans)
-      void previewTransferPlans(plans, { fitCamera: true })
-    })
+    card.addEventListener('click', () => void tripController.selectTransfer(index))
     card.addEventListener('keydown', (event) => {
       if (event.target !== event.currentTarget) return
       if (event.key === 'Enter' || event.key === ' ') {
@@ -1794,37 +1686,18 @@ function renderTransferPlans(plans: TransferPlan[]) {
     key: `trip-results:${trip.from.placeId}:${trip.to.placeId}`,
     mode: 'results',
     header: [
-      drawerBack('重新選目的地', resumeDestinationSelection),
+      drawerBack('重新選目的地', () => tripController.resume('to')),
       heading(`${trip.from.name} → ${trip.to.name}`, plans.length ? `${plans.length} 個一次轉乘方案` : '沒有直達或一次轉乘方案'),
       ...(matchedControls ? [matchedControls] : []),
     ],
     content: [
-      ...(trip.warning ? [degradedNotice(tdxWarningMessages[trip.warning], () => void loadDirectRoutes())] : []),
+      ...(trip.warning ? [degradedNotice(tdxWarningMessages[trip.warning], () => void tripController.loadPlan())] : []),
       list,
     ],
     footer: [tripModeButton()],
   })
   clearStatus()
 }
-function resumeDestinationSelection() {
-  clearTripResultsCamera()
-  trip.reselect('to')
-  interactionMode = 'trip'
-  previewLayer.clearLayers()
-  nearbyLayer.clearLayers()
-  renderTripSelectionStep('to')
-}
-
-function resumeOriginSelection() {
-  clearTripResultsCamera()
-  trip.reselect('from')
-  interactionMode = 'trip'
-  previewLayer.clearLayers()
-  nearbyLayer.clearLayers()
-  renderTripSelectionStep('from')
-}
-
-
 async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {
   if (!activeCity) return false
   const requestId = ++previewRequest
@@ -1865,8 +1738,7 @@ async function previewTransferPlans(plans: TransferPlan[], { fitCamera }: Journe
 
 async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: JourneyPreviewOptions): Promise<boolean> {
   if (!activeCity) return false
-  const selectedIndex = normalizeDirectIndex(directRoutes)
-  trip.selectDirect(selectedIndex)
+  const selectedIndex = trip.selectedDirectIndex
   const requestId = ++previewRequest
   previewLayer.clearLayers()
   const previews = await Promise.all(selectDirectPreviewEntries(directRoutes, selectedIndex).map(async ({ route, index }) => {
@@ -1886,11 +1758,7 @@ async function previewDirectRoutes(directRoutes: DirectRoute[], { fitCamera }: J
       ['上車', '下車'],
       {
         selected: preview.index === selectedIndex,
-        onSelect: () => {
-          trip.selectDirect(preview.index)
-          renderDirectRoutes(directRoutes)
-          void previewDirectRoutes(directRoutes, { fitCamera: true })
-        },
+        onSelect: () => void tripController.selectDirect(preview.index),
       },
     )
     if (preview.index === selectedIndex && previewLine.hasSegment) focusBounds = previewLine.focusBounds
@@ -2063,9 +1931,9 @@ function restoreTripResultsState(params?: URLSearchParams): boolean {
     toPlaceId: params?.get('to'),
   })
   if (!restored) return false
-  trip.restore(restored)
+  tripController.restore(restored)
   interactionMode = 'trip-results'
-  return trip.hasResults()
+  return tripController.hasResults()
 }
 
 async function restoreSharedTripResults(
@@ -2083,14 +1951,13 @@ async function restoreSharedTripResults(
     mapApi.place(cityCode, toPlaceId, signal),
   ])
   if (signal?.aborted || isStale() || activeCity?.code !== cityCode) return false
-  trip.begin(
+  tripController.begin(
     { place: from, coordinate: [from.latitude, from.longitude] },
     { place: to, coordinate: [to.latitude, to.longitude] },
   )
-  interactionMode = 'trip-results'
   const currentState = history.state && typeof history.state === 'object' ? history.state : {}
   history.replaceState({ ...currentState, mapView: 'trip-results', mapParent: 'catalogue' }, '', location.href)
-  await loadDirectRoutes()
+  await tripController.loadPlan()
   return true
 }
 

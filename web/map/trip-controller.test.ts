@@ -93,10 +93,12 @@ function createHarness(options: {
     _radius: number,
     signal?: AbortSignal,
   ) => options.loadNearby ? options.loadNearby(signal) : options.nearby ?? [])
-  const loadPlan = vi.fn(options.loadPlan ?? (async (request: TripPlanLoadRequest) => {
+  const defaultLoadPlan: TripPlanLoader['load'] = async (request: TripPlanLoadRequest) => {
     request.onPhase?.('direct')
     return options.planResult ?? { kind: 'empty' }
-  }))
+  }
+  const loadPlanImplementation: TripPlanLoader['load'] = options.loadPlan ?? defaultLoadPlan
+  const loadPlan = vi.fn(loadPlanImplementation)
   const controller = createTripController({
     store,
     planLoader: { load: loadPlan },
