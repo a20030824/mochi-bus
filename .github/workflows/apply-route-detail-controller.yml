@@ -1,0 +1,36 @@
+name: Apply route detail controller
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.head_ref == 'agent/extract-route-detail-controller'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/apply-route-detail-controller.mjs
+      - run: npx vitest run web/map/route-detail-controller.test.ts web/map/route-detail-presentation.test.ts
+      - run: npm run check
+      - run: git diff --check
+      - name: Commit clean controller extraction
+        run: |
+          rm scripts/apply-route-detail-controller.mjs
+          rm .github/workflows/apply-route-detail-controller.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add web/map/main.ts web/map/main-size.test.ts web/map/route-detail-controller.ts web/map/route-detail-controller.test.ts web/map/route-detail-surface.ts scripts/apply-route-detail-controller.mjs .github/workflows/apply-route-detail-controller.yml
+          git commit -m "refactor(map): extract route detail controller"
+          git push origin HEAD:${{ github.head_ref }}
