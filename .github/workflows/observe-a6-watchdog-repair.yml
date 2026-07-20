@@ -18,6 +18,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          echo 'Target main SHA: 5aa3dc9aaab66a24bf5074fa0ffbb46f91260f4d'
           curl --fail --location --silent --show-error \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $GH_TOKEN" \
