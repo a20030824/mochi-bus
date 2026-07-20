@@ -52,6 +52,47 @@ test.describe('Route progressive ETA', () => {
     expect(apiUrl?.searchParams.get('stopUid')).toBe('TPE213044')
   })
 
+  test('pauses while hidden and resumes only when the previous result is stale', async ({ page }) => {
+    let requests = 0
+    await page.clock.install()
+    await page.route('**/api/v1/route-eta*', (route) => {
+      requests += 1
+      return route.fulfill({
+        json: {
+          ...realtime,
+          stops: realtime.stops.map((stop, index) => index === 1
+            ? { ...stop, etaLabel: requests === 1 ? '2 分' : requests === 2 ? '1 分' : '即將進站' }
+            : stop),
+        },
+      })
+    })
+
+    await page.goto(routeUrl)
+    const selectedEta = page.locator('.route-stop.selected .route-eta')
+    await expect.poll(() => requests).toBe(1)
+    await expect(selectedEta).toHaveText('2 分')
+
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await page.clock.fastForward(60_000)
+    expect(requests).toBe(1)
+
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await expect.poll(() => requests).toBe(2)
+    await expect(selectedEta).toHaveText('1 分')
+
+    await page.clock.fastForward(29_999)
+    expect(requests).toBe(2)
+    await page.clock.fastForward(1)
+    await expect.poll(() => requests).toBe(3)
+    await expect(selectedEta).toHaveText('即將進站')
+  })
+
   test('keeps the station order and exposes personal-token recovery', async ({ page }) => {
     await page.route('**/api/v1/route-eta*', (route) => route.fulfill({
       status: 401,

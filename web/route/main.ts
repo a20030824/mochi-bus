@@ -1,11 +1,19 @@
 import type { RouteEtaResponse, RouteEtaStop } from '../../src/domain/route-page-detail'
 import { isTdxTokenRejectedError, requestMochiJson } from '../tdx/api-client'
 import { parseRouteEtaResponse } from './contract'
+import { createVisibleRefreshController } from './refresh-controller'
 
 const routePage = document.querySelector<HTMLElement>('.route-page')
 if (routePage) {
   prepareSelectedEta(routePage)
-  void refreshRouteEta(routePage)
+  const refreshController = createVisibleRefreshController({
+    refresh: () => refreshRouteEta(routePage),
+    isVisible: () => document.visibilityState === 'visible',
+  })
+  document.addEventListener('visibilitychange', () => {
+    void refreshController.visibilityChanged()
+  })
+  void refreshController.start()
 }
 
 async function refreshRouteEta(page: HTMLElement): Promise<void> {
