@@ -1,5 +1,7 @@
 import { expect, test, type Page } from './fixtures'
 
+// Regression: directionLabel is optional display text. Its absence must never be treated
+// as proof that a multi-route board is corrupt or used to delete local user data.
 async function mockMultiRouteSetup(page: Page) {
   await page.route('**/api/v1/routes?*', (route) => route.fulfill({ json: {
     routes: [{
