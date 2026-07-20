@@ -172,6 +172,11 @@ describe('map main architecture boundary', () => {
     expect(mainSource).toContain('nearbyPlacesView.renderLoading({')
     expect(mainSource).toContain('nearbyPlacesView.renderPlaces({')
     expect(mainSource).toContain('nearbyPlacesView.renderError({')
+    expect(mainSource).toContain('onOpenPlace: (place) => void openNearbyPlace(place)')
+    const renderPlacesIndex = mainSource.indexOf('nearbyPlacesView.renderPlaces({')
+    expect(mainSource.indexOf('clearStatus()', renderPlacesIndex)).toBeGreaterThan(renderPlacesIndex)
+    expect(mainSource.indexOf('history.replaceState', renderPlacesIndex)).toBeGreaterThan(renderPlacesIndex)
+    expect(mainSource.indexOf('setDocumentTitle', renderPlacesIndex)).toBeGreaterThan(renderPlacesIndex)
     for (const marker of [
       "className = 'nearby-list'",
       "className = 'nearby-place-button'",
@@ -184,10 +189,13 @@ describe('map main architecture boundary', () => {
     expect(nearbyPlacesViewSource).toContain('options.onOpenPlace(place)')
     expect(nearbyPlacesViewSource).toContain('options.createRetryButton(onRetry)')
     expect(nearbyPlacesViewSource).toContain('options.createTripModeButton()')
+    expect(nearbyPlacesViewSource).toContain('drawerKey(cityCode, origin)')
+    expect(nearbyPlacesViewSource).toContain('options.createBackButton(backLabel, onBack)')
     for (const dependency of [
       'leaflet', 'history.', 'window.', 'mapApi.', 'camera.', 'trip.', 'routeDetail',
       'cityNetwork', 'nearbyLayer', 'beginNavRequest', 'isStaleNav', 'setStatus(',
-      'clearStatus(', 'openNearbyPlace', 'findNearbyPlaces', 'renderNearbyPlaces', './main',
+      'clearStatus(', 'setDocumentTitle', 'historyRecord', 'readMapView', 'mapViewFromUrl',
+      'openNearbyPlace', 'findNearbyPlaces', 'renderNearbyPlaces', './main',
     ]) expect(nearbyPlacesViewSource).not.toContain(dependency)
   })
 
