@@ -1,0 +1,44 @@
+name: Apply route stop-group selection refactor
+
+on:
+  push:
+    branches:
+      - agent/unify-route-stop-group-selection
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: node scripts/apply-route-stop-group-selection-refactor.mjs
+      - run: npx vitest run src/domain/route-stop-group-selection.test.ts src/domain/route-page-detail.test.ts
+      - run: npm run check
+      - run: git diff --check
+      - name: Commit clean refactor
+        run: |
+          rm scripts/apply-route-stop-group-selection-refactor.mjs
+          rm .github/workflows/apply-route-stop-group-selection-refactor.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            src/domain/route-stop-group-selection.ts \
+            src/domain/route-stop-group-selection.test.ts \
+            src/domain/route-page-detail.ts \
+            src/lib/tdx.ts \
+            scripts/apply-route-stop-group-selection-refactor.mjs \
+            .github/workflows/apply-route-stop-group-selection-refactor.yml
+          git commit -m "refactor(route): unify stop group selection"
+          git push origin HEAD:${{ github.ref_name }}
