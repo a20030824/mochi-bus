@@ -20,9 +20,22 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Apply reviewed main integration patch
+      - name: Assemble and inspect integration patch
         run: |
           cat scripts/trip-controller-main.patch.part0{0,1,2,3,4} > /tmp/trip-controller-main.patch
+          {
+            wc -c /tmp/trip-controller-main.patch
+            sha256sum /tmp/trip-controller-main.patch
+            git apply --check --verbose /tmp/trip-controller-main.patch
+          } > /tmp/trip-controller-patch-diagnostics.txt 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trip-controller-patch-diagnostics
+          path: |
+            /tmp/trip-controller-main.patch
+            /tmp/trip-controller-patch-diagnostics.txt
+      - name: Apply reviewed main integration patch
+        run: |
           git apply --check /tmp/trip-controller-main.patch
           git apply /tmp/trip-controller-main.patch
       - run: npm ci
