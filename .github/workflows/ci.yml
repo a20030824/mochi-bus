@@ -40,7 +40,11 @@ jobs:
           src/domain/route-eta-status.test.ts
           src/domain/route-timeline-fallback.test.ts
           src/domain/route-page-detail.test.ts
-      - run: npm run check
+      - run: npm run cf-typegen:check
+      - run: npm run test
+      - run: npm run typecheck
+      - run: npm run build:map
+      - run: npx wrangler deploy --dry-run
       - name: Commit clean upstream state model
         env:
           HEAD_BRANCH: ${{ github.head_ref }}
