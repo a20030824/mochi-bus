@@ -83,9 +83,12 @@ export function createJourneyPreviewController(
   ): Promise<T[] | undefined> {
     const settled = await Promise.allSettled(tasks)
     if (!isCurrent(requestGeneration, cityCode)) return undefined
-    const rejected = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
-    if (rejected) throw rejected.reason
-    return settled.map((result) => (result as PromiseFulfilledResult<T>).value)
+    const values: T[] = []
+    for (const result of settled) {
+      if (result.status === 'rejected') throw result.reason
+      values.push(result.value)
+    }
+    return values
   }
 
   function begin(cityCode: string): number {
