@@ -27,16 +27,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - name: Route domain tests
-        run: npx vitest run src/domain/route-page-detail.test.ts
-      - name: Route shell tests
-        run: npx vitest run test/workers/route-shell.test.ts
-      - name: Route browser contract tests
-        run: npx vitest run web/route/contract.test.ts
-      - name: Route API contract tests
-        run: npx vitest run src/tdx-api-contract.test.ts
-      - name: Remaining unit suite
-        run: npm run test
+      - run: npm run check
 
   map-ui:
     name: Map UI regression
