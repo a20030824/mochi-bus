@@ -9,7 +9,10 @@ import {
 } from '../domain/bus-query'
 import { embedRoutePageIdentity } from '../domain/route-page-identity'
 import { buildRouteDetailWithoutEta, getRoutePageDetail } from '../domain/route-page-detail'
-import { selectUniqueSnapshotRouteVariant } from '../domain/snapshot-route-selection'
+import {
+  buildResolvedSnapshotRouteQuery,
+  selectUniqueSnapshotRouteVariant,
+} from '../domain/snapshot-route-selection'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
@@ -125,15 +128,8 @@ async function getSnapshotRoutePage(env: TDXEnv & TransitBindings, query: BusQue
   const variants = await getSnapshotRouteVariants(env, query.city, query.routeName)
   const selection = selectUniqueSnapshotRouteVariant(variants, query)
   if (!selection) return null
-  const { variant, selectedStop } = selection
-  const resolved = {
-    ...query,
-    routeUid: query.routeUid ?? variant.routeUid,
-    subRouteUid: query.subRouteUid ?? variant.subRouteUid,
-    stopUid: selectedStop.properties.stopUid,
-    stopName: selectedStop.properties.stopName,
-  }
-  const detail = buildSnapshotRouteDetail(variant, query.stopUid)
+  const resolved = buildResolvedSnapshotRouteQuery(query, selection)
+  const detail = buildSnapshotRouteDetail(selection.variant, resolved.stopUid)
   return { resolved, detail }
 }
 
