@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseRoutePageIdentity } from './identity'
+import { parseRoutePageIdentity, RouteIdentityError } from './identity'
 
 const valid = {
   schemaVersion: 1,
@@ -24,6 +24,6 @@ describe('parseRoutePageIdentity', () => {
     { ...valid, stops: [{ ...valid.stops[0], sequence: 1.5 }, valid.stops[1]] },
     { ...valid, stops: [{ ...valid.stops[0], stopUid: '' }, valid.stops[1]] },
   ])('rejects malformed or ambiguous identity %#', (value) => {
-    expect(() => parseRoutePageIdentity(value)).toThrow()
+    expect(() => parseRoutePageIdentity(value)).toThrow(RouteIdentityError)
   })
 })
