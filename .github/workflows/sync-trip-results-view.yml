@@ -17,7 +17,10 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
       - name: Merge latest main
-        run: git merge --no-edit origin/main
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git merge --no-edit origin/main
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
@@ -38,8 +41,6 @@ jobs:
       - name: Remove temporary workflow and push
         run: |
           rm .github/workflows/sync-trip-results-view.yml
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           git commit -m "chore: sync Trip results view with main"
           git push origin HEAD:${{ github.head_ref }}
