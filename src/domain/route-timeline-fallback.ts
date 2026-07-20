@@ -1,4 +1,8 @@
 import { buildRouteScheduleArrivalIndex } from './route-schedule-arrival-index'
+import {
+  routeEtaCanUseSchedule,
+  type RouteEtaPresentationState,
+} from './route-eta-status'
 import type { ScheduleItem } from './schedule'
 
 export const ROUTE_UNKNOWN_ETA_LABEL = '—'
@@ -14,26 +18,39 @@ export type RouteTimelineScheduleQuery = {
   subRouteUid?: string
 }
 
+export type RouteTimelineFallbackResult<T extends RouteTimelineStopPresentation> = {
+  stops: T[]
+  states: RouteEtaPresentationState[]
+}
+
 export function routeTimelineNeedsSchedule(
   stops: readonly RouteTimelineStopPresentation[],
+  states: readonly RouteEtaPresentationState[],
 ): boolean {
-  return stops.some(isScheduleEligible)
+  assertParallelStates(stops, states)
+  return stops.some((stop, index) => isScheduleEligible(stop, states[index]))
 }
 
 export function applyRouteTimelineFallback<T extends RouteTimelineStopPresentation>(
   stops: readonly T[],
+  states: readonly RouteEtaPresentationState[],
   schedules: ScheduleItem[],
   query: RouteTimelineScheduleQuery,
   now: Date,
-): T[] {
+): RouteTimelineFallbackResult<T> {
+  assertParallelStates(stops, states)
   const scheduledArrivals = buildRouteScheduleArrivalIndex(schedules, {
     direction: query.direction,
     subRouteUid: query.subRouteUid,
-    stopUids: stops.filter(isScheduleEligible).map((stop) => stop.stopUid),
+    stopUids: stops
+      .filter((stop, index) => isScheduleEligible(stop, states[index]))
+      .map((stop) => stop.stopUid),
   }, now)
+  const nextStates = [...states]
 
-  return stops.map((stop) => {
-    if (!isScheduleEligible(stop)) return stop
+  const nextStops = stops.map((stop, index) => {
+    const state = states[index]
+    if (!isScheduleEligible(stop, state)) return stop
 
     const estimate = scheduledArrivals.get(stop.stopUid)
     const scheduledLabel = estimate
@@ -41,22 +58,34 @@ export function applyRouteTimelineFallback<T extends RouteTimelineStopPresentati
       : null
 
     if (scheduledLabel) {
+      nextStates[index] = { source: 'schedule', status: 'estimated' }
       return { ...stop, etaLabel: scheduledLabel, etaTone: 'muted' } as T
     }
 
     return {
       ...stop,
-      etaLabel: stop.etaLabel === '尚未發車' ? stop.etaLabel : ROUTE_UNKNOWN_ETA_LABEL,
+      etaLabel: state.status === 'not-departed' ? stop.etaLabel : ROUTE_UNKNOWN_ETA_LABEL,
       etaTone: 'muted',
     } as T
   })
+
+  return { stops: nextStops, states: nextStates }
 }
 
-function isScheduleEligible(stop: RouteTimelineStopPresentation): boolean {
-  if (stop.etaTone !== 'muted') return false
-  return stop.etaLabel === null
-    || stop.etaLabel === '暫無預估時間'
-    || stop.etaLabel === '尚未發車'
+function isScheduleEligible(
+  stop: RouteTimelineStopPresentation,
+  state: RouteEtaPresentationState,
+): boolean {
+  return stop.etaTone === 'muted' && routeEtaCanUseSchedule(state)
+}
+
+function assertParallelStates(
+  stops: readonly RouteTimelineStopPresentation[],
+  states: readonly RouteEtaPresentationState[],
+): void {
+  if (stops.length !== states.length) {
+    throw new Error('Route ETA presentation state does not match the station timeline')
+  }
 }
 
 function routeScheduledClockLabel(minutes: number, nextDay: boolean, now: Date): string {
