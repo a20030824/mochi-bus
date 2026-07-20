@@ -1,0 +1,48 @@
+name: Apply route invariant retry policy
+
+on:
+  push:
+    branches:
+      - agent/stop-route-invariant-retries
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - run: node scripts/apply-route-invariant-retry-policy.mjs
+      - run: npx vitest run web/route/contract.test.ts web/route/identity.test.ts
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test test/e2e/route.spec.ts
+      - run: git diff --check
+      - name: Commit clean Route fix
+        run: |
+          rm scripts/apply-route-invariant-retry-policy.mjs
+          rm .github/workflows/apply-route-invariant-retry-policy.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            web/route/main.ts \
+            web/route/contract.ts \
+            web/route/contract.test.ts \
+            web/route/identity.ts \
+            web/route/identity.test.ts \
+            test/e2e/route.spec.ts \
+            scripts/apply-route-invariant-retry-policy.mjs \
+            .github/workflows/apply-route-invariant-retry-policy.yml
+          git commit -m "fix(route): stop retrying invariant failures"
+          git push origin HEAD:${{ github.ref_name }}
