@@ -1,4 +1,4 @@
-// 常用站牌的唯一 localStorage 讀寫入口。
+// 常用站牌與首頁暫存的唯一 localStorage 讀寫入口。
 // 由 Vite 建成 /assets/boards.js:地圖、ETA 與 setup 頁共用同一份 store。
 import {
   APPEARANCE_STORAGE_KEY,
@@ -7,18 +7,20 @@ import {
 } from '../../src/domain/appearance'
 import {
   busKey,
+  mergeFavoriteBuses,
   migrateLegacyPresets,
   normalizeFavoriteBoards,
-  pruneOtherMapBoards,
+  sameFavoriteBoardContent,
   sameFavoriteDirection,
   type FavoriteBoard,
   type FavoriteBus,
 } from '../../src/domain/favorite-board'
 
-export { busKey, sameFavoriteDirection }
+export { busKey, sameFavoriteBoardContent, sameFavoriteDirection }
 export type { FavoriteBoard, FavoriteBus }
 
 const BOARDS_KEY = 'mochi.bus.boards.v2'
+const HOME_BOARD_KEY = 'mochi.bus.homeBoard.v1'
 const ACTIVE_BOARD_KEY = 'mochi.bus.activeBoard.v2'
 const ACTIVE_CITY_KEY = 'mochi.bus.activeCity.v1'
 const LEGACY_PRESETS_KEY = 'mochi.bus.presets.v1'
@@ -28,6 +30,14 @@ const TDX_SESSION_AUTH_KEY = 'mochi.bus.tdxAuth.session.v2'
 const TDX_DEVICE_AUTH_KEY = 'mochi.bus.tdxAuth.device.v2'
 const TDX_MIGRATION_NOTICE_KEY = 'mochi.bus.tdxAuth.migrated.v2'
 
+export const HOME_DIRECTION_CHANGED_EVENT = 'mochi:home-direction-changed'
+
+export type HomeDirectionChangedDetail = {
+  placeName: string
+  selected: boolean
+  homeTitle?: string
+}
+
 export function readBoards(): FavoriteBoard[] {
   return normalizeFavoriteBoards(readJSON(BOARDS_KEY))
 }
@@ -36,20 +46,54 @@ export function writeBoards(boards: FavoriteBoard[]): void {
   localStorage.setItem(BOARDS_KEY, JSON.stringify(boards))
 }
 
+export function readHomeBoard(): FavoriteBoard | null {
+  return normalizeFavoriteBoards([readJSON(HOME_BOARD_KEY)])[0] ?? null
+}
+
+export function writeHomeBoard(board: FavoriteBoard): void {
+  localStorage.setItem(HOME_BOARD_KEY, JSON.stringify(board))
+}
+
+export function clearHomeBoard(): void {
+  localStorage.removeItem(HOME_BOARD_KEY)
+}
+
 export function activeBoardId(): string | null {
   return localStorage.getItem(ACTIVE_BOARD_KEY)
 }
 
-export function setActiveBoard(id: string): void {
+function writeActiveBoard(id: string): void {
   localStorage.setItem(ACTIVE_BOARD_KEY, id)
 }
 
-// 確保 active 指向仍存在的 board;全刪光時移除 key。
+// 明確選擇一塊正式常用時，離開地圖暫存封面。
+export function setActiveBoard(id: string): void {
+  clearHomeBoard()
+  writeActiveBoard(id)
+}
+
+// 確保 active 指向仍存在的 board;全刪光時移除 key。這是資料修復，不應清掉暫存封面。
 export function syncActiveBoard(boards: FavoriteBoard[]): void {
   const active = activeBoardId()
   if (active && boards.some((board) => board.id === active)) return
-  if (boards[0]) setActiveBoard(boards[0].id)
+  if (boards[0]) writeActiveBoard(boards[0].id)
   else localStorage.removeItem(ACTIVE_BOARD_KEY)
+}
+
+export function resolveHomeBoard(boards: FavoriteBoard[] = readBoards()): FavoriteBoard | null {
+  const draft = readHomeBoard()
+  if (draft) return boards.find((board) => sameFavoriteBoardContent(board, draft)) ?? draft
+  const active = activeBoardId()
+  return (active ? boards.find((board) => board.id === active) : undefined) ?? boards[0] ?? null
+}
+
+function reconcileHomeBoard(boards: FavoriteBoard[]): void {
+  const draft = readHomeBoard()
+  if (!draft) return
+  const exact = boards.find((board) => sameFavoriteBoardContent(board, draft))
+  if (!exact) return
+  clearHomeBoard()
+  writeActiveBoard(exact.id)
 }
 
 export function getActiveCity(): string | null {
@@ -66,7 +110,11 @@ export function newBoardId(): string {
 
 export function migrateBoards(): FavoriteBoard[] {
   // v2 key 存在時(包含空陣列)代表使用者動過資料,不能再次匯入舊資料。
-  if (localStorage.getItem(BOARDS_KEY) !== null) return readBoards()
+  if (localStorage.getItem(BOARDS_KEY) !== null) {
+    const boards = readBoards()
+    reconcileHomeBoard(boards)
+    return boards
+  }
   const now = new Date().toISOString()
   // 只持久化真正屬於使用者的資料(舊版轉換結果,可能是空的);
   // 封面的示範站牌由頁面自己顯示,不能寫進 localStorage 假裝是使用者建的。
@@ -74,10 +122,11 @@ export function migrateBoards(): FavoriteBoard[] {
   writeBoards(boards)
   if (boards.length) {
     const legacyActive = localStorage.getItem(LEGACY_ACTIVE_KEY)
-    setActiveBoard(legacyActive && boards.some((board) => board.id === legacyActive)
+    writeActiveBoard(legacyActive && boards.some((board) => board.id === legacyActive)
       ? legacyActive
       : boards[0].id)
   }
+  reconcileHomeBoard(boards)
   return boards
 }
 
@@ -88,52 +137,135 @@ export type FavoritePlace = {
   longitude: number
 }
 
+export function isHomeDirection(city: string, placeId: string, bus: FavoriteBus): boolean {
+  const home = resolveHomeBoard(readBoards())
+  return Boolean(home
+    && home.city === city
+    && home.placeId === placeId
+    && home.buses.some((candidate) => sameFavoriteDirection(candidate, bus)))
+}
+
+export function toggleHomeDirection(city: string, place: FavoritePlace, bus: FavoriteBus): boolean {
+  const boards = readBoards()
+  const current = resolveHomeBoard(boards)
+  const storedDraft = readHomeBoard()
+  const samePlace = current?.city === city && current.placeId === place.placeId
+  const now = new Date().toISOString()
+  const draft: FavoriteBoard = samePlace && current
+    ? {
+        ...current,
+        id: storedDraft?.id === current.id ? current.id : newBoardId(),
+        title: place.name,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        buses: [...current.buses],
+        updatedAt: now,
+      }
+    : {
+        version: 2,
+        id: newBoardId(),
+        title: place.name,
+        city,
+        placeId: place.placeId,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        buses: [],
+        createdAt: now,
+        updatedAt: now,
+      }
+
+  const wasSelected = draft.buses.some((candidate) => sameFavoriteDirection(candidate, bus))
+  draft.buses = wasSelected
+    ? draft.buses.filter((candidate) => !sameFavoriteDirection(candidate, bus))
+    : [...draft.buses, bus]
+
+  if (!draft.buses.length) {
+    clearHomeBoard()
+    const currentSaved = current ? boards.find((board) => sameFavoriteBoardContent(board, current)) : undefined
+    const fallback = boards.find((board) => board.id !== currentSaved?.id) ?? currentSaved
+    if (fallback) writeActiveBoard(fallback.id)
+    else localStorage.removeItem(ACTIVE_BOARD_KEY)
+    const selected = Boolean(fallback
+      && fallback.city === city
+      && fallback.placeId === place.placeId
+      && fallback.buses.some((candidate) => sameFavoriteDirection(candidate, bus)))
+    announceHomeDirection({ placeName: place.name, selected, homeTitle: fallback?.title })
+    return selected
+  }
+
+  const exact = boards.find((board) => sameFavoriteBoardContent(board, draft))
+  if (exact) {
+    clearHomeBoard()
+    writeActiveBoard(exact.id)
+  } else {
+    writeHomeBoard(draft)
+  }
+
+  const home = exact ?? draft
+  const selected = home.buses.some((candidate) => sameFavoriteDirection(candidate, bus))
+  announceHomeDirection({ placeName: place.name, selected, homeTitle: home.title })
+  return selected
+}
+
+export function saveHomeBoardToFavorites(): FavoriteBoard | null {
+  const home = readHomeBoard()
+  if (!home) return null
+  const boards = readBoards()
+  const exact = boards.find((board) => sameFavoriteBoardContent(board, home))
+  if (exact) {
+    clearHomeBoard()
+    writeActiveBoard(exact.id)
+    return exact
+  }
+
+  const samePlaceIndex = boards.findIndex((board) => board.city === home.city && board.placeId === home.placeId)
+  const now = new Date().toISOString()
+  let saved: FavoriteBoard
+  if (samePlaceIndex >= 0) {
+    saved = {
+      ...boards[samePlaceIndex],
+      latitude: home.latitude ?? boards[samePlaceIndex].latitude,
+      longitude: home.longitude ?? boards[samePlaceIndex].longitude,
+      buses: mergeFavoriteBuses(boards[samePlaceIndex].buses, home.buses),
+      updatedAt: now,
+    }
+    boards[samePlaceIndex] = saved
+  } else {
+    saved = {
+      ...home,
+      id: newBoardId(),
+      createdAt: now,
+      updatedAt: now,
+    }
+    boards.push(saved)
+  }
+  writeBoards(boards)
+  clearHomeBoard()
+  writeActiveBoard(saved.id)
+  return saved
+}
+
+export function persistHomeBoard(board: FavoriteBoard): void {
+  const draft = readHomeBoard()
+  if (draft?.id === board.id) {
+    writeHomeBoard(board)
+    return
+  }
+  writeBoards(readBoards().map((candidate) => candidate.id === board.id ? board : candidate))
+}
+
+// 舊名稱保留給尚未拆出的地圖 entry；語意已改成只操作首頁，不再增刪正式常用。
 export function isFavoriteDirection(city: string, placeId: string, bus: FavoriteBus): boolean {
-  return readBoards().some((board) =>
-    board.city === city
-    && board.placeId === placeId
-    && board.buses.some((candidate) => sameFavoriteDirection(candidate, bus)),
-  )
+  return isHomeDirection(city, placeId, bus)
 }
 
 export function toggleFavoriteDirection(city: string, place: FavoritePlace, bus: FavoriteBus): boolean {
-  let boards = readBoards()
-  let index = boards.findIndex((board) => board.city === city && board.placeId === place.placeId)
-  const now = new Date().toISOString()
-  let selected: boolean
-  if (index >= 0 && boards[index].buses.some((candidate) => sameFavoriteDirection(candidate, bus))) {
-    boards[index].buses = boards[index].buses.filter((candidate) => !sameFavoriteDirection(candidate, bus))
-    boards[index].updatedAt = now
-    if (!boards[index].buses.length) boards.splice(index, 1)
-    selected = false
-  } else if (index >= 0) {
-    // 封面只留一個地圖站點:加入時同步移除其他站點的地圖收藏。
-    boards = pruneOtherMapBoards(boards, city, place.placeId)
-    index = boards.findIndex((board) => board.city === city && board.placeId === place.placeId)
-    boards[index].buses.push(bus)
-    boards[index].updatedAt = now
-    selected = true
-  } else {
-    boards = pruneOtherMapBoards(boards, city, place.placeId)
-    boards.push({
-      version: 2,
-      id: newBoardId(),
-      title: place.name,
-      city,
-      placeId: place.placeId,
-      latitude: place.latitude,
-      longitude: place.longitude,
-      buses: [bus],
-      createdAt: now,
-      updatedAt: now,
-    })
-    selected = true
-  }
-  writeBoards(boards)
-  const placeBoard = boards.find((board) => board.city === city && board.placeId === place.placeId)
-  if (placeBoard) setActiveBoard(placeBoard.id)
-  else syncActiveBoard(boards)
-  return selected
+  return toggleHomeDirection(city, place, bus)
+}
+
+function announceHomeDirection(detail: HomeDirectionChangedDetail): void {
+  if (typeof globalThis.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return
+  queueMicrotask(() => globalThis.dispatchEvent(new CustomEvent(HOME_DIRECTION_CHANGED_EVENT, { detail })))
 }
 
 // 使用者自備的 TDX 憑證(setup 頁的進階設定)。預設只存 sessionStorage；
@@ -225,10 +357,11 @@ export function consumeTdxAuthMigrationNotice(): boolean {
 }
 
 // 會落到 TDX 即時查詢的 API 呼叫帶上這組 header;沒設定憑證就是空物件,行為不變。
-// 清掉這個站台的所有本機資料(常用站牌、封面指定、縣市記憶、外觀、TDX 憑證與舊版資料)。
+// 清掉這個站台的所有本機資料(常用站牌、首頁暫存、封面指定、縣市記憶、外觀、TDX 憑證與舊版資料)。
 export function clearLocalData(): void {
   for (const key of [
     BOARDS_KEY,
+    HOME_BOARD_KEY,
     ACTIVE_BOARD_KEY,
     ACTIVE_CITY_KEY,
     LEGACY_PRESETS_KEY,
