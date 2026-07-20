@@ -7,7 +7,10 @@ import {
   TDXServiceError,
   tdxWarningMessages,
 } from '../lib/tdx'
-import { createRoutePageHandler } from './bus'
+import {
+  createRoutePageHandler,
+  type RoutePageHandlerDependencies,
+} from './bus'
 
 const routeUrl = 'https://example.com/route?city=Taipei&route=307&direction=0&stop=捷運西門站&stopUid=STOP-2&routeUid=ROUTE-A&subRouteUid=SUB-A'
 const bindings = {
@@ -58,7 +61,7 @@ function createTestApp(loader: () => Promise<RoutePage>) {
   const app = new Hono<any>()
   const getRoutePageWithFallback = vi.fn(loader)
   app.get('/route', createRoutePageHandler({
-    getRoutePageWithFallback: getRoutePageWithFallback as unknown as Parameters<typeof createRoutePageHandler>[0]['getRoutePageWithFallback'],
+    getRoutePageWithFallback: getRoutePageWithFallback as unknown as RoutePageHandlerDependencies['getRoutePageWithFallback'],
   }))
   return { app, getRoutePageWithFallback }
 }
