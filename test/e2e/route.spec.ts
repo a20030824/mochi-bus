@@ -15,7 +15,7 @@ const routeIdentity = {
 const routeHtml = `<!doctype html><html><body>
 <main class="route-page">
   <ol class="route-timeline">
-    <li class="route-stop"><span class="dot"></span><div><strong>板橋公車站</strong></div><span class="route-eta muted"></span></li>
+    <li class="route-stop"><span class="dot"></span><div><strong>板橋公車站</strong></div><span class="route-eta muted">—</span></li>
     <li class="route-stop selected"><span class="dot"></span><div><strong>捷運西門站</strong><em>你的站牌</em></div><span class="route-eta muted">更新中</span></li>
   </ol>
 </main>
@@ -38,7 +38,7 @@ function unavailableEta(warning: 'tdx-rate-limit' | 'tdx-quota' | 'tdx-unavailab
     eta: { kind: 'unavailable', warning },
     stops: realtime.stops.map((stop, index) => ({
       ...stop,
-      etaLabel: index === 1 ? selectedLabel : null,
+      etaLabel: index === 1 ? selectedLabel : '—',
       etaTone: 'muted',
     })),
   }
@@ -72,6 +72,24 @@ test.describe('Route progressive ETA', () => {
     expect(apiUrl?.pathname).toBe('/api/v1/route-eta')
     expect(apiUrl?.searchParams.get('routeUid')).toBe('TPE19108')
     expect(apiUrl?.searchParams.get('stopUid')).toBe('TPE213044')
+  })
+
+  test('renders an exact timetable fallback as muted, explicitly scheduled text', async ({ page }) => {
+    await page.route('**/api/v1/route-eta*', (route) => route.fulfill({
+      json: {
+        ...realtime,
+        stops: realtime.stops.map((stop, index) => index === 0
+          ? { ...stop, etaLabel: '表定 13:45', etaTone: 'muted' }
+          : stop),
+      },
+    }))
+
+    await page.goto(routeUrl)
+
+    const scheduledEta = page.locator('.route-stop').nth(0).locator('.route-eta')
+    await expect(scheduledEta).toHaveText('表定 13:45')
+    await expect(scheduledEta).toHaveClass(/muted/)
+    await expect(scheduledEta).not.toHaveClass(/live|urgent/)
   })
 
   test('keeps hydrating a legacy shared link without stopUid', async ({ page }) => {
@@ -134,6 +152,7 @@ test.describe('Route progressive ETA', () => {
 
     await page.goto(routeUrl)
     await expect.poll(() => requests).toBe(1)
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('—')
     await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時忙線')
 
     await page.clock.fastForward(119_999)
@@ -178,7 +197,7 @@ test.describe('Route progressive ETA', () => {
 
     await page.clock.fastForward(30_000)
     await expect.poll(() => requests).toBe(2)
-    await expect(firstEta).toHaveText('')
+    await expect(firstEta).toHaveText('—')
     await expect(firstEta).toHaveClass(/muted/)
     await expect(firstEta).not.toHaveClass(/live/)
     await expect(selectedEta).toHaveText('即時未更新')
@@ -204,6 +223,7 @@ test.describe('Route progressive ETA', () => {
 
     const selectedEta = page.locator('.route-stop.selected .route-eta')
     await expect(page.locator('.route-stop')).toHaveCount(2)
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('—')
     await expect(selectedEta).toHaveText('憑證失效')
     await expect(selectedEta).toHaveClass(/muted/)
     await page.clock.fastForward(60_000)
@@ -222,7 +242,7 @@ test.describe('Route progressive ETA', () => {
 
     await page.goto(routeUrl)
 
-    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('')
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('—')
     await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時未更新')
   })
 
@@ -238,7 +258,7 @@ test.describe('Route progressive ETA', () => {
 
     await page.goto(routeUrl)
 
-    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('')
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('—')
     await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時未更新')
   })
 })
