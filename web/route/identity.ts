@@ -18,6 +18,10 @@ export function readRoutePageIdentity(documentRoot: Document = document): RouteP
     throw new Error('Route page identity island contains invalid JSON')
   }
 
+  return parseRoutePageIdentity(value)
+}
+
+export function parseRoutePageIdentity(value: unknown): RoutePageIdentity {
   if (!isRecord(value)
     || value.schemaVersion !== 1
     || !Array.isArray(value.stops)
