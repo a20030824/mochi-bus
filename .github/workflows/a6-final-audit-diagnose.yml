@@ -1,0 +1,29 @@
+name: Diagnose A6 final audit
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/a6-final-audit-diagnose.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download failed audit log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail --location --silent --show-error \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            'https://api.github.com/repos/a20030824/mochi-bus/actions/jobs/88262136284/logs' \
+            --output failed-audit.log
+      - name: Show D1 audit failure
+        run: |
+          grep -A 180 -B 5 'Verify durable D1 acceptance evidence' failed-audit.log | tail -n 190
