@@ -1,4 +1,5 @@
 import type { ResolvedBusQuery } from './bus-query'
+import { selectRouteStopGroup } from './route-stop-group-selection'
 import {
   applyRouteTimelineFallback,
   ROUTE_UNKNOWN_ETA_LABEL,
@@ -66,7 +67,7 @@ export async function getRoutePageDetail(
   dependencies: RoutePageDetailDependencies = defaultDependencies,
 ): Promise<{ detail: RouteDetail }> {
   const groups = await dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
-  const group = matchingStopGroup(groups, query)
+  const group = selectRouteStopGroup(groups, query)
   if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
   return { detail: routeDetailWithoutEta(query, group, '更新中') }
 }
@@ -123,7 +124,7 @@ export async function getRouteEtaDetail(
     if (!warning) throw error
 
     const groups = await resolvedDependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
-    const group = matchingStopGroup(groups, query)
+    const group = selectRouteStopGroup(groups, query)
     if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
 
     console.error(JSON.stringify({
@@ -151,18 +152,6 @@ export function toRouteEtaResponse(result: RouteEtaDetail): RouteEtaResponse {
       etaTone: stop.etaTone,
     })),
   }
-}
-
-function matchingStopGroup(groups: StopGroup[], query: ResolvedBusQuery): StopGroup | undefined {
-  return groups.find((candidate) =>
-    candidate.direction === query.direction
-    && candidate.stops.some((stop) => stop.stopUid === query.stopUid)
-    && (!query.routeUid || candidate.routeUid === query.routeUid)
-    && (!query.subRouteUid || candidate.subRouteUid === query.subRouteUid),
-  ) ?? (!query.subRouteUid ? groups.find((candidate) =>
-    candidate.direction === query.direction
-    && candidate.stops.some((stop) => stop.stopUid === query.stopUid),
-  ) : undefined)
 }
 
 function routeDetailWithoutEta(
