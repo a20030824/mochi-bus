@@ -122,6 +122,9 @@ describe('map main architecture boundary', () => {
 
   it('delegates Place route Drawer presentation to the Place routes view', () => {
     expect(mainSource).toContain('createPlaceRoutesView')
+    expect(mainSource).toContain('placeRoutesView.renderLoading(start)')
+    expect(mainSource).toContain('onRoutes: placeRoutesView.renderRoutes')
+    expect(mainSource).toContain('placeRoutesView.renderError(failure)')
     expect(mainSource).not.toContain('function renderPlaceRoutesLoading(')
     expect(mainSource).not.toContain('function renderPlaceRoutes(')
     expect(mainSource).not.toContain('function renderPlaceRoutesError(')
@@ -140,6 +143,8 @@ describe('map main architecture boundary', () => {
     expect(placeRoutesViewSource).toContain('options.createFavoriteControl(place, route)')
     expect(placeRoutesViewSource).toContain('options.onOpenRoute(')
     expect(placeRoutesViewSource).toContain('options.onRetry(place)')
+    expect(placeRoutesViewSource).toContain('etaPresentation(route.etaLabel')
+    expect(placeRoutesViewSource).toContain('tdxWarningMessages[warning]')
     for (const dependency of [
       'leaflet',
       'history.',
