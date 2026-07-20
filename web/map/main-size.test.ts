@@ -2,8 +2,9 @@
 import { describe, expect, it } from 'vitest'
 import mainSource from './main.ts?raw'
 import journeyPreviewSource from './journey-preview-controller.ts?raw'
+import journeyPreviewMapSource from './journey-preview-map.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 2072
+const MAP_MAIN_LINE_LIMIT = 1997
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -36,6 +37,15 @@ describe('map main architecture boundary', () => {
     expect(mainSource).not.toContain('selectDirectPreviewEntries')
     for (const dependency of ['leaflet', 'history.', 'document.', 'window.', 'mapApi.', 'camera.']) {
       expect(journeyPreviewSource).not.toContain(dependency)
+    }
+  })
+
+  it('delegates Leaflet Trip preview drawing to the Journey preview map surface', () => {
+    expect(mainSource).toContain('createJourneyPreviewMap')
+    expect(mainSource).not.toContain('function renderJourneyPreviewLeg(')
+    expect(mainSource).not.toContain('getJourneySegmentCoordinates')
+    for (const dependency of ['mapApi.', 'history.', 'camera.', 'trip.', 'document.', 'window.', 'loadVariant']) {
+      expect(journeyPreviewMapSource).not.toContain(dependency)
     }
   })
 
