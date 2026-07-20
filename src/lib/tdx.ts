@@ -4,6 +4,7 @@ import { classifyRouteName, type RouteCategory } from '../domain/route-category'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../domain/schedule'
 import { tdxWarningMessages, type TDXWarning } from '../domain/tdx-warning'
 import { selectBestEta } from '../domain/map/eta'
+import { selectRouteStopGroup } from '../domain/route-stop-group-selection'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { memoryCacheGet, memoryCacheSet } from './memory-cache'
 import { cacheMatchFailOpen, cachePutFailOpen, type BackgroundTaskScheduler } from './edge-cache'
@@ -878,15 +879,7 @@ export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Prom
     getRouteStopGroups(env, query.city, query.routeName, query.routeUid),
     getBusETA(env, query),
   ])
-  const group = groups.find((candidate) =>
-    candidate.direction === query.direction
-    && candidate.stops.some((stop) => stop.stopUid === query.stopUid)
-    && (!query.routeUid || candidate.routeUid === query.routeUid)
-    && (!query.subRouteUid || candidate.subRouteUid === query.subRouteUid)
-  ) ?? (!query.subRouteUid ? groups.find((candidate) =>
-    candidate.direction === query.direction
-    && candidate.stops.some((stop) => stop.stopUid === query.stopUid),
-  ) : undefined)
+  const group = selectRouteStopGroup(groups, query)
 
   if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
   const stopUids = new Set(group.stops.map((stop) => stop.stopUid))
