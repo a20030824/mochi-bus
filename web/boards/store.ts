@@ -1,6 +1,11 @@
 // 常用站牌的唯一 localStorage 讀寫入口。
 // 由 Vite 建成 /assets/boards.js:地圖、ETA 與 setup 頁共用同一份 store。
 import {
+  APPEARANCE_STORAGE_KEY,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
+  LOCAL_DATA_CLEARED_EVENT,
+} from '../../src/domain/appearance'
+import {
   busKey,
   migrateLegacyPresets,
   normalizeFavoriteBoards,
@@ -220,12 +225,23 @@ export function consumeTdxAuthMigrationNotice(): boolean {
 }
 
 // 會落到 TDX 即時查詢的 API 呼叫帶上這組 header;沒設定憑證就是空物件,行為不變。
-// 清掉這個站台的所有本機資料(常用站牌、封面指定、縣市記憶、TDX 憑證與舊版資料)。
+// 清掉這個站台的所有本機資料(常用站牌、封面指定、縣市記憶、外觀、TDX 憑證與舊版資料)。
 export function clearLocalData(): void {
-  for (const key of [BOARDS_KEY, ACTIVE_BOARD_KEY, ACTIVE_CITY_KEY, LEGACY_PRESETS_KEY, LEGACY_ACTIVE_KEY]) {
+  for (const key of [
+    BOARDS_KEY,
+    ACTIVE_BOARD_KEY,
+    ACTIVE_CITY_KEY,
+    LEGACY_PRESETS_KEY,
+    LEGACY_ACTIVE_KEY,
+    APPEARANCE_STORAGE_KEY,
+    ...LEGACY_APPEARANCE_STORAGE_KEYS,
+  ]) {
     localStorage.removeItem(key)
   }
   clearTdxAuth()
+  if (typeof globalThis.dispatchEvent === 'function' && typeof Event === 'function') {
+    globalThis.dispatchEvent(new Event(LOCAL_DATA_CLEARED_EVENT))
+  }
 }
 
 // 測試用：模擬重新載入頁面，不改動 browser storage。

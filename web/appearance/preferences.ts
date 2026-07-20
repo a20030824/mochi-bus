@@ -1,41 +1,44 @@
-export type AppearanceTheme = 'light' | 'dark'
+import {
+  APPEARANCE_STORAGE_KEY,
+  DEFAULT_APPEARANCE,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
+  normalizeAppearancePreferences,
+  type AppearancePreferences,
+} from '../../src/domain/appearance'
 
-export type AppearancePreferences = {
-  version: 1
-  home: AppearanceTheme
-  mapUi: AppearanceTheme
-  mapTiles: AppearanceTheme
+export {
+  APPEARANCE_STORAGE_KEY,
+  DEFAULT_APPEARANCE,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
+  normalizeAppearancePreferences,
 }
-
-export const APPEARANCE_STORAGE_KEY = 'mochi.bus.appearance.v1'
-
-export const DEFAULT_APPEARANCE: AppearancePreferences = {
-  version: 1,
-  home: 'dark',
-  mapUi: 'light',
-  mapTiles: 'light',
-}
-
-export function normalizeAppearancePreferences(value: unknown): AppearancePreferences {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...DEFAULT_APPEARANCE }
-  const candidate = value as Partial<AppearancePreferences>
-  return {
-    version: 1,
-    home: isAppearanceTheme(candidate.home) ? candidate.home : DEFAULT_APPEARANCE.home,
-    mapUi: isAppearanceTheme(candidate.mapUi) ? candidate.mapUi : DEFAULT_APPEARANCE.mapUi,
-    mapTiles: isAppearanceTheme(candidate.mapTiles) ? candidate.mapTiles : DEFAULT_APPEARANCE.mapTiles,
-  }
-}
+export type { AppearancePreferences, AppearanceTheme } from '../../src/domain/appearance'
 
 export function readAppearancePreferences(storage: Storage | undefined = browserStorage()): AppearancePreferences {
-  const raw = safeGet(storage, APPEARANCE_STORAGE_KEY)
-  if (raw === null) return { ...DEFAULT_APPEARANCE }
-  try {
-    return normalizeAppearancePreferences(JSON.parse(raw) as unknown)
-  } catch {
-    safeRemove(storage, APPEARANCE_STORAGE_KEY)
-    return { ...DEFAULT_APPEARANCE }
+  const current = safeGet(storage, APPEARANCE_STORAGE_KEY)
+  if (current !== null) {
+    try {
+      return normalizeAppearancePreferences(JSON.parse(current) as unknown)
+    } catch {
+      safeRemove(storage, APPEARANCE_STORAGE_KEY)
+    }
   }
+
+  for (const legacyKey of LEGACY_APPEARANCE_STORAGE_KEYS) {
+    const legacy = safeGet(storage, legacyKey)
+    if (legacy === null) continue
+    try {
+      const normalized = normalizeAppearancePreferences(JSON.parse(legacy) as unknown)
+      if (safeSet(storage, APPEARANCE_STORAGE_KEY, JSON.stringify(normalized))) {
+        clearLegacyAppearancePreferences(storage)
+      }
+      return normalized
+    } catch {
+      safeRemove(storage, legacyKey)
+    }
+  }
+
+  return { ...DEFAULT_APPEARANCE }
 }
 
 export function writeAppearancePreferences(
@@ -43,16 +46,19 @@ export function writeAppearancePreferences(
   storage: Storage | undefined = browserStorage(),
 ): AppearancePreferences {
   const normalized = normalizeAppearancePreferences(value)
-  safeSet(storage, APPEARANCE_STORAGE_KEY, JSON.stringify(normalized))
+  if (safeSet(storage, APPEARANCE_STORAGE_KEY, JSON.stringify(normalized))) {
+    clearLegacyAppearancePreferences(storage)
+  }
   return normalized
 }
 
 export function clearAppearancePreferences(storage: Storage | undefined = browserStorage()): void {
   safeRemove(storage, APPEARANCE_STORAGE_KEY)
+  clearLegacyAppearancePreferences(storage)
 }
 
-function isAppearanceTheme(value: unknown): value is AppearanceTheme {
-  return value === 'light' || value === 'dark'
+function clearLegacyAppearancePreferences(storage: Storage | undefined): void {
+  for (const key of LEGACY_APPEARANCE_STORAGE_KEYS) safeRemove(storage, key)
 }
 
 function browserStorage(): Storage | undefined {

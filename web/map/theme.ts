@@ -1,8 +1,8 @@
 import { readAppearancePreferences } from '../appearance/preferences'
 
-// Leaflet 圖屋畫在 canvas/SVG 上,吃不到 CSS custom property。製圖色只跟
-// 「地圖底圖」偏好走,不跟地圖介面或系統主題混在一起;切換後重開地圖頁套用。
-export const prefersDarkMap = readAppearancePreferences().mapTiles === 'dark'
+// Leaflet 圖層畫在 canvas/SVG 上，吃不到 CSS custom property。製圖配色與
+// 介面、底圖共用同一個「地圖外觀」偏好；切換後重開地圖頁套用。
+export const prefersDarkMap = readAppearancePreferences().map === 'dark'
 
 // 依路線名稱 hash 配色的色格。兩組長度一致,hash 對應的色格位置不變。
 // 亮色版維持原始褪色紙感六色(米紙底圖寬容,以氛圍優先)。深色版是

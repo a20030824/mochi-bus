@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
+import { applyAppearanceShell } from './appearance-shell'
+import { apiRateLimit } from './rate-limit'
 import bus from './routes/bus'
 import health from './routes/health'
 import map from './routes/map'
 import { cspViolationSummaries, httpsRedirectTarget, securityHeaders } from './security'
-import { apiRateLimit } from './rate-limit'
 
 type Env = { Bindings: CloudflareBindings }
 const app = new Hono<Env>()
@@ -18,6 +19,7 @@ app.use('*', async (c, next) => {
   if (redirectTarget) return c.redirect(redirectTarget, 308)
 
   await next()
+  c.res = applyAppearanceShell(c.res)
 
   // Keep route-specific policies when they are stricter than the global defaults.
   for (const [name, value] of Object.entries(headers)) {
