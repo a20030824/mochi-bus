@@ -14,14 +14,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Show recent watchdog runs
+      - name: Show repair run and D1 progress
         env:
           GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_ID: e5680212-29c5-4045-acd2-1e5df703e751
         run: |
-          echo 'Target main SHA: 5aa3dc9aaab66a24bf5074fa0ffbb46f91260f4d'
           curl --fail --location --silent --show-error \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            'https://api.github.com/repos/a20030824/mochi-bus/actions/workflows/snapshot-window-watchdog.yml/runs?branch=main&per_page=8' \
-          | jq -c '{total_count,runs:[.workflow_runs[]|{id,event,status,conclusion,head_sha,created_at,updated_at,html_url}]}'
+            'https://api.github.com/repos/a20030824/mochi-bus/actions/runs/29714906495' \
+          | jq -c '{id,status,conclusion,head_sha,created_at,updated_at,html_url}'
+
+          query() {
+            local sql="$1"
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg sql "$sql" '{sql:$sql,params:[]}')" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$DATABASE_ID/query" \
+            | jq -c '.result[0].results'
+          }
+          echo "ACTIVE=$(query "SELECT city_code,active_version,previous_version,updated_at FROM dataset_versions WHERE city_code IN ('NewTaipei','Taipei') ORDER BY city_code;")"
+          echo "WINDOWS=$(query "SELECT city_code,window_id,result,active_version,previous_version,failure_class,completed_at FROM snapshot_windows WHERE city_code IN ('NewTaipei','Taipei') ORDER BY completed_at DESC LIMIT 8;")"
+          echo "ATTEMPTS=$(query "SELECT city_code,window_id,result,started_at,completed_at FROM snapshot_window_attempts WHERE city_code IN ('NewTaipei','Taipei') ORDER BY started_at DESC LIMIT 8;")"
