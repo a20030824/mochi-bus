@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseRouteEtaResponse } from './contract'
+import { parseRouteEtaResponse, RouteContractError } from './contract'
 
 const valid = {
   schemaVersion: 1,
@@ -41,6 +41,6 @@ describe('parseRouteEtaResponse', () => {
     { ...valid, stops: [valid.stops[1], valid.stops[0]] },
     { ...valid, stops: tooManyStops },
   ])('rejects malformed or unbounded data %#', (value) => {
-    expect(() => parseRouteEtaResponse(value)).toThrow()
+    expect(() => parseRouteEtaResponse(value)).toThrow(RouteContractError)
   })
 })
