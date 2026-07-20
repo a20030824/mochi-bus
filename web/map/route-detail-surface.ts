@@ -364,7 +364,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
 
     const plate = vehicle.plate?.trim() || null
     marker.on('click', (event) => {
-      L.DomEvent.stopPropagation(event)
+      L.DomEvent.stop(event.originalEvent)
       openVehiclePopup(marker, plate, content)
     })
     return marker
@@ -380,6 +380,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
       const content = vehicleInfoText(vehicle.plate, vehicle.gpsTime)
       const marker = L.marker([vehicle.latitude, vehicle.longitude], {
         pane: 'vehiclePane',
+        bubblingMouseEvents: false,
         icon: L.divIcon({
           className: 'vehicle-marker-wrap',
           html: `<span class="vehicle-marker" style="transform:rotate(${azimuth}deg)"></span>`,
