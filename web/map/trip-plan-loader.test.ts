@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DirectRoute, JourneyEtaEstimate, TransferPlan } from './map-api-client'
 import { createTripPlanLoader } from './trip-plan-loader'
 
+const credentialError = new Error('credential rejected')
+
 function directRoute(routeName: string, stopCount: number): DirectRoute {
   return {
     routeUid: `TPE${routeName}`,
@@ -53,7 +55,6 @@ function eta(key: string, minutes: number | null, source: JourneyEtaEstimate['so
 }
 
 function createHarness(overrides: Partial<Parameters<typeof createTripPlanLoader>[0]> = {}) {
-  const credentialError = new Error('credential rejected')
   const options = {
     loadDirect: vi.fn(async () => [] as DirectRoute[]),
     loadTransfer: vi.fn(async () => [] as TransferPlan[]),
@@ -62,7 +63,6 @@ function createHarness(overrides: Partial<Parameters<typeof createTripPlanLoader
     ...overrides,
   }
   return {
-    credentialError,
     options,
     loader: createTripPlanLoader(options),
   }
@@ -81,7 +81,7 @@ describe('trip plan loader', () => {
     const harness = createHarness({
       loadDirect: vi.fn(async () => [slow, fast]),
       loadJourneyEta: vi.fn(async () => ({
-        warning: 'tdx-rate-limited' as const,
+        warning: 'tdx-rate-limit' as const,
         estimates: [
           eta('direct:0', null, 'none'),
           eta('direct:1', 3),
@@ -94,7 +94,7 @@ describe('trip plan loader', () => {
 
     expect(result).toMatchObject({
       kind: 'direct',
-      warning: 'tdx-rate-limited',
+      warning: 'tdx-rate-limit',
       routes: [
         { routeName: 'fast', etaMinutes: 3, etaSource: 'realtime' },
         { routeName: 'slow', etaMinutes: null, etaSource: 'none' },
@@ -158,10 +158,10 @@ describe('trip plan loader', () => {
   it('propagates credential rejection instead of disguising it as missing ETA', async () => {
     const harness = createHarness({
       loadDirect: vi.fn(async () => [directRoute('307', 5)]),
+      loadJourneyEta: vi.fn(async () => { throw credentialError }),
     })
-    harness.options.loadJourneyEta.mockRejectedValue(harness.credentialError)
 
-    await expect(harness.loader.load(request)).rejects.toBe(harness.credentialError)
+    await expect(harness.loader.load(request)).rejects.toBe(credentialError)
   })
 
   it('stops after an aborted direct request result and does not start ETA work', async () => {
