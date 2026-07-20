@@ -133,12 +133,6 @@ routePage = replaceOnce(
   "import type { ResolvedBusQuery } from './bus-query'\nimport { selectRouteStopGroup } from './route-stop-group-selection'\n",
   'route page selector import',
 )
-routePage = replaceOnce(
-  routePage,
-  '  type RouteDetail,\n  type StopGroup,\n  type TDXEnv,',
-  '  type RouteDetail,\n  type TDXEnv,',
-  'route page StopGroup import',
-)
 routePage = routePage.replaceAll('matchingStopGroup(groups, query)', 'selectRouteStopGroup(groups, query)')
 routePage = replaceOnce(
   routePage,
