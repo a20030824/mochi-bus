@@ -106,4 +106,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           JOB_STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: gh issue comment 52 --body "A6 watchdog evidence repair v2 finished with **${JOB_STATUS}**. Run: ${RUN_URL}"
+        run: |
+          gh issue comment 52 --body "A6 watchdog evidence repair v2 finished with **${JOB_STATUS}**. Run: ${RUN_URL}"
