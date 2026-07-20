@@ -1,7 +1,7 @@
 diff --git a/src/lib/tdx.ts b/src/lib/tdx.ts
 --- a/src/lib/tdx.ts
 +++ b/src/lib/tdx.ts
-@@ -1136,6 +1136,7 @@
+@@ -1136,5 +1136,6 @@
            })
        if (serviceError instanceof TDXPayloadTooLargeError) {
 +        recordTDXCircuitSuccess(circuitKey)
@@ -11,7 +11,7 @@ diff --git a/src/lib/tdx.ts b/src/lib/tdx.ts
 diff --git a/src/lib/tdx-resolution.test.ts b/src/lib/tdx-resolution.test.ts
 --- a/src/lib/tdx-resolution.test.ts
 +++ b/src/lib/tdx-resolution.test.ts
-@@ -470,6 +470,45 @@
+@@ -470,4 +470,44 @@
      expect(events.at(-1)).toMatchObject({ result: 'success', resolution: 'upstream' })
    })
  
