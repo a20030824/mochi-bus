@@ -1,4 +1,4 @@
-import type { BusQuery } from './bus-query'
+import type { BusQuery, ResolvedBusQuery } from './bus-query'
 import type { RouteMapVariant } from './map/map-model'
 
 type SnapshotRouteStop = RouteMapVariant['stops']['features'][number]
@@ -46,4 +46,22 @@ export function selectUniqueSnapshotRouteVariant<T extends SnapshotRouteSelectio
   }
 
   return selection
+}
+
+/**
+ * Complete a resolved Route query from the unique snapshot selection.
+ * Explicit route identifiers remain authoritative, while the physical stop
+ * identity and display name are always refreshed from the snapshot record.
+ */
+export function buildResolvedSnapshotRouteQuery<T extends SnapshotRouteSelectionVariant>(
+  query: BusQuery,
+  selection: SnapshotRouteSelection<T>,
+): ResolvedBusQuery {
+  return {
+    ...query,
+    routeUid: query.routeUid ?? selection.variant.routeUid,
+    subRouteUid: query.subRouteUid ?? selection.variant.subRouteUid,
+    stopUid: selection.selectedStop.properties.stopUid,
+    stopName: selection.selectedStop.properties.stopName,
+  }
 }
