@@ -1,0 +1,45 @@
+name: Sync Place routes controller with latest main
+
+on:
+  pull_request:
+    types: [synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.head_ref == 'agent/extract-place-routes-controller'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Merge latest main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Run focused Place route tests
+        run: npx vitest run web/map/place-routes-controller.test.ts web/map/journey-preview-controller.test.ts web/map/main-size.test.ts src/infrastructure/tdx/stop-arrivals.test.ts src/routes/map-place-arrivals.test.ts
+      - name: Run full check
+        run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Test desktop and touch interaction flows
+        run: npx playwright test --project=desktop-chromium --project=mobile-touch
+      - name: Run branch diff check
+        run: git diff --check origin/main...HEAD
+      - name: Remove temporary workflow and push
+        run: |
+          rm -f .github/workflows/sync-place-routes-controller.yml
+          git add -u .github
+          git commit -m "chore: remove Place routes sync workflow"
+          git push origin HEAD:${{ github.head_ref }}
