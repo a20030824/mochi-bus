@@ -111,6 +111,9 @@ export function planInitialMapHistory(options: {
 }
 
 function parentForView(view: MapView, currentParent: unknown): MapView | undefined {
+  // The overview → region → catalogue spine is fixed. Detail views may preserve
+  // a meaningful dynamic parent (for example route → trip results), but never a
+  // root-level parent or a self-cycle that would make Back navigation ambiguous.
   if (view === 'overview') return undefined
   if (view === 'region') return 'overview'
   if (view === 'catalogue') return 'region'
