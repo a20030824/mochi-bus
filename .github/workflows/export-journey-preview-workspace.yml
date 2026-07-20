@@ -1,0 +1,24 @@
+name: Export Journey preview workspace
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.head_ref == 'agent/extract-journey-preview-controller'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: journey-preview-workspace
+          include-hidden-files: true
+          path: |
+            .
+            !.git
