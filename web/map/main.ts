@@ -275,7 +275,7 @@ const nearbyPlaces = createNearbyPlacesController({
     nearbyPlacesView.renderLoading({ cityCode, origin, backLabel: '附近站牌', onBack: renderNearbyPlaces })
     nearbyLayer.clearLayers()
     lastNearbyOrigin = [...origin]
-    unifiedStopMarker(origin, true, stopFillAccent).addTo(nearbyLayer)
+    unifiedStopMarker([...origin], true, stopFillAccent).addTo(nearbyLayer)
     setStatus('正在找這附近的站牌…')
   },
   onPlaces: ({ places }) => { lastNearbyPlaces = places; renderNearbyPlaces() },
