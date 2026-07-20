@@ -3,7 +3,10 @@ import { isTdxTokenRejectedError, requestMochiJson } from '../tdx/api-client'
 import { parseRouteEtaResponse } from './contract'
 
 const routePage = document.querySelector<HTMLElement>('.route-page')
-if (routePage) void refreshRouteEta(routePage)
+if (routePage) {
+  prepareSelectedEta(routePage)
+  void refreshRouteEta(routePage)
+}
 
 async function refreshRouteEta(page: HTMLElement): Promise<void> {
   try {
@@ -18,6 +21,13 @@ async function refreshRouteEta(page: HTMLElement): Promise<void> {
     setSelectedStatus(page, isTdxTokenRejectedError(error) ? '憑證失效' : '即時未更新')
     console.error(JSON.stringify({ message: 'route_eta_client_failed' }))
   }
+}
+
+function prepareSelectedEta(page: HTMLElement): void {
+  const etaNode = page.querySelector<HTMLElement>('.route-stop.selected .route-eta')
+  if (!etaNode) return
+  etaNode.setAttribute('aria-live', 'polite')
+  etaNode.setAttribute('aria-atomic', 'true')
 }
 
 function applyRouteEta(page: HTMLElement, response: RouteEtaResponse): void {
