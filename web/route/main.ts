@@ -3,6 +3,9 @@ import { isTdxTokenRejectedError, requestMochiJson } from '../tdx/api-client'
 import { parseRouteEtaResponse } from './contract'
 import { createVisibleRefreshController, type VisibleRefreshResult } from './refresh-controller'
 
+const ROUTE_DEGRADED_REFRESH_MS = 2 * 60_000
+const ROUTE_QUOTA_REFRESH_MS = 5 * 60_000
+
 const routePage = document.querySelector<HTMLElement>('.route-page')
 if (routePage) {
   prepareSelectedEta(routePage)
@@ -29,7 +32,9 @@ async function refreshRouteEta(
       { cache: 'no-store', signal },
       { authenticated: true, fallback: '即時到站讀取失敗' },
     )
-    applyRouteEta(page, parseRouteEtaResponse(raw), selectedStopUid)
+    const response = parseRouteEtaResponse(raw)
+    applyRouteEta(page, response, selectedStopUid)
+    return refreshResultFor(response)
   } catch (error) {
     if (isAbortError(error)) return
 
@@ -38,6 +43,16 @@ async function refreshRouteEta(
     setSelectedStatus(page, tokenRejected ? '憑證失效' : '即時未更新')
     console.error(JSON.stringify({ message: 'route_eta_client_failed' }))
     if (tokenRejected) return 'stop'
+    return { nextDelayMs: ROUTE_DEGRADED_REFRESH_MS }
+  }
+}
+
+function refreshResultFor(response: RouteEtaResponse): VisibleRefreshResult {
+  if (response.eta.kind !== 'unavailable') return
+  return {
+    nextDelayMs: response.eta.warning === 'tdx-quota'
+      ? ROUTE_QUOTA_REFRESH_MS
+      : ROUTE_DEGRADED_REFRESH_MS,
   }
 }
 
