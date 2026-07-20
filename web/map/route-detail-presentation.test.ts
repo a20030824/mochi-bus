@@ -4,6 +4,8 @@ import {
   normalizedVehicleAzimuth,
   routeStopMarkerMetrics,
   routeVariantPreviewStyle,
+  vehicleInfoText,
+  vehicleUpdateAgeLabel,
 } from './route-detail-presentation'
 
 describe('route detail presentation policies', () => {
@@ -36,5 +38,20 @@ describe('route detail presentation policies', () => {
     expect(normalizedVehicleAzimuth(null)).toBe(0)
     expect(normalizedVehicleAzimuth(Number.NaN)).toBe(0)
     expect(normalizedVehicleAzimuth(275)).toBe(275)
+  })
+
+  it('formats vehicle data age without presenting unreliable speed', () => {
+    const now = Date.parse('2026-07-20T10:00:00.000Z')
+    const ago = (milliseconds: number) => new Date(now - milliseconds).toISOString()
+
+    expect(vehicleUpdateAgeLabel(ago(5_000), now)).toBe('剛剛更新')
+    expect(vehicleUpdateAgeLabel(ago(18_000), now)).toBe('18 秒前更新')
+    expect(vehicleUpdateAgeLabel(ago(60_000), now)).toBe('1 分鐘前更新')
+    expect(vehicleUpdateAgeLabel(ago(3_600_000), now)).toBe('1 小時前更新')
+    expect(vehicleUpdateAgeLabel(ago(86_400_000), now)).toBe('1 天前更新')
+    expect(vehicleUpdateAgeLabel('not-a-date', now)).toBe('更新時間未知')
+    expect(vehicleUpdateAgeLabel(null, now)).toBe('更新時間未知')
+    expect(vehicleInfoText(' KKA-1234 ', ago(18_000), now)).toBe('KKA-1234 · 18 秒前更新')
+    expect(vehicleInfoText(null, null, now)).toBe('公車 · 更新時間未知')
   })
 })
