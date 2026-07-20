@@ -60,11 +60,22 @@ function isScheduleEligible(stop: RouteTimelineStopPresentation): boolean {
 }
 
 function routeScheduledClockLabel(minutes: number, nextDay: boolean, now: Date): string {
+  const arrival = new Date(now.getTime() + minutes * 60_000)
   const clock = new Intl.DateTimeFormat('zh-TW', {
     timeZone: 'Asia/Taipei',
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
-  }).format(new Date(now.getTime() + minutes * 60_000))
-  return `表定 ${nextDay ? '明日 ' : ''}${clock}`
+  }).format(arrival)
+  const crossesTaipeiDate = taipeiDateKey(arrival) !== taipeiDateKey(now)
+  return `表定 ${nextDay || crossesTaipeiDate ? '明日 ' : ''}${clock}`
+}
+
+function taipeiDateKey(value: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(value)
 }
