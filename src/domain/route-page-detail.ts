@@ -2,7 +2,6 @@ import type { ResolvedBusQuery } from './bus-query'
 import {
   routeEtaHasRealtimeEstimate,
   routeEtaIsUnknown,
-  routeEtaStatesFromStops,
   type RouteEtaPresentationState,
 } from './route-eta-status'
 import { selectRouteStopGroup } from './route-stop-group-selection'
@@ -93,8 +92,7 @@ export async function getRouteEtaDetail(
   const resolvedDependencies: RouteDetailDependencies = { ...defaultDependencies, ...dependencies }
 
   try {
-    let detail = await resolvedDependencies.getRouteDetail(env, query)
-    let states = routeEtaStatesFromStops(detail.stops)
+    let { detail, states } = await resolvedDependencies.getRouteDetail(env, query)
     let schedules: ScheduleItem[] = []
 
     if (routeTimelineNeedsSchedule(detail.stops, states)) {

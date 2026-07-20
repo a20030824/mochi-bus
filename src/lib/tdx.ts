@@ -4,6 +4,10 @@ import { classifyRouteName, type RouteCategory } from '../domain/route-category'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../domain/schedule'
 import { tdxWarningMessages, type TDXWarning } from '../domain/tdx-warning'
 import { selectBestEta } from '../domain/map/eta'
+import {
+  routeEtaStateFromTdx,
+  type RouteEtaPresentationState,
+} from '../domain/route-eta-status'
 import { selectRouteStopGroup } from '../domain/route-stop-group-selection'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
 import { memoryCacheGet, memoryCacheSet } from './memory-cache'
@@ -177,6 +181,11 @@ export type RouteDetail = {
     etaLabel: string | null
     etaTone: RouteEtaTone
   }>
+}
+
+export type RouteDetailWithEtaStates = {
+  detail: RouteDetail
+  states: RouteEtaPresentationState[]
 }
 
 export class QueryResolutionError extends Error {
@@ -874,7 +883,10 @@ export async function getStopRouteSuggestions(
     .slice(0, 40)
 }
 
-export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Promise<RouteDetail> {
+export async function getRouteDetail(
+  env: TDXEnv,
+  query: ResolvedBusQuery,
+): Promise<RouteDetailWithEtaStates> {
   const [groups, etaItems] = await Promise.all([
     getRouteStopGroups(env, query.city, query.routeName, query.routeUid),
     getBusETA(env, query),
@@ -892,15 +904,11 @@ export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Prom
       direction: query.direction,
     }),
   ]))
-
-  return {
-    routeName: query.routeName,
-    direction: query.direction,
-    label: group.label,
-    stops: group.stops.map((stop) => {
-      const eta = etaByStop.get(stop.stopUid)
-      const seconds = typeof eta?.EstimateTime === 'number' ? Math.max(0, eta.EstimateTime) : null
-      return {
+  const timeline = group.stops.map((stop) => {
+    const eta = etaByStop.get(stop.stopUid)
+    const seconds = typeof eta?.EstimateTime === 'number' ? Math.max(0, eta.EstimateTime) : null
+    return {
+      stop: {
         stopUid: stop.stopUid,
         stopName: stop.stopName,
         sequence: stop.sequence,
@@ -909,8 +917,23 @@ export async function getRouteDetail(env: TDXEnv, query: ResolvedBusQuery): Prom
           ? formatETALabel(seconds === null ? null : Math.ceil(seconds / 60), eta.StopStatus ?? 0)
           : null,
         etaTone: (seconds === null ? 'muted' : seconds <= 180 ? 'urgent' : 'live') as RouteEtaTone,
-      }
-    }),
+      },
+      state: routeEtaStateFromTdx({
+        hasRealtimeRecord: Boolean(eta),
+        estimateSeconds: seconds,
+        stopStatus: eta?.StopStatus,
+      }),
+    }
+  })
+
+  return {
+    detail: {
+      routeName: query.routeName,
+      direction: query.direction,
+      label: group.label,
+      stops: timeline.map((row) => row.stop),
+    },
+    states: timeline.map((row) => row.state),
   }
 }
 
