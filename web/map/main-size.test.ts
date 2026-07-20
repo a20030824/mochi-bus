@@ -62,6 +62,12 @@ describe('map main architecture boundary', () => {
     expect(journeyPreviewMapSource).not.toContain('previewDotStyleForZoom')
     expect(routeDetailSurfaceSource).toContain('SelectablePreviewLineRenderer')
     expect(routeDetailSurfaceSource).toContain('PreviewStopDotManager')
+    for (const source of [mainSource, journeyPreviewMapSource, routeDetailSurfaceSource]) {
+      expect(source).not.toContain('weight: 26')
+      expect(source).not.toContain("'preview-stop-dot'")
+    }
+    expect(previewMapPrimitivesSource).toContain('weight: touchHitWeight')
+    expect(previewMapPrimitivesSource).toContain("'preview-stop-dot'")
     for (const dependency of ['mapApi.', 'history.', 'camera.', 'trip.', 'document.', 'window.', 'loadVariant']) {
       expect(previewMapPrimitivesSource).not.toContain(dependency)
     }
