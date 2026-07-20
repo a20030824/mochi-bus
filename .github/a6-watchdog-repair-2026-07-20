@@ -1,0 +1,3 @@
+A6 watchdog evidence repair marker.
+
+Adding this file triggers the one-shot main-branch workflow that refreshes the 2026-07-20 scheduled evidence for NewTaipei and Taipei, reruns the watchdog, and revalidates the 22-city public probe.
