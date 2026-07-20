@@ -92,6 +92,9 @@ describe('map main architecture boundary', () => {
     expect(mainSource).not.toContain('beginOtherPreviewRequest')
     expect(mainSource).not.toContain('previewRequest')
     expect(mainSource).not.toContain('await mapApi.placeRoutes(')
+    expect(placeRoutesSource).toContain('options.onRoutes(presentation)')
+    expect(placeRoutesSource).toContain('options.renderPreview(preview)')
+    expect(placeRoutesSource).toContain('options.onComplete(presentation)')
     for (const dependency of [
       'leaflet',
       'history.',
@@ -105,6 +108,12 @@ describe('map main architecture boundary', () => {
       'journey-preview',
       'route-detail',
       './main',
+      'AbortController',
+      'setStatus(',
+      'renderDrawer(',
+      'isTdxTokenRejectedError',
+      'tdxWarningMessages',
+      'toggleFavoriteDirection',
     ]) {
       expect(placeRoutesSource).not.toContain(dependency)
     }
