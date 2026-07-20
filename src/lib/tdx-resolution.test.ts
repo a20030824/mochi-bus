@@ -28,11 +28,26 @@ const options = {
   validate: isTDXRecordArray<{ id: string }>,
 }
 
+function parsedConsoleCalls(calls: readonly (readonly unknown[])[]): Array<Record<string, unknown>> {
+  return calls.flatMap(([value]) => {
+    if (typeof value !== 'string') return []
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? [parsed as Record<string, unknown>]
+        : []
+    } catch {
+      return []
+    }
+  })
+}
+
 describe('TDX logical resolution instrumentation', () => {
   beforeEach(() => {
     resetTDXTestState()
     resetMemoryCacheForTests()
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
   })
 
   afterEach(() => {
@@ -379,12 +394,76 @@ describe('TDX logical resolution instrumentation', () => {
 
     await expect(fetchTDXJson(
       observedEnv([]),
-      new URL('https://tdx.transportdata.tw/api/basic/v2/test?case=default-byte-cap'),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Shape/City/Taipei/307?private=query'),
       30,
       options,
     )).rejects.toThrow('byte limit')
 
     expect(cancelCount).toBe(1)
+    const oversized = parsedConsoleCalls(vi.mocked(console.error).mock.calls)
+      .find((entry) => entry.message === 'tdx_response_too_large')
+    expect(oversized).toMatchObject({
+      operation: 'vehicle_positions',
+      resource: 'Shape',
+      credentialScope: 'byok',
+      maxBytes: 8 * 1024 * 1024,
+      declaredBytes: 64 * 1024 * 1024,
+      receivedBytes: null,
+      sizeSource: 'content_length',
+    })
+    expect(JSON.stringify(oversized)).not.toMatch(/private=query|private-access-token|307/)
+  })
+
+  it('observes sampled and near-limit response sizes without logging request identity', async () => {
+    const payload = [{ id: 'x'.repeat(200) }]
+    const body = JSON.stringify(payload)
+    const receivedBytes = new TextEncoder().encode(body).byteLength
+    const fetchMock = vi.fn(async () => new Response(body, {
+      headers: { 'Content-Length': String(receivedBytes) },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('caches', {
+      default: { match: vi.fn(async () => undefined), put: vi.fn(async () => undefined) },
+    })
+
+    await expect(fetchTDXJson(
+      observedEnv([]),
+      new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Route/City/Taipei?private=query'),
+      0,
+      { ...options, maxResponseBytes: receivedBytes * 4 },
+    )).resolves.toEqual(payload)
+
+    const unsampledEnv = observedEnv([])
+    unsampledEnv.TDX_TELEMETRY = {
+      ...unsampledEnv.TDX_TELEMETRY,
+      random: () => 1,
+    }
+    await expect(fetchTDXJson(
+      unsampledEnv,
+      new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Route/City/Taipei?private=near-limit'),
+      0,
+      { ...options, maxResponseBytes: Math.ceil(receivedBytes / 0.8) },
+    )).resolves.toEqual(payload)
+
+    const observations = parsedConsoleCalls(vi.mocked(console.info).mock.calls)
+      .filter((entry) => entry.message === 'tdx_response_size_observed')
+    expect(observations).toHaveLength(2)
+    expect(observations[0]).toMatchObject({
+      sampleReason: 'sampled',
+      operation: 'vehicle_positions',
+      resource: 'Route',
+      credentialScope: 'byok',
+      receivedBytes,
+      declaredBytes: receivedBytes,
+      sizeBucket: 'lt_64k',
+      limitUsageBucket: '25_50pct',
+    })
+    expect(observations[1]).toMatchObject({
+      sampleReason: 'near_limit',
+      resource: 'Route',
+      limitUsageBucket: '75_90pct',
+    })
+    expect(JSON.stringify(observations)).not.toMatch(/private=query|near-limit|private-access-token|x{20}/)
   })
 
   it('truncates oversized error bodies while preserving warning classification', async () => {
@@ -416,6 +495,17 @@ describe('TDX logical resolution instrumentation', () => {
 
     expect(cancelCount).toBe(1)
     expect(events[0]).toMatchObject({ failureClass: 'quota', upstreamStatusClass: '4xx' })
+    const truncated = parsedConsoleCalls(vi.mocked(console.error).mock.calls)
+      .find((entry) => entry.message === 'tdx_error_body_truncated')
+    expect(truncated).toMatchObject({
+      operation: 'vehicle_positions',
+      resource: 'other',
+      credentialScope: 'byok',
+      status: 403,
+      maxBytes: 32 * 1024,
+      declaredBytes: chunk.byteLength,
+      sizeSource: 'content_length',
+    })
   })
 
   it('rejects an oversized successful token response before requesting data', async () => {
@@ -441,6 +531,16 @@ describe('TDX logical resolution instrumentation', () => {
 
     expect(fetchMock).toHaveBeenCalledOnce()
     expect(cancelCount).toBe(1)
+    const oversized = parsedConsoleCalls(vi.mocked(console.error).mock.calls)
+      .find((entry) => entry.message === 'tdx_response_too_large')
+    expect(oversized).toMatchObject({
+      operation: 'token',
+      resource: 'token',
+      credentialScope: 'shared',
+      maxBytes: 16 * 1024,
+      declaredBytes: 64 * 1024,
+      sizeSource: 'content_length',
+    })
   })
 
   it('replays stale data when Content-Length exceeds the configured response limit', async () => {

@@ -248,9 +248,36 @@ export function resetTDXRateLimitTracking(): void {
 
 // TDX 的 429 body 會說明是頻率超限還是額度用盡,記進 log 供事後判讀;內容絕不回給使用者。
 // isShared 只有共用憑證的請求才是 true,決定這次結果要不要更新額度追蹤狀態。
-async function tdxResponseError(context: string, response: Response, isShared: boolean): Promise<TDXServiceError> {
-  const body = await readTextResponse(response, TDX_ERROR_MAX_RESPONSE_BYTES, true).catch(() => '')
-  const warning = classifyTDXWarning(response.status, body)
+async function tdxResponseError(
+  context: string,
+  response: Response,
+  isShared: boolean,
+  observation: Pick<TDXResponseObservation, 'operation' | 'resource'>,
+): Promise<TDXServiceError> {
+  const body: TDXBoundedTextResponse = await readTextResponse(
+    response,
+    TDX_ERROR_MAX_RESPONSE_BYTES,
+    true,
+  ).catch((): TDXBoundedTextResponse => ({
+    text: '',
+    receivedBytes: 0,
+    declaredBytes: parsedContentLength(response.headers.get('Content-Length')),
+    truncated: false,
+  }))
+  if (body.truncated) {
+    console.error(JSON.stringify({
+      message: 'tdx_error_body_truncated',
+      operation: observation.operation ?? 'unclassified',
+      resource: observation.resource,
+      credentialScope: isShared ? 'shared' : 'byok',
+      status: response.status,
+      maxBytes: TDX_ERROR_MAX_RESPONSE_BYTES,
+      receivedBytes: body.receivedBytes,
+      declaredBytes: body.declaredBytes ?? null,
+      sizeSource: body.limitSource ?? 'stream',
+    }))
+  }
+  const warning = classifyTDXWarning(response.status, body.text)
   if (isShared && (response.status === 429 || warning === 'tdx-rate-limit' || warning === 'tdx-quota')) {
     sharedRateLimitedSince ??= Date.now()
   }
@@ -294,11 +321,35 @@ type CircuitState = {
 
 // 共用憑證的 cache key 是 source + client_id + client_secret 的 SHA-256 指紋；
 // Map 裡不保留原始 secret，同一 client_id 更換 secret 也不會誤用舊 token。
+type TDXResponseSizeSource = 'content_length' | 'stream'
+
+type TDXResponseObservation = {
+  operation?: TelemetryTdxOperation | 'token'
+  resource: string
+  credentialScope: 'shared' | 'byok'
+}
+
+type TDXBoundedTextResponse = {
+  text: string
+  receivedBytes: number
+  declaredBytes?: number
+  truncated: boolean
+  limitSource?: TDXResponseSizeSource
+}
+
+type TDXParsedJsonResponse = {
+  data: unknown
+  receivedBytes: number
+  declaredBytes?: number
+}
+
 type TDXUpstreamOutcome =
   | {
       ok: true
       data: unknown
       status: number
+      receivedBytes: number
+      declaredBytes?: number
       retryCount: number
       initialFailureClass?: TelemetryFailureClass
     }
@@ -571,14 +622,27 @@ async function fetchTDXToken(
   }
 
   if (!response.ok) {
-    const error = await tdxResponseError('TDX token request failed', response, isShared)
+    const error = await tdxResponseError('TDX token request failed', response, isShared, {
+      operation: 'token',
+      resource: 'token',
+    })
     recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
     throw error
   }
   if (isShared) sharedRateLimitedSince = null
   let data: { access_token?: string; expires_in?: number }
   try {
-    data = await readJsonResponse(response, TDX_TOKEN_MAX_RESPONSE_BYTES) as {
+    const parsed = await readJsonResponse(response, TDX_TOKEN_MAX_RESPONSE_BYTES)
+    logTDXResponseSize({
+      operation: 'token',
+      resource: 'token',
+      credentialScope: isShared ? 'shared' : 'byok',
+      maxBytes: TDX_TOKEN_MAX_RESPONSE_BYTES,
+      receivedBytes: parsed.receivedBytes,
+      declaredBytes: parsed.declaredBytes,
+      sampled: false,
+    })
+    data = parsed.data as {
       access_token?: string
       expires_in?: number
     }
@@ -589,6 +653,13 @@ async function fetchTDXToken(
           cause: error,
           failureKind: 'invalid_json',
         })
+    if (serviceError instanceof TDXPayloadTooLargeError) {
+      logTDXResponseTooLarge(serviceError, {
+        operation: 'token',
+        resource: 'token',
+        credentialScope: isShared ? 'shared' : 'byok',
+      })
+    }
     recordTDXCircuitFailure(circuitKey, serviceError)
     throw serviceError
   }
@@ -1081,10 +1152,10 @@ export async function resolveTDXJson<T>(
   const cached = await cacheMatchFailOpen(edgeCache, cacheKey, 'tdx')
   if (cached) {
     try {
-      const data = await readJsonResponse(cached, maxResponseBytes)
-      if (validPayload(data, options.validate)) {
+      const parsed = await readJsonResponse(cached, maxResponseBytes)
+      if (validPayload(parsed.data, options.validate)) {
         const cachedAt = parsedCacheTimestamp(cached.headers.get('X-Mochi-Cached-At'))
-        const typed = data as T
+        const typed = parsed.data as T
         memoryCacheSet(memoryKey, { data: typed, cachedAt }, ttlSeconds)
         return completeData(
           typed,
@@ -1148,6 +1219,18 @@ export async function resolveTDXJson<T>(
   retryCount = upstream.retryCount
   initialFailureClass = upstream.initialFailureClass
   if (!upstream.ok) return finishFailure(upstream.error, true)
+
+  if (leader) {
+    logTDXResponseSize({
+      operation: options.operation,
+      resource: tdxResponseResource(url),
+      credentialScope,
+      maxBytes: maxResponseBytes,
+      receivedBytes: upstream.receivedBytes,
+      declaredBytes: upstream.declaredBytes,
+      sampled: tracker?.isSampled ?? false,
+    })
+  }
 
   if (!validPayload(upstream.data, options.validate)) {
     const serviceError = new TDXServiceError('TDX response has an invalid schema', 502, {
@@ -1243,7 +1326,10 @@ async function fetchTDXUpstream(
     }
 
     if (!response.ok) {
-      const error = await tdxResponseError('TDX request failed', response, isShared)
+      const error = await tdxResponseError('TDX request failed', response, isShared, {
+        operation,
+        resource: tdxResponseResource(url),
+      })
       if (shouldRetryResolution(error, operation, retryCount)) {
         retryCount += 1
         initialFailureClass = error.failureKind
@@ -1255,8 +1341,16 @@ async function fetchTDXUpstream(
     if (isShared) sharedRateLimitedSince = null
 
     try {
-      const data = await readJsonResponse(response, maxResponseBytes)
-      return { ok: true, data, status: response.status, retryCount, initialFailureClass }
+      const parsed = await readJsonResponse(response, maxResponseBytes)
+      return {
+        ok: true,
+        data: parsed.data,
+        status: response.status,
+        receivedBytes: parsed.receivedBytes,
+        declaredBytes: parsed.declaredBytes,
+        retryCount,
+        initialFailureClass,
+      }
     } catch (error) {
       const serviceError = error instanceof TDXPayloadTooLargeError
         ? error
@@ -1266,11 +1360,11 @@ async function fetchTDXUpstream(
           })
       if (serviceError instanceof TDXPayloadTooLargeError) {
         recordTDXCircuitSuccess(circuitKey)
-        console.error(JSON.stringify({
-          message: 'tdx_response_too_large',
-          maxBytes: serviceError.maxBytes,
-          receivedBytes: serviceError.receivedBytes ?? null,
-        }))
+        logTDXResponseTooLarge(serviceError, {
+          operation,
+          resource: tdxResponseResource(url),
+          credentialScope: isShared ? 'shared' : 'byok',
+        })
       } else {
         recordTDXCircuitFailure(circuitKey, serviceError)
       }
@@ -1282,7 +1376,9 @@ async function fetchTDXUpstream(
 class TDXPayloadTooLargeError extends TDXServiceError {
   constructor(
     readonly maxBytes: number,
+    readonly sizeSource: TDXResponseSizeSource,
     readonly receivedBytes?: number,
+    readonly declaredBytes?: number,
   ) {
     super('TDX response exceeds configured byte limit', 502, {
       failureKind: 'invalid_schema',
@@ -1304,22 +1400,29 @@ function responseByteLimit(value: number | undefined): number {
 async function readJsonResponse(
   response: Response,
   maxBytes = DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES,
-): Promise<unknown> {
-  return JSON.parse(await readTextResponse(response, maxBytes, false))
+): Promise<TDXParsedJsonResponse> {
+  const body = await readTextResponse(response, maxBytes, false)
+  return {
+    data: JSON.parse(body.text),
+    receivedBytes: body.receivedBytes,
+    declaredBytes: body.declaredBytes,
+  }
 }
 
 async function readTextResponse(
   response: Response,
   maxBytes: number,
   truncateOnLimit: boolean,
-): Promise<string> {
+): Promise<TDXBoundedTextResponse> {
   const safeMaxBytes = Math.max(1, Math.floor(maxBytes))
   const declaredLength = parsedContentLength(response.headers.get('Content-Length'))
   if (!truncateOnLimit && declaredLength !== undefined && declaredLength > safeMaxBytes) {
     await response.body?.cancel().catch(() => undefined)
-    throw new TDXPayloadTooLargeError(safeMaxBytes, declaredLength)
+    throw new TDXPayloadTooLargeError(safeMaxBytes, 'content_length', undefined, declaredLength)
   }
-  if (!response.body) return ''
+  if (!response.body) {
+    return { text: '', receivedBytes: 0, declaredBytes: declaredLength, truncated: false }
+  }
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -1339,20 +1442,106 @@ async function readTextResponse(
         receivedBytes += value.byteLength
         await reader.cancel().catch(() => undefined)
         if (!truncateOnLimit) {
-          throw new TDXPayloadTooLargeError(safeMaxBytes, receivedBytes)
+          throw new TDXPayloadTooLargeError(safeMaxBytes, 'stream', receivedBytes, declaredLength)
         }
         body += decoder.decode()
-        return body
+        return {
+          text: body,
+          receivedBytes,
+          declaredBytes: declaredLength,
+          truncated: true,
+          limitSource: declaredLength !== undefined && declaredLength > safeMaxBytes
+            ? 'content_length'
+            : 'stream',
+        }
       }
 
       receivedBytes += value.byteLength
       body += decoder.decode(value, { stream: true })
     }
     body += decoder.decode()
-    return body
+    return { text: body, receivedBytes, declaredBytes: declaredLength, truncated: false }
   } finally {
     reader.releaseLock()
   }
+}
+
+function logTDXResponseTooLarge(
+  error: TDXPayloadTooLargeError,
+  observation: TDXResponseObservation,
+): void {
+  console.error(JSON.stringify({
+    message: 'tdx_response_too_large',
+    operation: observation.operation ?? 'unclassified',
+    resource: observation.resource,
+    credentialScope: observation.credentialScope,
+    maxBytes: error.maxBytes,
+    receivedBytes: error.receivedBytes ?? null,
+    declaredBytes: error.declaredBytes ?? null,
+    sizeSource: error.sizeSource,
+  }))
+}
+
+function logTDXResponseSize(
+  observation: TDXResponseObservation & {
+    maxBytes: number
+    receivedBytes: number
+    declaredBytes?: number
+    sampled: boolean
+  },
+): void {
+  const nearLimit = observation.receivedBytes * 4 >= observation.maxBytes * 3
+  if (!observation.sampled && !nearLimit) return
+  console.info(JSON.stringify({
+    message: 'tdx_response_size_observed',
+    sampleReason: nearLimit ? 'near_limit' : 'sampled',
+    operation: observation.operation ?? 'unclassified',
+    resource: observation.resource,
+    credentialScope: observation.credentialScope,
+    maxBytes: observation.maxBytes,
+    receivedBytes: observation.receivedBytes,
+    declaredBytes: observation.declaredBytes ?? null,
+    sizeBucket: responseSizeBucket(observation.receivedBytes),
+    limitUsageBucket: responseLimitUsageBucket(observation.receivedBytes, observation.maxBytes),
+  }))
+}
+
+function responseSizeBucket(bytes: number): string {
+  if (bytes < 64 * 1024) return 'lt_64k'
+  if (bytes < 256 * 1024) return '64k_256k'
+  if (bytes < 512 * 1024) return '256k_512k'
+  if (bytes < 1024 * 1024) return '512k_1m'
+  if (bytes < 2 * 1024 * 1024) return '1m_2m'
+  if (bytes < 4 * 1024 * 1024) return '2m_4m'
+  if (bytes < 8 * 1024 * 1024) return '4m_8m'
+  return 'gte_8m'
+}
+
+function responseLimitUsageBucket(bytes: number, maxBytes: number): string {
+  const ratio = bytes / Math.max(1, maxBytes)
+  if (ratio < 0.25) return 'lt_25pct'
+  if (ratio < 0.5) return '25_50pct'
+  if (ratio < 0.75) return '50_75pct'
+  if (ratio < 0.9) return '75_90pct'
+  if (ratio < 1) return '90_100pct'
+  return 'gte_100pct'
+}
+
+function tdxResponseResource(url: URL): string {
+  const segments = url.pathname.split('/').filter(Boolean)
+  const busIndex = segments.indexOf('Bus')
+  const resource = busIndex >= 0 ? segments[busIndex + 1] : undefined
+  return resource && [
+    'EstimatedTimeOfArrival',
+    'Route',
+    'Schedule',
+    'Shape',
+    'Stop',
+    'StopOfRoute',
+    'Vehicle',
+  ].includes(resource)
+    ? resource
+    : 'other'
 }
 
 function parsedContentLength(value: string | null): number | undefined {
