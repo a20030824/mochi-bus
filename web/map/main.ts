@@ -1,5 +1,6 @@
 import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
 import { routeLoadingBack, routeViewBack, type RouteBackTarget } from '../../src/domain/map/route-back'
+import { selectRouteVariant } from '../../src/domain/map/route-variant-selection'
 import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
 import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
 import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
@@ -1416,16 +1417,11 @@ async function loadRoute(
   try {
     const variants = await mapApi.routeVariants(activeCity.code, routeName, signal)
     if (isStaleNav(requestId)) return
-    const preferred = variants.find((variant) => variant.variantKey === preferredVariant)
+    const selection = selectRouteVariant(variants, preferredVariant)
     lastVariantChoices = { routeName, variants }
-    variantPickerUsed = !preferred && variants.length > 1
-    if (preferred) {
-      drawVariant(preferred)
-    } else if (variants.length === 1) {
-      drawVariant(variants[0])
-    } else {
-      renderVariantPicker(routeName, variants)
-    }
+    variantPickerUsed = selection.pickerUsed
+    if (selection.kind === 'variant') drawVariant(selection.variant)
+    else renderVariantPicker(routeName, variants)
   } catch (error) {
     if (isStaleNav(requestId)) return
     const message = error instanceof Error && error.message ? error.message : '目前無法取得這條路線。'
