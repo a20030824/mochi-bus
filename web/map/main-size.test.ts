@@ -68,7 +68,18 @@ describe('map main architecture boundary', () => {
     }
     expect(previewMapPrimitivesSource).toContain('weight: touchHitWeight')
     expect(previewMapPrimitivesSource).toContain("'preview-stop-dot'")
-    for (const dependency of ['mapApi.', 'history.', 'camera.', 'trip.', 'document.', 'window.', 'loadVariant']) {
+    for (const dependency of [
+      'mapApi.',
+      'history.',
+      'camera.',
+      'trip.',
+      'document.',
+      'window.',
+      'loadVariant',
+      'journey-preview',
+      'route-detail',
+      './main',
+    ]) {
       expect(previewMapPrimitivesSource).not.toContain(dependency)
     }
   })
