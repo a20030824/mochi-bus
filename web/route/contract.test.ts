@@ -21,6 +21,16 @@ describe('parseRouteEtaResponse', () => {
     expect(parseRouteEtaResponse(valid)).toEqual(valid)
   })
 
+  it('accepts the canonical base station limits', () => {
+    const stop = {
+      ...valid.stops[0],
+      stopUid: 'u'.repeat(128),
+      stopName: '站'.repeat(256),
+      sequence: Number.MAX_SAFE_INTEGER,
+    }
+    expect(parseRouteEtaResponse({ ...valid, stops: [stop] }).stops[0]).toEqual(stop)
+  })
+
   it('accepts a bounded degraded warning', () => {
     expect(parseRouteEtaResponse({
       ...valid,
@@ -39,6 +49,7 @@ describe('parseRouteEtaResponse', () => {
     { ...valid, stops: [{ ...valid.stops[0], etaLabel: 12 }] },
     { ...valid, stops: [{ ...valid.stops[0], etaLabel: 'x'.repeat(65) }] },
     { ...valid, stops: [{ ...valid.stops[0], sequence: 1.5 }] },
+    { ...valid, stops: [{ ...valid.stops[0], sequence: Number.MAX_SAFE_INTEGER + 1 }] },
     { ...valid, stops: [valid.stops[1], valid.stops[0]] },
     { ...valid, stops: tooManyStops },
   ])('rejects malformed or unbounded data %#', (value) => {
