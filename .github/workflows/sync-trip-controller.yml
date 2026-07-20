@@ -1,0 +1,46 @@
+name: Sync Trip controller with latest main
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.head_ref == 'agent/extract-trip-controller'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Merge latest main
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git merge --no-edit origin/main
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Run focused Trip tests
+        run: npx vitest run web/map/trip-controller.test.ts web/map/trip-plan-loader.test.ts web/map/trip-runtime-store.test.ts web/map/trip-state.test.ts web/map/trip-results-snapshot.test.ts
+      - run: npm run check
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Test desktop and touch interaction flows
+        run: >-
+          npx playwright test
+          --project=desktop-chromium
+          --project=mobile-touch
+          --reporter=line,html
+      - run: git diff --check origin/main...HEAD
+      - name: Remove temporary workflow and push
+        run: |
+          git rm .github/workflows/sync-trip-controller.yml
+          git commit -m "chore: remove Trip controller sync workflow"
+          git push origin HEAD:${{ github.head_ref }}
