@@ -16,27 +16,29 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/tdx-response-byte-limit
-          fetch-depth: 1
-          show-progress: false
+      - name: Checkout branch quietly
+        run: git clone --quiet --depth 1 --branch agent/tdx-response-byte-limit https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git repo
 
       - name: Apply focused hardening
+        working-directory: repo
         run: |
           git apply --check --verbose .github/tdx-byte-limit-hardening.patch
           git apply .github/tdx-byte-limit-hardening.patch
 
       - name: Install dependencies
+        working-directory: repo
         run: npm ci
 
       - name: Run focused tests
+        working-directory: repo
         run: npm test -- src/lib/tdx-resolution.test.ts
 
       - name: Run full project check
+        working-directory: repo
         run: npm run check
 
       - name: Commit clean result
+        working-directory: repo
         run: |
           rm .github/tdx-byte-limit-hardening.patch
           rm .github/workflows/apply-tdx-byte-limit-hardening.yml
