@@ -89,27 +89,41 @@ bus.get('/bus', async (c) => {
 
 bus.get('/setup', (c) => c.html(renderSetupPage(supportedCities, c.req.url), 200, pageHeaders))
 
-bus.get('/route', async (c) => {
-  let query: BusQuery
-  try {
-    query = parseRequestQuery(c)
-  } catch (error) {
-    return renderPageError(c, error)
+export type RoutePageHandlerDependencies = {
+  getRoutePageWithFallback: typeof getRoutePageWithFallback
+}
+
+const defaultRoutePageHandlerDependencies: RoutePageHandlerDependencies = {
+  getRoutePageWithFallback,
+}
+
+export function createRoutePageHandler(
+  dependencies: RoutePageHandlerDependencies = defaultRoutePageHandlerDependencies,
+) {
+  return async (c: Context<Env>) => {
+    let query: BusQuery
+    try {
+      query = parseRequestQuery(c)
+    } catch (error) {
+      return renderPageError(c, error)
+    }
+    try {
+      const page = await dependencies.getRoutePageWithFallback({
+        tdx: tdxEnv(c),
+        snapshot: c.env,
+      }, query)
+      return c.html(
+        embedRoutePageIdentity(renderRoutePage(page.resolved, page.detail, c.req.url), page.detail),
+        200,
+        pageHeaders,
+      )
+    } catch (error) {
+      return renderPageError(c, error)
+    }
   }
-  try {
-    const page = await getRoutePageWithFallback({
-      tdx: tdxEnv(c),
-      snapshot: c.env,
-    }, query)
-    return c.html(
-      embedRoutePageIdentity(renderRoutePage(page.resolved, page.detail, c.req.url), page.detail),
-      200,
-      pageHeaders,
-    )
-  } catch (error) {
-    return renderPageError(c, error)
-  }
-})
+}
+
+bus.get('/route', createRoutePageHandler())
 
 bus.get('/api/v1/eta', async (c) => {
   try {
