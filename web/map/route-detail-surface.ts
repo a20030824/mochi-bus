@@ -364,7 +364,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
 
     const plate = vehicle.plate?.trim() || null
     marker.on('click', (event) => {
-      L.DomEvent.stop(event.originalEvent)
+      L.DomEvent.stop((event as L.LeafletMouseEvent).originalEvent)
       openVehiclePopup(marker, plate, content)
     })
     return marker
