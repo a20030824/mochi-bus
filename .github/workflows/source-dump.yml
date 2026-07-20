@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/setup-multi-route-board-loss
+  pull_request:
 
 permissions:
   contents: read
