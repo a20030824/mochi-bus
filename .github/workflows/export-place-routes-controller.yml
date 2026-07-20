@@ -1,18 +1,20 @@
 name: Export Place routes controller workspace
 
 on:
-  push:
-    branches:
-      - agent/extract-place-routes-controller
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
 jobs:
   export:
+    if: github.head_ref == 'agent/extract-place-routes-controller'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
       - uses: actions/upload-artifact@v4
         with:
           name: place-routes-controller-workspace
