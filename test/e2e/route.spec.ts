@@ -4,6 +4,14 @@ import { TDX_ACCESS_TOKEN_REJECTED_CODE } from '../../src/domain/tdx-api-error'
 const routeUrl = '/route?city=Taipei&route=307&routeUid=TPE19108&direction=0&stop=%E6%8D%B7%E9%81%8B%E8%A5%BF%E9%96%80%E7%AB%99&stopUid=TPE213044'
 const routeUrlWithoutStopUid = '/route?city=Taipei&route=307&routeUid=TPE19108&direction=0&stop=%E6%8D%B7%E9%81%8B%E8%A5%BF%E9%96%80%E7%AB%99'
 
+const routeIdentity = {
+  schemaVersion: 1,
+  stops: [
+    { stopUid: 'TPE100', stopName: '板橋公車站', sequence: 1, selected: false },
+    { stopUid: 'TPE213044', stopName: '捷運西門站', sequence: 2, selected: true },
+  ],
+}
+
 const routeHtml = `<!doctype html><html><body>
 <main class="route-page">
   <ol class="route-timeline">
@@ -11,6 +19,7 @@ const routeHtml = `<!doctype html><html><body>
     <li class="route-stop selected"><span class="dot"></span><div><strong>捷運西門站</strong><em>你的站牌</em></div><span class="route-eta muted">更新中</span></li>
   </ol>
 </main>
+<script id="route-identity" type="application/json">${JSON.stringify(routeIdentity)}</script>
 <script type="module" src="/assets/route.js"></script>
 </body></html>`
 
@@ -207,6 +216,22 @@ test.describe('Route progressive ETA', () => {
         ...realtime,
         stops: realtime.stops.map((stop, index) => index === 1
           ? { ...stop, stopUid: 'TPE-WRONG' }
+          : stop),
+      },
+    }))
+
+    await page.goto(routeUrl)
+
+    await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('')
+    await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時未更新')
+  })
+
+  test('rejects a non-selected row whose name matches but UID does not', async ({ page }) => {
+    await page.route('**/api/v1/route-eta*', (route) => route.fulfill({
+      json: {
+        ...realtime,
+        stops: realtime.stops.map((stop, index) => index === 0
+          ? { ...stop, stopUid: 'TPE-OTHER-PLATFORM' }
           : stop),
       },
     }))

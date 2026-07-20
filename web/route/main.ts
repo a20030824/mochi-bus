@@ -1,27 +1,41 @@
+import type { RoutePageIdentity, RoutePageIdentityStop } from '../../src/domain/route-page-identity'
 import type { RouteEtaResponse, RouteEtaStop } from '../../src/domain/route-page-detail'
 import { isTdxTokenRejectedError, requestMochiJson } from '../tdx/api-client'
 import { parseRouteEtaResponse } from './contract'
+import { readRoutePageIdentity } from './identity'
 import { createVisibleRefreshController, type VisibleRefreshResult } from './refresh-controller'
 
 const ROUTE_DEGRADED_REFRESH_MS = 2 * 60_000
 const ROUTE_QUOTA_REFRESH_MS = 5 * 60_000
 
 const routePage = document.querySelector<HTMLElement>('.route-page')
-if (routePage) {
-  prepareSelectedEta(routePage)
-  const selectedStopUid = new URLSearchParams(window.location.search).get('stopUid')
-  const refreshController = createVisibleRefreshController({
-    refresh: (signal) => refreshRouteEta(routePage, selectedStopUid, signal),
-    isVisible: () => document.visibilityState === 'visible',
-  })
-  document.addEventListener('visibilitychange', () => {
-    void refreshController.visibilityChanged()
-  })
-  void refreshController.start()
+if (routePage) initializeRoutePage(routePage)
+
+function initializeRoutePage(page: HTMLElement): void {
+  prepareSelectedEta(page)
+  try {
+    const identity = readRoutePageIdentity()
+    const selectedStopUid = new URLSearchParams(window.location.search).get('stopUid')
+    validateTimelineIdentity(page, identity, selectedStopUid)
+
+    const refreshController = createVisibleRefreshController({
+      refresh: (signal) => refreshRouteEta(page, identity, selectedStopUid, signal),
+      isVisible: () => document.visibilityState === 'visible',
+    })
+    document.addEventListener('visibilitychange', () => {
+      void refreshController.visibilityChanged()
+    })
+    void refreshController.start()
+  } catch {
+    clearRouteEta(page)
+    setSelectedStatus(page, '即時未更新')
+    console.error(JSON.stringify({ message: 'route_identity_client_failed' }))
+  }
 }
 
 async function refreshRouteEta(
   page: HTMLElement,
+  identity: RoutePageIdentity,
   selectedStopUid: string | null,
   signal: AbortSignal,
 ): Promise<VisibleRefreshResult> {
@@ -33,7 +47,7 @@ async function refreshRouteEta(
       { authenticated: true, fallback: '即時到站讀取失敗' },
     )
     const response = parseRouteEtaResponse(raw)
-    applyRouteEta(page, response, selectedStopUid)
+    applyRouteEta(page, response, identity, selectedStopUid)
     return refreshResultFor(response)
   } catch (error) {
     if (isAbortError(error)) return
@@ -67,40 +81,66 @@ function prepareSelectedEta(page: HTMLElement): void {
 function applyRouteEta(
   page: HTMLElement,
   response: RouteEtaResponse,
+  identity: RoutePageIdentity,
   selectedStopUid: string | null,
 ): void {
-  const rows = Array.from(page.querySelectorAll<HTMLLIElement>('.route-stop'))
-  if (rows.length !== response.stops.length) {
-    throw new Error('Route ETA station count does not match the rendered timeline')
-  }
-  if (!rows.some((row) => row.classList.contains('selected'))) {
-    throw new Error('Route ETA timeline has no selected station')
+  const rows = validateTimelineIdentity(page, identity, selectedStopUid)
+  if (response.stops.length !== identity.stops.length) {
+    throw new Error('Route ETA station count does not match the server identity')
   }
 
   const targets = rows.map((row, index) => validateStopTarget(
     row,
     response.stops[index],
-    selectedStopUid,
+    identity.stops[index],
   ))
   targets.forEach(({ etaNode, stop }) => updateStopEta(etaNode, stop))
+}
+
+function validateTimelineIdentity(
+  page: HTMLElement,
+  identity: RoutePageIdentity,
+  selectedStopUid: string | null,
+): HTMLLIElement[] {
+  const rows = Array.from(page.querySelectorAll<HTMLLIElement>('.route-stop'))
+  if (rows.length !== identity.stops.length) {
+    throw new Error('Route timeline station count does not match the server identity')
+  }
+
+  const selectedIdentity = identity.stops.find((stop) => stop.selected)
+  if (!selectedIdentity || (selectedStopUid !== null && selectedIdentity.stopUid !== selectedStopUid)) {
+    throw new Error('Route selected station does not match the server identity')
+  }
+
+  rows.forEach((row, index) => validateRenderedRow(row, identity.stops[index]))
+  return rows
+}
+
+function validateRenderedRow(row: HTMLLIElement, identityStop: RoutePageIdentityStop | undefined): void {
+  const nameNode = row.querySelector<HTMLElement>('strong')
+  const etaNode = row.querySelector<HTMLElement>('.route-eta')
+  if (!identityStop
+    || !nameNode
+    || !etaNode
+    || nameNode.textContent?.trim() !== identityStop.stopName
+    || row.classList.contains('selected') !== identityStop.selected) {
+    throw new Error('Route DOM does not match the server identity')
+  }
 }
 
 function validateStopTarget(
   row: HTMLLIElement,
   stop: RouteEtaStop | undefined,
-  selectedStopUid: string | null,
+  identityStop: RoutePageIdentityStop | undefined,
 ): { etaNode: HTMLElement; stop: RouteEtaStop } {
-  const nameNode = row.querySelector<HTMLElement>('strong')
   const etaNode = row.querySelector<HTMLElement>('.route-eta')
-  const selectedIdentityMismatch = row.classList.contains('selected')
-    && selectedStopUid !== null
-    && stop?.stopUid !== selectedStopUid
   if (!stop
-    || !nameNode
+    || !identityStop
     || !etaNode
-    || nameNode.textContent?.trim() !== stop.stopName
-    || selectedIdentityMismatch) {
-    throw new Error('Route ETA station order does not match the rendered timeline')
+    || stop.stopUid !== identityStop.stopUid
+    || stop.stopName !== identityStop.stopName
+    || stop.sequence !== identityStop.sequence) {
+    throw new Error('Route ETA response does not match the server identity')
   }
   return { etaNode, stop }
 }
