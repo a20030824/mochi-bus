@@ -38,6 +38,7 @@ import {
   planInitialMapHistory,
   readMapView,
 } from './history-state'
+import { createVehicleRefreshController } from './vehicle-refresh-controller'
 import { routeCasingColor, routePalette, stopFillAccent, stopFillGreen, stopHaloColor } from './theme'
 import {
   mapApi,
@@ -53,6 +54,7 @@ import {
   type SearchPlace,
   type TimetableStop,
   type TransferPlan,
+  type VehiclePositionsResponse,
 } from './map-api-client'
 import { createTimetablePanel, renderTimetableSummary, timetableSummaryText } from './timetable-view'
 import {
@@ -243,9 +245,6 @@ let routeBackAction: (() => void) | undefined
 // 經過支線選擇進來的路線,「更換」要退回支線選擇(一層),不能直接跳回路線列表(兩層)。
 let lastVariantChoices: { routeName: string; variants: RouteMapVariant[] } | undefined
 let variantPickerUsed = false
-let vehicleRefreshTimer: number | undefined
-let vehicleRefreshEpoch = 0
-let vehicleRefreshController: AbortController | undefined
 
 const TRIP_NEARBY_CANDIDATE_LIMIT = 5
 
@@ -262,6 +261,14 @@ const cityNetwork = createCityNetworkController({
   loadNetwork: mapApi.network,
   setStatus,
   clearStatus,
+})
+
+const vehicleRefresh = createVehicleRefreshController<RouteMapVariant, VehiclePositionsResponse>({
+  load: (cityCode, variant, signal) => mapApi.vehicles(cityCode, variant, signal),
+  isActive: ({ cityCode }) => activeCity?.code === cityCode && interactionMode === 'route',
+  onResponse: renderVehiclePositions,
+  onError: renderVehicleRefreshError,
+  onStop: () => vehicleLayer.clearLayers(),
 })
 
 function browserStorage(): Storage | undefined {
@@ -1707,73 +1714,53 @@ function updateStopMarkerSize() {
 }
 
 function startVehicleRefresh(variant: RouteMapVariant) {
-  stopVehicleRefresh()
-  if (!activeCity) return
-  const cityCode = activeCity.code
-  const sessionEpoch = ++vehicleRefreshEpoch
-  const refresh = async () => {
-    if (vehicleRefreshEpoch !== sessionEpoch || activeCity?.code !== cityCode || interactionMode !== 'route') return
-    vehicleRefreshController?.abort()
-    const controller = new AbortController()
-    vehicleRefreshController = controller
-    try {
-      const response = await mapApi.vehicles(cityCode, variant, controller.signal)
-      if (
-        controller.signal.aborted
-        || vehicleRefreshEpoch !== sessionEpoch
-        || activeCity?.code !== cityCode
-        || interactionMode !== 'route'
-      ) return
-      vehicleLayer.clearLayers()
-      response.vehicles.forEach((vehicle) => {
-        const azimuth = Number.isFinite(vehicle.azimuth) ? vehicle.azimuth as number : 0
-        const marker = L.marker([vehicle.latitude, vehicle.longitude], {
-          pane: 'vehiclePane',
-          icon: L.divIcon({
-            className: 'vehicle-marker-wrap',
-            html: `<span class="vehicle-marker" style="transform:rotate(${azimuth}deg)"></span>`,
-            iconSize: [26, 32],
-            iconAnchor: [13, 16],
-          }),
-        })
-        bindHoverTooltip(marker, `${vehicle.plate ?? '公車'}${vehicle.speed === null ? '' : ` · ${Math.round(vehicle.speed)} km/h`}`).addTo(vehicleLayer)
-      })
-      drawer.querySelector('.vehicle-degraded-notice')?.remove()
-      if (response.warning) {
-        const message = tdxWarningMessages[response.warning]
-        setStatus(message, true)
-        const notice = degradedNotice(message, () => void refresh())
-        notice.classList.add('vehicle-degraded-notice')
-        drawer.appendChild(notice)
-      }
-    } catch (error) {
-      // 車輛定位是輔助資訊，失敗時保留主路線，但不能把授權失效誤裝成「沒有車」。
-      if (!controller.signal.aborted && vehicleRefreshEpoch === sessionEpoch) {
-        const credentialRejected = isTdxTokenRejectedError(error)
-        const message = credentialRejected
-          ? 'TDX 授權已失效；路線仍可使用，請到設定更新授權。'
-          : '暫時無法更新車輛位置；路線與站牌仍可使用。'
-        setStatus(message, true)
-        drawer.querySelector('.vehicle-degraded-notice')?.remove()
-        const notice = degradedNotice(message, () => void refresh(), credentialRejected)
-        notice.classList.add('vehicle-degraded-notice')
-        drawer.appendChild(notice)
-      }
-    } finally {
-      if (vehicleRefreshController === controller) vehicleRefreshController = undefined
-    }
+  if (!activeCity) {
+    vehicleRefresh.stop()
+    return
   }
-  void refresh()
-  vehicleRefreshTimer = window.setInterval(() => void refresh(), 20_000)
+  vehicleRefresh.start({ cityCode: activeCity.code, route: variant })
 }
 
 function stopVehicleRefresh() {
-  vehicleRefreshEpoch += 1
-  vehicleRefreshController?.abort()
-  vehicleRefreshController = undefined
-  if (vehicleRefreshTimer !== undefined) window.clearInterval(vehicleRefreshTimer)
-  vehicleRefreshTimer = undefined
+  vehicleRefresh.stop()
+}
+
+function renderVehiclePositions(response: VehiclePositionsResponse) {
   vehicleLayer.clearLayers()
+  response.vehicles.forEach((vehicle) => {
+    const azimuth = Number.isFinite(vehicle.azimuth) ? vehicle.azimuth as number : 0
+    const marker = L.marker([vehicle.latitude, vehicle.longitude], {
+      pane: 'vehiclePane',
+      icon: L.divIcon({
+        className: 'vehicle-marker-wrap',
+        html: `<span class="vehicle-marker" style="transform:rotate(${azimuth}deg)"></span>`,
+        iconSize: [26, 32],
+        iconAnchor: [13, 16],
+      }),
+    })
+    bindHoverTooltip(marker, `${vehicle.plate ?? '公車'}${vehicle.speed === null ? '' : ` · ${Math.round(vehicle.speed)} km/h`}`).addTo(vehicleLayer)
+  })
+  drawer.querySelector('.vehicle-degraded-notice')?.remove()
+  if (response.warning) {
+    const message = tdxWarningMessages[response.warning]
+    setStatus(message, true)
+    const notice = degradedNotice(message, () => void vehicleRefresh.refresh())
+    notice.classList.add('vehicle-degraded-notice')
+    drawer.appendChild(notice)
+  }
+}
+
+function renderVehicleRefreshError(error: unknown) {
+  // 車輛定位是輔助資訊，失敗時保留主路線，但不能把授權失效誤裝成「沒有車」。
+  const credentialRejected = isTdxTokenRejectedError(error)
+  const message = credentialRejected
+    ? 'TDX 授權已失效；路線仍可使用，請到設定更新授權。'
+    : '暫時無法更新車輛位置；路線與站牌仍可使用。'
+  setStatus(message, true)
+  drawer.querySelector('.vehicle-degraded-notice')?.remove()
+  const notice = degradedNotice(message, () => void vehicleRefresh.refresh(), credentialRejected)
+  notice.classList.add('vehicle-degraded-notice')
+  drawer.appendChild(notice)
 }
 
 async function findNearbyPlaces(
