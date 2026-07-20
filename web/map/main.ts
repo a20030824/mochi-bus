@@ -13,13 +13,7 @@ import {
   type PlaceRoutesPresentation,
 } from './place-routes-controller'
 import { createPlaceRoutesView } from './place-routes-view'
-import {
-  createNearbyPlacesController,
-  type NearbyPlacesController,
-  type NearbyPlacesFailure,
-  type NearbyPlacesPresentation,
-  type NearbyPlacesRequest,
-} from './nearby-places-controller'
+import { createNearbyPlacesController } from './nearby-places-controller'
 import { createNearbyPlacesView } from './nearby-places-view'
 import { createPreviewStopDotManager, createSelectablePreviewLineRenderer } from './preview-map-primitives'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
@@ -272,16 +266,24 @@ const nearbyPlacesView = createNearbyPlacesView({
   createTripModeButton: tripModeButton,
   onOpenPlace: (place) => void openNearbyPlace(place),
 })
-let nearbyPlaces!: NearbyPlacesController
-nearbyPlaces = createNearbyPlacesController({
+const nearbyPlaces = createNearbyPlacesController({
   currentCityCode: () => activeCity?.code,
   beginRequest: beginNavRequest,
   isStaleRequest: isStaleNav,
   loadNearby: mapApi.nearby,
-  onStart: prepareNearbyPlacesLoad,
-  onPlaces: presentNearbyPlaces,
-  onAutoPreview: (place) => openNearbyPlace(place),
-  onError: presentNearbyPlacesError,
+  onStart: ({ cityCode, origin }) => {
+    nearbyPlacesView.renderLoading({ cityCode, origin, backLabel: '附近站牌', onBack: renderNearbyPlaces })
+    nearbyLayer.clearLayers()
+    lastNearbyOrigin = [...origin]
+    unifiedStopMarker(origin, true, stopFillAccent).addTo(nearbyLayer)
+    setStatus('正在找這附近的站牌…')
+  },
+  onPlaces: ({ places }) => { lastNearbyPlaces = places; renderNearbyPlaces() },
+  onAutoPreview: openNearbyPlace,
+  onError: ({ cityCode, origin, error }) => setStatus(nearbyPlacesView.renderError({
+    cityCode, origin, error, backLabel: '附近站牌', onBack: renderNearbyPlaces,
+    onRetry: () => void nearbyPlaces.retry(),
+  }), true),
 })
 const placeRoutes = createPlaceRoutesController({
   currentCityCode: () => activeCity?.code,
@@ -1444,42 +1446,10 @@ async function findNearbyPlaces(
   })
 }
 
-function prepareNearbyPlacesLoad({ cityCode, origin }: NearbyPlacesRequest): void {
-  nearbyPlacesView.renderLoading({
-    cityCode,
-    origin,
-    backLabel: '附近站牌',
-    onBack: renderNearbyPlaces,
-  })
-  nearbyLayer.clearLayers()
-  lastNearbyOrigin = [...origin]
-  unifiedStopMarker(origin, true, stopFillAccent).addTo(nearbyLayer)
-  setStatus('正在找這附近的站牌…')
-}
-
-function presentNearbyPlaces({ places }: NearbyPlacesPresentation): void {
-  lastNearbyPlaces = places
-  renderNearbyPlaces(false)
-}
-
-function presentNearbyPlacesError({ cityCode, origin, error }: NearbyPlacesFailure): void {
-  const message = nearbyPlacesView.renderError({
-    cityCode,
-    origin,
-    error,
-    backLabel: '附近站牌',
-    onBack: renderNearbyPlaces,
-    onRetry: () => void nearbyPlaces.retry(),
-  })
-  setStatus(message, true)
-}
-
-function renderNearbyPlaces(cancelRequest = true) {
+function renderNearbyPlaces() {
   if (!activeCity || !lastNearbyOrigin) return
-  if (cancelRequest) {
-    nearbyPlaces.cancel()
-    cancelNavRequest()
-  }
+  nearbyPlaces.cancel()
+  cancelNavRequest()
   nearbyLayer.clearLayers()
   const origin = unifiedStopMarker(lastNearbyOrigin, true, stopFillAccent).addTo(nearbyLayer)
   bindHoverTooltip(origin, '你點的位置')

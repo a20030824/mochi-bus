@@ -10,7 +10,7 @@ import nearbyPlacesSource from './nearby-places-controller.ts?raw'
 import nearbyPlacesViewSource from './nearby-places-view.ts?raw'
 import routeDetailSurfaceSource from './route-detail-surface.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 1827
+const MAP_MAIN_LINE_LIMIT = 1797
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
