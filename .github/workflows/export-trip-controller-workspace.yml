@@ -20,11 +20,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Apply reviewed main integration patch
+      - name: Apply reviewed integration patches
         run: |
           cat scripts/trip-controller-main.patch.part0{0,1,2,3,4} > /tmp/trip-controller-main.patch
           git apply --check /tmp/trip-controller-main.patch
           git apply /tmp/trip-controller-main.patch
+          git apply --check scripts/trip-controller-typecheck.patch
+          git apply scripts/trip-controller-typecheck.patch
       - run: npm ci
       - name: Run focused Trip tests
         run: npx vitest run web/map/trip-controller.test.ts web/map/trip-plan-loader.test.ts web/map/trip-runtime-store.test.ts web/map/trip-state.test.ts web/map/trip-results-snapshot.test.ts
@@ -52,6 +54,7 @@ jobs:
           rm .github/workflows/export-trip-controller-workspace.yml
           rm scripts/trip-controller-payload.part00
           rm scripts/trip-controller-main.patch.part0{0,1,2,3,4}
+          rm scripts/trip-controller-typecheck.patch
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
