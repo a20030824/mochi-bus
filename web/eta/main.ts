@@ -2,7 +2,6 @@ import {
   activeBoardId,
   migrateBoards,
   setActiveCity,
-  syncActiveBoard,
   writeBoards,
   type FavoriteBoard,
   type FavoriteBus,
@@ -342,12 +341,9 @@ async function refreshBoard(): Promise<void> {
 }
 
 if (useLocalBoard) {
-  const storedBoards = migrateBoards()
-  const boards = storedBoards.filter((board) => !(board.placeId && board.buses?.length > 1 && board.buses.every((bus) => !bus.directionLabel)))
-  if (boards.length !== storedBoards.length) {
-    writeBoards(boards)
-    syncActiveBoard(boards)
-  }
+  // 顯示用方向文字可能因舊資料、API 降級或暫時缺欄位而不存在；
+  // 缺少 directionLabel 不能證明看板損壞，更不能據此刪除使用者資料。
+  const boards = migrateBoards()
   demoBoard = !boards.length
   if (demoBoard) {
     boards.push(initialBoard)
