@@ -51,7 +51,8 @@ jobs:
       - run: npm run check
       - name: Commit clean Route HTTP contract seam
         run: |
-          git show "${{ github.event.pull_request.base.sha }}:.github/workflows/ci.yml" > .github/workflows/ci.yml
+          git fetch origin main --depth=1
+          git show "origin/main:.github/workflows/ci.yml" > .github/workflows/ci.yml
           rm scripts/apply-route-page-handler-factory.mjs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
