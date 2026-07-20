@@ -6,10 +6,11 @@ import journeyPreviewMapSource from './journey-preview-map.ts?raw'
 import previewMapPrimitivesSource from './preview-map-primitives.ts?raw'
 import placeRoutesSource from './place-routes-controller.ts?raw'
 import placeRoutesViewSource from './place-routes-view.ts?raw'
+import nearbyPlacesSource from './nearby-places-controller.ts?raw'
 import nearbyPlacesViewSource from './nearby-places-view.ts?raw'
 import routeDetailSurfaceSource from './route-detail-surface.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 1802
+const MAP_MAIN_LINE_LIMIT = 1797
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -165,6 +166,26 @@ describe('map main architecture boundary', () => {
     ]) {
       expect(placeRoutesViewSource).not.toContain(dependency)
     }
+  })
+
+  it('delegates Nearby Places loading and request lifecycle to the Nearby places controller', () => {
+    expect(mainSource).toContain('createNearbyPlacesController')
+    expect(mainSource).toContain('await nearbyPlaces.load({')
+    expect(mainSource).toContain('nearbyPlaces.retry()')
+    expect(mainSource).toContain('nearbyPlaces.cancel()')
+    expect(mainSource).not.toContain('await mapApi.nearby(')
+    expect(mainSource).not.toContain('places.slice(0, 12)')
+    expect(nearbyPlacesSource).toContain('loaded.slice(0, placeLimit)')
+    expect(nearbyPlacesSource).toContain('options.onAutoPreview(')
+    expect(nearbyPlacesSource).toContain('options.onError({ ...request, error })')
+    expect(nearbyPlacesSource).toContain('options.currentCityCode() === cityCode')
+    expect(nearbyPlacesSource).toContain('!options.isStaleRequest(requestId)')
+    for (const dependency of [
+      'leaflet', 'history.', 'document.', 'window.', 'mapApi.', 'camera.', 'trip.',
+      'routeDetail', 'cityNetwork', 'nearbyLayer', 'setStatus(', 'clearStatus(',
+      'setDocumentTitle', 'historyRecord', 'readMapView', 'mapViewFromUrl',
+      'openNearbyPlace', 'findNearbyPlaces', 'renderNearbyPlaces', './main',
+    ]) expect(nearbyPlacesSource).not.toContain(dependency)
   })
 
   it('delegates Nearby Places Drawer presentation to the Nearby places view', () => {
