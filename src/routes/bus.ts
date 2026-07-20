@@ -1,5 +1,5 @@
 import { Hono, type Context } from 'hono'
-import { getSnapshotRoutePage } from '../application/snapshot-route-page'
+import { getRoutePageWithFallback } from '../application/route-page'
 import { defaultBusQuery, supportedCities, supportedCityCodes } from '../config'
 import {
   canonicalBusPath,
@@ -9,7 +9,6 @@ import {
   type BusQuery,
 } from '../domain/bus-query'
 import { embedRoutePageIdentity } from '../domain/route-page-identity'
-import { getRoutePageDetail } from '../domain/route-page-detail'
 import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'
 import {
   getCommuteETA,
@@ -98,23 +97,16 @@ bus.get('/route', async (c) => {
     return renderPageError(c, error)
   }
   try {
-    const env = tdxEnv(c)
-    const resolved = await resolveBusQuery(env, query)
-    const { detail } = await getRoutePageDetail(env, resolved)
-    return c.html(embedRoutePageIdentity(renderRoutePage(resolved, detail, c.req.url), detail), 200, pageHeaders)
+    const page = await getRoutePageWithFallback({
+      tdx: tdxEnv(c),
+      snapshot: c.env,
+    }, query)
+    return c.html(
+      embedRoutePageIdentity(renderRoutePage(page.resolved, page.detail, c.req.url), page.detail),
+      200,
+      pageHeaders,
+    )
   } catch (error) {
-    try {
-      const fallback = await getSnapshotRoutePage(c.env, query)
-      if (fallback) {
-        return c.html(
-          embedRoutePageIdentity(renderRoutePage(fallback.resolved, fallback.detail, c.req.url), fallback.detail),
-          200,
-          pageHeaders,
-        )
-      }
-    } catch (fallbackError) {
-      console.error('route_snapshot_fallback_failed', fallbackError)
-    }
     return renderPageError(c, error)
   }
 })
