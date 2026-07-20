@@ -3,6 +3,8 @@ import {
   canonicalMapHistoryState,
   mapViewFromUrl,
   planInitialMapHistory,
+  planMapHistoryBack,
+  planMapHistoryPush,
   readMapView,
 } from './history-state'
 
@@ -55,6 +57,102 @@ describe('map history state', () => {
       { mapView: 'place', mapParent: 'catalogue' },
       new URLSearchParams('city=Taipei&place=p1'),
     ).changed).toBe(false)
+  })
+
+  it('keeps the first detail as a browser entry and compresses later detail exploration', () => {
+    const catalogue = { mapView: 'catalogue', mapParent: 'region', routeCatalogue: { scrollTop: 240 } }
+    const route = planMapHistoryPush(catalogue, '/map?city=Taipei', {
+      ...catalogue,
+      mapView: 'route',
+      mapParent: 'catalogue',
+    })
+    expect(route).toEqual({
+      mode: 'push',
+      state: {
+        mapView: 'route',
+        mapParent: 'catalogue',
+        routeCatalogue: { scrollTop: 240 },
+      },
+    })
+
+    const nearby = planMapHistoryPush(route.state, '/map?city=Taipei&route=307', {
+      ...route.state as Record<string, unknown>,
+      mapView: 'nearby',
+      mapParent: 'route',
+    })
+    expect(nearby.mode).toBe('replace')
+    expect(nearby.state).toMatchObject({
+      mapView: 'nearby',
+      mapParent: 'route',
+      mapDetailTrail: [{
+        view: 'route',
+        url: '/map?city=Taipei&route=307',
+        state: { mapView: 'route', mapParent: 'catalogue' },
+      }],
+    })
+
+    const place = planMapHistoryPush(nearby.state, '/map?city=Taipei&lat=25&lon=121', {
+      ...nearby.state as Record<string, unknown>,
+      mapView: 'place',
+      mapParent: 'nearby',
+    })
+    expect(place.mode).toBe('replace')
+    expect((place.state as { mapDetailTrail: unknown[] }).mapDetailTrail).toHaveLength(2)
+  })
+
+  it('does not grow the detail trail when replacing the same kind of detail', () => {
+    const current = {
+      mapView: 'nearby',
+      mapParent: 'route',
+      mapDetailTrail: [{
+        view: 'route',
+        url: '/map?city=Taipei&route=307',
+        state: { mapView: 'route', mapParent: 'catalogue' },
+      }],
+    }
+    const next = planMapHistoryPush(current, '/map?city=Taipei&lat=25&lon=121', {
+      ...current,
+      mapView: 'nearby',
+      point: 'next',
+    })
+    expect(next.mode).toBe('replace')
+    expect((next.state as { mapDetailTrail: unknown[] }).mapDetailTrail).toHaveLength(1)
+  })
+
+  it('pops the app detail trail without consuming browser history', () => {
+    const place = {
+      mapView: 'place',
+      mapParent: 'nearby',
+      mapDetailTrail: [
+        {
+          view: 'route',
+          url: '/map?city=Taipei&route=307',
+          state: { mapView: 'route', mapParent: 'catalogue' },
+        },
+        {
+          view: 'nearby',
+          url: '/map?city=Taipei&lat=25&lon=121',
+          state: { mapView: 'nearby', mapParent: 'route' },
+        },
+      ],
+    }
+    const nearby = planMapHistoryBack(place)
+    expect(nearby).toEqual({
+      url: '/map?city=Taipei&lat=25&lon=121',
+      state: {
+        mapView: 'nearby',
+        mapParent: 'route',
+        mapDetailTrail: [{
+          view: 'route',
+          url: '/map?city=Taipei&route=307',
+          state: { mapView: 'route', mapParent: 'catalogue' },
+        }],
+      },
+    })
+    expect(planMapHistoryBack(nearby!.state)).toEqual({
+      url: '/map?city=Taipei&route=307',
+      state: { mapView: 'route', mapParent: 'catalogue' },
+    })
   })
 
   it('plans the complete browser history chain for a route deep link', () => {

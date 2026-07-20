@@ -11,6 +11,19 @@ const mapViews = new Set<MapView>([
   'trip-results',
 ])
 
+const mapDetailViews = new Set<MapView>(['route', 'nearby', 'place'])
+const MAP_DETAIL_TRAIL_KEY = 'mapDetailTrail'
+const MAP_DETAIL_TRAIL_LIMIT = 8
+const MAP_HISTORY_COMPRESSION_FLAG = '__mochiMapHistoryCompressionInstalled__'
+
+type MapDetailView = 'route' | 'nearby' | 'place'
+
+type MapDetailTrailEntry = {
+  view: MapDetailView
+  url: string
+  state: Record<string, unknown>
+}
+
 export type MapHistoryCity = {
   code: string
   region: string
@@ -19,6 +32,16 @@ export type MapHistoryCity = {
 export type MapHistoryMutation = {
   mode: 'replace' | 'push'
   state: { mapView: MapView; mapParent?: MapView }
+  url: string
+}
+
+export type MapHistoryPushPlan = {
+  mode: 'replace' | 'push'
+  state: unknown
+}
+
+export type MapHistoryBackPlan = {
+  state: Record<string, unknown>
   url: string
 }
 
@@ -57,6 +80,52 @@ export function canonicalMapHistoryState(
   if (parent) next.mapParent = parent
   else delete next.mapParent
   return { view, state: next, changed }
+}
+
+// route / nearby / place 是同一個「探索詳情槽」。槽內切換只 replace，瀏覽器 Back
+// 直接回到路線目錄；抽屜自己的返回則由有限 trail 還原，不污染 browser history。
+export function planMapHistoryPush(
+  currentState: unknown,
+  currentUrl: string,
+  nextState: unknown,
+): MapHistoryPushPlan {
+  const currentView = readMapView(currentState)
+  const nextView = readMapView(nextState)
+  if (!nextView) return { mode: 'push', state: nextState }
+
+  const next = historyRecord(nextState)
+  if (!isMapDetailView(nextView)) {
+    return { mode: 'push', state: withoutMapDetailTrail(next) }
+  }
+  if (!currentView || !isMapDetailView(currentView)) {
+    return { mode: 'push', state: withoutMapDetailTrail(next) }
+  }
+
+  const existingTrail = readMapDetailTrail(currentState)
+  const trail = currentView === nextView
+    ? existingTrail
+    : appendMapDetailTrail(existingTrail, {
+      view: currentView,
+      url: currentUrl,
+      state: withoutMapDetailTrail(historyRecord(currentState)),
+    })
+
+  return {
+    mode: 'replace',
+    state: withMapDetailTrail(next, trail),
+  }
+}
+
+export function planMapHistoryBack(currentState: unknown): MapHistoryBackPlan | undefined {
+  const currentView = readMapView(currentState)
+  if (!currentView || !isMapDetailView(currentView)) return
+  const trail = readMapDetailTrail(currentState)
+  const previous = trail.at(-1)
+  if (!previous) return
+  return {
+    state: withMapDetailTrail(previous.state, trail.slice(0, -1)),
+    url: previous.url,
+  }
 }
 
 export function planInitialMapHistory(options: {
@@ -110,6 +179,46 @@ export function planInitialMapHistory(options: {
   return mutations
 }
 
+function isMapDetailView(view: MapView): view is MapDetailView {
+  return mapDetailViews.has(view)
+}
+
+function withoutMapDetailTrail(state: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...state }
+  delete next[MAP_DETAIL_TRAIL_KEY]
+  return next
+}
+
+function withMapDetailTrail(
+  state: Record<string, unknown>,
+  trail: readonly MapDetailTrailEntry[],
+): Record<string, unknown> {
+  const next = withoutMapDetailTrail(state)
+  if (trail.length) next[MAP_DETAIL_TRAIL_KEY] = trail
+  return next
+}
+
+function appendMapDetailTrail(
+  trail: readonly MapDetailTrailEntry[],
+  entry: MapDetailTrailEntry,
+): MapDetailTrailEntry[] {
+  const last = trail.at(-1)
+  const appended = last?.url === entry.url ? [...trail] : [...trail, entry]
+  return appended.slice(-MAP_DETAIL_TRAIL_LIMIT)
+}
+
+function readMapDetailTrail(state: unknown): MapDetailTrailEntry[] {
+  const value = historyRecord(state)[MAP_DETAIL_TRAIL_KEY]
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is MapDetailTrailEntry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+    const candidate = entry as Partial<MapDetailTrailEntry>
+    return typeof candidate.url === 'string'
+      && Boolean(candidate.view && isMapDetailView(candidate.view))
+      && readMapView(candidate.state) === candidate.view
+  }).slice(-MAP_DETAIL_TRAIL_LIMIT)
+}
+
 function parentForView(view: MapView, currentParent: unknown): MapView | undefined {
   // The overview → region → catalogue spine is fixed. Detail views may preserve
   // a meaningful dynamic parent (for example route → trip results), but never a
@@ -122,3 +231,39 @@ function parentForView(view: MapView, currentParent: unknown): MapView | undefin
   if (!parent || parent === 'overview' || parent === 'region' || parent === view) return 'catalogue'
   return parent
 }
+
+function installMapHistoryCompression() {
+  if (typeof history === 'undefined' || typeof location === 'undefined' || typeof window === 'undefined') return
+  const managedHistory = history as History & { [MAP_HISTORY_COMPRESSION_FLAG]?: boolean }
+  if (managedHistory[MAP_HISTORY_COMPRESSION_FLAG]) return
+
+  const nativePushState = history.pushState.bind(history)
+  const nativeReplaceState = history.replaceState.bind(history)
+  const nativeBack = history.back.bind(history)
+
+  Object.defineProperty(managedHistory, MAP_HISTORY_COMPRESSION_FLAG, { value: true })
+  managedHistory.pushState = (data: unknown, unused: string, url?: string | URL | null) => {
+    const currentUrl = `${location.pathname}${location.search}${location.hash}`
+    const plan = planMapHistoryPush(history.state, currentUrl, data)
+    if (plan.mode === 'replace') nativeReplaceState(plan.state, unused, url)
+    else nativePushState(plan.state, unused, url)
+  }
+  managedHistory.replaceState = (data: unknown, unused: string, url?: string | URL | null) => {
+    const nextView = readMapView(data)
+    const nextState = nextView && !isMapDetailView(nextView)
+      ? withoutMapDetailTrail(historyRecord(data))
+      : data
+    nativeReplaceState(nextState, unused, url)
+  }
+  managedHistory.back = () => {
+    const plan = planMapHistoryBack(history.state)
+    if (!plan) {
+      nativeBack()
+      return
+    }
+    nativeReplaceState(plan.state, '', plan.url)
+    queueMicrotask(() => window.dispatchEvent(new PopStateEvent('popstate', { state: plan.state })))
+  }
+}
+
+installMapHistoryCompression()

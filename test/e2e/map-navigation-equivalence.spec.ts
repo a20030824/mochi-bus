@@ -74,7 +74,7 @@ test('/map remains the Taiwan overview even when a previous city is stored', asy
   await expect(page.locator('#map-drawer').getByRole('heading', { name: '先從哪裡開始？' })).toBeVisible()
 })
 
-test('place drawer back and browser history restore the same nearby view', async ({ page }) => {
+test('detail exploration keeps drawer Back but browser Back skips to the catalogue', async ({ page }) => {
   const place = { placeId: 'P1', name: '臺南火車站', latitude: 22.997, longitude: 120.212, distanceMeters: 76 }
   await page.route('https://tile.openstreetmap.org/**', (route) => route.fulfill({ status: 204 }))
   await page.route('**/api/v1/map/cities', (route) => route.fulfill({ json: { cities: [city] } }))
@@ -94,10 +94,16 @@ test('place drawer back and browser history restore the same nearby view', async
   await expect(page).toHaveURL('/map?city=Tainan&lat=22.99700&lon=120.21200')
   await expect(drawer.getByRole('heading', { name: '附近站牌' })).toBeVisible()
 
+  await drawer.getByRole('button', { name: /臺南火車站/ }).click()
+  await expect(page).toHaveURL('/map?city=Tainan&place=P1')
+  await page.goBack()
+  await expect(page).toHaveURL('/map?city=Tainan')
+  await expect(drawer.getByRole('heading', { name: '臺南' })).toBeVisible()
+
   await page.goForward()
   await expect(page).toHaveURL('/map?city=Tainan&place=P1')
   await expect(drawer.getByRole('heading', { name: '臺南火車站' })).toBeVisible()
-  await page.goBack()
+  await drawer.getByRole('button', { name: '← 附近站牌', exact: true }).click()
   await expect(drawer.getByRole('heading', { name: '附近站牌' })).toBeVisible()
   await page.reload()
   await expect(drawer.getByRole('heading', { name: '附近站牌' })).toBeVisible()
