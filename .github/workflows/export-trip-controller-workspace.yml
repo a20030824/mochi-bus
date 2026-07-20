@@ -35,23 +35,12 @@ jobs:
       - run: npm run check
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
-      - name: Capture desktop and touch regressions
-        run: |
-          set +e
-          npm run test:e2e > /tmp/trip-controller-e2e.log 2>&1
-          echo $? > /tmp/trip-controller-e2e.status
-          exit 0
-      - uses: actions/upload-artifact@v4
-        with:
-          name: trip-controller-e2e
-          if-no-files-found: ignore
-          path: |
-            /tmp/trip-controller-e2e.log
-            /tmp/trip-controller-e2e.status
-            playwright-report
-            test-results
-      - name: Require desktop and touch regressions
-        run: test "$(cat /tmp/trip-controller-e2e.status)" = "0"
+      - name: Test all desktop and touch interaction flows
+        run: >-
+          npx playwright test
+          --project=desktop-chromium
+          --project=mobile-touch
+          --reporter=line,html
       - run: git diff --check
       - name: Commit clean product diff
         run: |
