@@ -129,6 +129,7 @@ export function createRouteDetailSurface(options: RouteDetailSurfaceOptions): Ro
     const selectedPlate = preservePopupSelection ? selectedVehiclePlate : null
     clearingVehicleMarkers = true
     try {
+      options.map.closePopup()
       options.vehicleLayer.clearLayers()
     } finally {
       clearingVehicleMarkers = false
