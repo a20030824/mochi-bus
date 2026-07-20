@@ -2,7 +2,6 @@ import type { ResolvedBusQuery } from './bus-query'
 import {
   routeEtaHasRealtimeEstimate,
   routeEtaIsUnknown,
-  routeEtaStatesFromStops,
   type RouteEtaPresentationState,
 } from './route-eta-status'
 import { selectRouteStopGroup } from './route-stop-group-selection'
@@ -75,7 +74,7 @@ export async function getRoutePageDetail(
   const groups = await dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
   const group = selectRouteStopGroup(groups, query)
   if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
-  return { detail: routeDetailWithoutEta(query, group, '更新中') }
+  return { detail: buildRouteDetailWithoutEta(query, group) }
 }
 
 /**
@@ -93,8 +92,7 @@ export async function getRouteEtaDetail(
   const resolvedDependencies: RouteDetailDependencies = { ...defaultDependencies, ...dependencies }
 
   try {
-    let detail = await resolvedDependencies.getRouteDetail(env, query)
-    let states = routeEtaStatesFromStops(detail.stops)
+    let { detail, states } = await resolvedDependencies.getRouteDetail(env, query)
     let schedules: ScheduleItem[] = []
 
     if (routeTimelineNeedsSchedule(detail.stops, states)) {
@@ -140,7 +138,7 @@ export async function getRouteEtaDetail(
     }))
 
     return {
-      detail: routeDetailWithoutEta(query, group, unavailableLabel(warning)),
+      detail: buildRouteDetailWithoutEta(query, group, unavailableLabel(warning)),
       eta: { kind: 'unavailable', warning },
     }
   }
@@ -160,10 +158,13 @@ export function toRouteEtaResponse(result: RouteEtaDetail): RouteEtaResponse {
   }
 }
 
-function routeDetailWithoutEta(
-  query: ResolvedBusQuery,
-  group: StopGroup,
-  selectedStatus: string,
+export function buildRouteDetailWithoutEta(
+  query: Pick<ResolvedBusQuery, 'routeName' | 'direction' | 'stopUid'>,
+  group: {
+    label: string
+    stops: readonly Pick<RouteDetail['stops'][number], 'stopUid' | 'stopName' | 'sequence'>[]
+  },
+  selectedStatus = '更新中',
 ): RouteDetail {
   return {
     routeName: query.routeName,
