@@ -1,0 +1,5 @@
+/* TDX Azimuth 直接由 main.ts 套在 transform；原始小公車圖案的車頭朝下。
+   用獨立 rotate 校正圖案本身，不改上游角度、定位或更新邏輯。 */
+.vehicle-marker {
+  rotate: 180deg;
+}
