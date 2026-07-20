@@ -20,7 +20,7 @@ function stopGroup(
 ): StopGroup {
   return {
     direction,
-    label: routeUid + ' direction',
+    label: `${routeUid} direction`,
     routeUid,
     subRouteUid,
     subRouteName: subRouteUid,
