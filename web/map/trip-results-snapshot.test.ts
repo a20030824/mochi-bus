@@ -82,15 +82,14 @@ function snapshot() {
     from: { place: from, coordinate: [25, 121.5] },
     to: { place: to, coordinate: [25.1, 121.6] },
     directRoutes: [direct],
-    transferPlans: [transfer],
+    transferPlans: [],
     selectedDirectIndex: 0,
-    selectedTransferIndex: 0,
     warning: 'tdx-unavailable',
   }), NOW)
 }
 
 describe('trip results snapshot codec', () => {
-  it('round-trips the version 1 history payload into a results state', () => {
+  it('round-trips the version 1 history payload into a direct results state', () => {
     const encoded = snapshot()
     const decoded = parseTripResultsSnapshot(encoded, {
       city: 'Taipei',
@@ -102,14 +101,44 @@ describe('trip results snapshot codec', () => {
     expect(encoded.version).toBe(1)
     expect(decoded).toMatchObject({
       phase: 'results',
+      resultKind: 'direct',
       from: { place: from, coordinate: [25, 121.5] },
       to: { place: to, coordinate: [25.1, 121.6] },
       directRoutes: [direct],
-      transferPlans: [transfer],
+      transferPlans: [],
       selectedDirectIndex: 0,
       selectedTransferIndex: 0,
       warning: 'tdx-unavailable',
       pending: {},
+    })
+  })
+
+  it('round-trips transfer-only results without inventing direct routes', () => {
+    const encoded = createTripResultsSnapshot('Taipei', createTripResultsState({
+      from: { place: from },
+      to: { place: to },
+      directRoutes: [],
+      transferPlans: [transfer],
+    }), NOW)
+    const decoded = parseTripResultsSnapshot(encoded, { city: 'Taipei', now: NOW })
+
+    expect(decoded).toMatchObject({
+      resultKind: 'transfer',
+      directRoutes: [],
+      transferPlans: [transfer],
+    })
+  })
+
+  it('preserves the existing direct-first rule for legacy snapshots containing both result kinds', () => {
+    const decoded = parseTripResultsSnapshot({
+      ...snapshot(),
+      transferPlans: [transfer],
+    }, { city: 'Taipei', now: NOW })
+
+    expect(decoded).toMatchObject({
+      resultKind: 'direct',
+      directRoutes: [direct],
+      transferPlans: [],
     })
   })
 
