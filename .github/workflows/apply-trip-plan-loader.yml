@@ -1,0 +1,37 @@
+name: Apply trip plan loader
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.head_ref == 'agent/extract-trip-plan-loader'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/apply-trip-plan-loader.mjs
+      - run: npx vitest run web/map/trip-plan-loader.test.ts web/map/trip-runtime-store.test.ts web/map/trip-state.test.ts
+      - run: npx tsc --noEmit
+      - run: npm run check
+      - run: git diff --check
+      - name: Commit clean loader extraction
+        run: |
+          rm scripts/apply-trip-plan-loader.mjs
+          rm .github/workflows/apply-trip-plan-loader.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add web/map/main.ts web/map/main-size.test.ts web/map/trip-plan-loader.ts web/map/trip-plan-loader.test.ts scripts/apply-trip-plan-loader.mjs .github/workflows/apply-trip-plan-loader.yml
+          git commit -m "refactor(map): extract trip plan loader"
+          git push origin HEAD:${{ github.head_ref }}
