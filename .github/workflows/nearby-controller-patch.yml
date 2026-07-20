@@ -26,27 +26,60 @@ jobs:
           from pathlib import Path
           path = Path('web/map/main-size.test.ts')
           text = path.read_text()
-          old = 'const MAP_MAIN_LINE_LIMIT = 1826'
-          if text.count(old) != 1:
-              raise RuntimeError('expected one line-limit match')
-          path.write_text(text.replace(old, 'const MAP_MAIN_LINE_LIMIT = 1827', 1))
+          if 'const MAP_MAIN_LINE_LIMIT = 1826' in text:
+              text = text.replace('const MAP_MAIN_LINE_LIMIT = 1826', 'const MAP_MAIN_LINE_LIMIT = 1827', 1)
+          if text.count('const MAP_MAIN_LINE_LIMIT = 1827') != 1:
+              raise RuntimeError('unexpected line-limit state')
+          path.write_text(text)
           PY
       - run: npm ci --silent
       - name: Run focused tests
-        run: >-
-          npx vitest run
-          web/map/nearby-places-controller.test.ts
-          web/map/nearby-places-view.test.ts
-          web/map/main-size.test.ts
-      - run: npm run check
-      - run: git diff --check
-      - name: Commit integrated slice
+        id: focused
+        continue-on-error: true
         run: |
-          rm .github/nearby-controller-patch.py
-          rm .github/nearby-controller-diagnostic.txt
-          rm .github/workflows/nearby-controller-patch.yml
+          set -o pipefail
+          npx vitest run \
+            web/map/nearby-places-controller.test.ts \
+            web/map/nearby-places-view.test.ts \
+            web/map/main-size.test.ts 2>&1 | tee /tmp/focused.log
+      - name: Run complete check
+        id: complete
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run check 2>&1 | tee /tmp/complete.log
+      - name: Check whitespace
+        id: whitespace
+        continue-on-error: true
+        run: git diff --check
+      - name: Commit integration result
+        if: always()
+        env:
+          FOCUSED_OUTCOME: ${{ steps.focused.outcome }}
+          COMPLETE_OUTCOME: ${{ steps.complete.outcome }}
+          WHITESPACE_OUTCOME: ${{ steps.whitespace.outcome }}
+        run: |
+          if [ "$FOCUSED_OUTCOME" = success ] && [ "$COMPLETE_OUTCOME" = success ] && [ "$WHITESPACE_OUTCOME" = success ]; then
+            rm .github/nearby-controller-patch.py
+            rm .github/nearby-controller-diagnostic.txt
+            rm .github/workflows/nearby-controller-patch.yml
+            message="refactor(map): extract nearby places controller"
+          else
+            {
+              echo "focused=$FOCUSED_OUTCOME"
+              echo "complete=$COMPLETE_OUTCOME"
+              echo "whitespace=$WHITESPACE_OUTCOME"
+              echo
+              cat /tmp/focused.log 2>/dev/null || true
+              cat /tmp/complete.log 2>/dev/null || true
+            } > .github/nearby-controller-diagnostic.txt
+            message="chore: preserve nearby controller diagnostics"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "refactor(map): extract nearby places controller"
+          git commit -m "$message"
           git push
+          test "$FOCUSED_OUTCOME" = success
+          test "$COMPLETE_OUTCOME" = success
+          test "$WHITESPACE_OUTCOME" = success
