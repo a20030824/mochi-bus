@@ -62,16 +62,15 @@ export async function getRoutePageDetail(
 
 /**
  * Add route-level realtime ETA as a fail-open enhancement for the browser API.
- * A transient upstream failure still returns a complete, identity-checked set
- * of station rows instead of turning the API into an error page.
+ * Successful requests reuse the station order already resolved inside
+ * getRouteDetail. Static stop groups are fetched separately only after a
+ * realtime failure, when they are actually needed to construct degradation.
  */
 export async function getRouteEtaDetail(
   env: TDXEnv,
   query: ResolvedBusQuery,
   dependencies: RouteDetailDependencies = defaultDependencies,
 ): Promise<RouteEtaDetail> {
-  const groups = await dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
-
   try {
     const detail = await dependencies.getRouteDetail(env, query)
     if (detail.stops.some((stop) => stop.etaLabel !== null)) {
@@ -87,6 +86,7 @@ export async function getRouteEtaDetail(
     const warning = tdxWarningFromError(error)
     if (!warning) throw error
 
+    const groups = await dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
     const group = matchingStopGroup(groups, query)
     if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
 
