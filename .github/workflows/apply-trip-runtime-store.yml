@@ -22,6 +22,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/apply-trip-runtime-store.mjs
+      - name: Normalize generated Trip access
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('web/map/main.ts')
+          source = path.read_text()
+          source = source.replace('trip.trip.', 'trip.')
+          path.write_text(source)
+          PY
       - run: npx vitest run web/map/trip-state.test.ts web/map/trip-runtime-store.test.ts web/map/trip-results-snapshot.test.ts
       - name: Capture typecheck
         id: typecheck
