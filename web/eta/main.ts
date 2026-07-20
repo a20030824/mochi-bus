@@ -1,8 +1,8 @@
 import {
-  activeBoardId,
   migrateBoards,
+  persistHomeBoard,
+  resolveHomeBoard,
   setActiveCity,
-  writeBoards,
   type FavoriteBoard,
   type FavoriteBus,
 } from '../boards/store'
@@ -101,7 +101,7 @@ function readBootstrap(): EtaBootstrap {
 
 const { initialBoard, useLocalBoard, tdxWarningMessages } = readBootstrap()
 let currentBoard = initialBoard
-// 示範模式:使用者還沒有任何常用站牌,封面顯示示範站牌與導引,不寫入本機資料。
+// 示範模式:使用者沒有正式常用或地圖暫存封面時，顯示示範站牌且不寫入本機資料。
 let demoBoard = false
 const listNode = requiredElement<HTMLDivElement>('#bus-list')
 const titleNode = requiredElement<HTMLHeadingElement>('#board-title')
@@ -324,7 +324,7 @@ async function refreshBoard(): Promise<void> {
     return aEta - bEta || a.bus.routeName.localeCompare(b.bus.routeName, 'zh-Hant', { numeric: true })
   })
   reconcileRows(responses)
-  if (useLocalBoard && !demoBoard) writeBoards(migrateBoards().map((board) => board.id === currentBoard.id ? currentBoard : board))
+  if (useLocalBoard && !demoBoard) persistHomeBoard(currentBoard)
   const fresh = responses.filter((item) => item.data).map((item) => item.data as EtaData)
   const rejected = credentialError ?? responses.find((item) => isTdxTokenRejectedError(item.error))?.error
   const tdxWarning = placeLoad.warning
@@ -342,14 +342,13 @@ if (useLocalBoard) {
   // 顯示用方向文字可能因舊資料、API 降級或暫時缺欄位而不存在；
   // 缺少 directionLabel 不能證明看板損壞，更不能據此刪除使用者資料。
   const boards = migrateBoards()
-  demoBoard = !boards.length
+  const resolved = resolveHomeBoard(boards)
+  demoBoard = !resolved
+  currentBoard = resolved ?? initialBoard
   if (demoBoard) {
-    boards.push(initialBoard)
     onboardNode.hidden = false
     onboardSignNode.hidden = false
   }
-  const activeId = activeBoardId() || boards[0].id
-  currentBoard = boards.find((item) => item.id === activeId) || boards[0]
   titleNode.textContent = demoBoard ? '示範 · ' + currentBoard.title : currentBoard.title
   const firstBus = currentBoard.buses[0]
   const city = currentBoard.city || firstBus?.city
