@@ -37,6 +37,11 @@ describe('selectRouteVariant', () => {
       variants,
       pickerUsed: true,
     })
+    expect(selectRouteVariant(variants, null)).toEqual({
+      kind: 'picker',
+      variants,
+      pickerUsed: true,
+    })
   })
 
   it('preserves the existing empty-picker contract without marking it as user-visible selection', () => {
