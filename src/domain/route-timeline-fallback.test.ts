@@ -92,6 +92,13 @@ describe('Route timeline timetable fallback', () => {
     expect(result[2].etaLabel).toBe('表定 明日 06:10')
   })
 
+  it('labels after-midnight times from the current service day as tomorrow', () => {
+    const lateNow = new Date('2026-07-20T15:50:00.000Z') // Monday 23:50 in Taipei
+    const result = applyRouteTimelineFallback(stops, timetable('TPE3', '24:20'), query, lateNow)
+
+    expect(result[2].etaLabel).toBe('表定 明日 00:20')
+  })
+
   it('preserves explicit non-service statuses instead of replacing them with a dash', () => {
     const result = applyRouteTimelineFallback([
       { stopUid: 'TPE1', etaLabel: '交管不停靠', etaTone: 'muted' as const },
