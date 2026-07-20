@@ -1,3 +1,0 @@
-A6 watchdog evidence repair v2 marker.
-
-This marker was updated after correcting the watchdog workflow YAML report step. The main push now retriggers the scheduled evidence repair and final A6 verification.
