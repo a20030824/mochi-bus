@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import mainSource from './main.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 2291
+const MAP_MAIN_LINE_LIMIT = 2131
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -26,6 +26,14 @@ describe('map main architecture boundary', () => {
   it('does not grow without extracting another responsibility', () => {
     const lineCount = mainSource.split(/\r?\n/).length
     expect(lineCount).toBeLessThanOrEqual(MAP_MAIN_LINE_LIMIT)
+  })
+
+  it('delegates Trip result Drawer construction to the Trip results view', () => {
+    expect(mainSource).toContain('createTripResultsView')
+    expect(mainSource).not.toContain("className = 'direct-route-list'")
+    expect(mainSource).not.toContain("className = 'transfer-plan-list'")
+    expect(mainSource).not.toContain('function renderDirectRoutes(')
+    expect(mainSource).not.toContain('function renderTransferPlans(')
   })
 
   it('delegates Trip state transitions to the Trip controller', () => {
