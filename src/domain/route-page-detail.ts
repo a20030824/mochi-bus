@@ -83,7 +83,7 @@ export async function getRouteEtaDetail(
   query: ResolvedBusQuery,
   dependencies: Partial<RouteDetailDependencies> = {},
 ): Promise<RouteEtaDetail> {
-  const resolvedDependencies = { ...defaultDependencies, ...dependencies }
+  const resolvedDependencies: RouteDetailDependencies = { ...defaultDependencies, ...dependencies }
 
   try {
     let detail = await resolvedDependencies.getRouteDetail(env, query)
