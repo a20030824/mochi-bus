@@ -51,9 +51,9 @@ test('opens vehicle update info on tap and restores it after an immediate refres
 
   const marker = page.locator('.vehicle-marker-wrap')
   await expect(marker).toHaveCount(1)
-  const box = await marker.boundingBox()
-  if (!box) throw new Error('vehicle marker has no layout box')
-  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2)
+  // Locator actions wait for the animated Leaflet marker to be stable and
+  // recompute its hit point immediately before dispatching the touch event.
+  await marker.tap()
 
   const popup = page.locator('.vehicle-popup')
   await expect(popup).toContainText('KKA-1234')
