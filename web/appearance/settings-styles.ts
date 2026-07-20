@@ -79,10 +79,10 @@ export const appearanceSettingsStyles = `
   outline-offset: -2px;
 }
 html[data-general-theme="dark"] :is(.appearance-list, .appearance-row) { border-color: #4d473e; }
-html[data-general-theme="dark"] .appearance-segmented { border-color: #4d473e; background: #302c26; }
-html[data-general-theme="dark"] .appearance-segmented::before { background: #f8f0e3; box-shadow: 0 1px 3px rgba(0, 0, 0, .3); }
+html[data-general-theme="dark"] .appearance-segmented { border-color: #4d473e; background: #26231e; }
+html[data-general-theme="dark"] .appearance-segmented::before { background: #4d473e; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
 html[data-general-theme="dark"] .appearance-segment:hover .appearance-option-input:not(:checked) + span { color: #f8f0e3; }
-html[data-general-theme="dark"] .appearance-option-input:checked + span { color: #211f1b; }
+html[data-general-theme="dark"] .appearance-option-input:checked + span { color: #f8f0e3; }
 html[data-general-theme="dark"] .appearance-option-input:focus-visible + span { outline-color: #81a08f; }
 @media (max-width: 360px) {
   .appearance-row { gap: 12px; }
