@@ -5,6 +5,11 @@ on:
     # 07:45 Asia/Taipei. Taiwan has no daylight-saving time.
     - cron: '45 23 * * *'
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/a6-watchdog-repair-v2-2026-07-20
 
 concurrency:
   group: snapshot-window-watchdog
@@ -13,9 +18,10 @@ concurrency:
 jobs:
   watchdog:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 180
     permissions:
       contents: read
+      issues: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -30,8 +36,74 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler d1 migrations apply mochi-transit --remote
+
+      - name: Repair A6 scheduled window evidence
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          SNAPSHOT_WINDOW_TYPE: scheduled
+          SNAPSHOT_WINDOW_DATE: '2026-07-20'
+          TDX_CLIENT_ID: ${{ secrets.TDX_CLIENT_ID }}
+          TDX_CLIENT_SECRET: ${{ secrets.TDX_CLIENT_SECRET }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          for city in NewTaipei Taipei; do
+            echo "::group::Repair $city"
+            npm run snapshot:window -- "$city"
+            echo "::endgroup::"
+          done
+
       - name: Evaluate closed snapshot windows
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npm run snapshot:watchdog
+
+      - name: Re-run public network probe
+        if: github.event_name == 'push'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run snapshot:public-probe
+
+      - name: Verify final A6 durable evidence
+        if: github.event_name == 'push'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_ID: e5680212-29c5-4045-acd2-1e5df703e751
+        shell: bash
+        run: |
+          set -euo pipefail
+          query() {
+            local sql="$1"
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg sql "$sql" '{sql:$sql,params:[]}')" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$DATABASE_ID/query"
+          }
+
+          watchdog="$(query "SELECT COUNT(*) AS city_count, SUM(CASE WHEN status IN ('published','unchanged_healthy') THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN status NOT IN ('published','unchanged_healthy') THEN 1 ELSE 0 END) AS rejected FROM snapshot_watchdog_city_results WHERE schedule_date='2026-07-20';")"
+          echo "$watchdog" | jq .
+          test "$(echo "$watchdog" | jq -r '.result[0].results[0].city_count // 0')" -eq 2
+          test "$(echo "$watchdog" | jq -r '.result[0].results[0].accepted // 0')" -eq 2
+          test "$(echo "$watchdog" | jq -r '.result[0].results[0].rejected // 999')" -eq 0
+
+          probe="$(query "SELECT COUNT(*) AS city_count, SUM(CASE WHEN status IN ('healthy','realtime_degraded') THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN status NOT IN ('healthy','realtime_degraded') THEN 1 ELSE 0 END) AS rejected FROM public_probe_city_results WHERE probe_date=(SELECT MAX(probe_date) FROM public_probe_city_results);")"
+          echo "$probe" | jq .
+          test "$(echo "$probe" | jq -r '.result[0].results[0].city_count // 0')" -eq 22
+          test "$(echo "$probe" | jq -r '.result[0].results[0].accepted // 0')" -eq 22
+          test "$(echo "$probe" | jq -r '.result[0].results[0].rejected // 999')" -eq 0
+
+      - name: Report A6 repair result
+        if: always() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: gh issue comment 52 --body "A6 watchdog evidence repair v2 finished with **${JOB_STATUS}**. Run: ${RUN_URL}"
