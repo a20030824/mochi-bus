@@ -1,0 +1,151 @@
+--- a/web/map/main.ts
++++ b/web/map/main.ts
+@@ -1,10 +1,10 @@
+ import L, { type GeoJSON as LeafletGeoJSON } from 'leaflet'
+ import { getJourneySegmentCoordinates } from '../../src/domain/map/journey-segment'
+ import { selectDirectPreviewEntries } from '../../src/domain/map/direct-preview'
+-import { getTripSelectionConflict, type TripSelectionKind } from '../../src/domain/map/trip-selection'
+-import type { TripPendingSelection } from './trip-state'
++import type { TripSelectionKind } from '../../src/domain/map/trip-selection'
+ import { createTripRuntimeStore } from './trip-runtime-store'
+-import { createTripPlanLoader } from './trip-plan-loader'
++import { createTripController, type TripPlanContext, type TripResultsPresentation } from './trip-controller'
++import { createTripPlanLoader, type TripPlanLoadPhase } from './trip-plan-loader'
+ import { createTripResultsSnapshot, parseTripResultsSnapshot } from './trip-results-snapshot'
+ import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
+ import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
+@@ -175,7 +175,6 @@
+   loadJourneyEta: mapApi.journeyEta,
+   isCredentialRejectedError: isTdxTokenRejectedError,
+ })
+-let tripSelecting = false
+ let interactionMode: 'browse' | 'nearby' | 'trip' | 'trip-results' | 'route' = 'browse'
+ let previewRequest = 0
+ // 行程候選離開前的鏡頭只存可序列化值;路線 detail 的 fit 不應覆蓋它。
+@@ -194,6 +193,25 @@
+ function isStaleNav(requestId: number): boolean {
+   return navRequests.isStale(requestId)
+ }
++
++const tripController = createTripController({
++  store: trip,
++  planLoader: tripPlanLoader,
++  currentCityCode: () => activeCity?.code,
++  nearbyRadius: () => map.getZoom() >= 15 ? 300 : 500,
++  loadNearby: mapApi.nearby,
++  beginRequest: beginNavRequest,
++  cancelRequest: cancelNavRequest,
++  isStaleRequest: isStaleNav,
++  onSelectionStep: showTripSelectionStep,
++  onCandidates: renderPendingTripCandidates,
++  onEndpointReady: prepareTripPlan,
++  onStatus: setStatus,
++  onPlanStart: () => clearTripResultsCamera(),
++  onPlanPhase: renderTripPlanPhase,
++  onResults: presentTripResults,
++  onPlanError: renderTripPlanError,
++})
+ // 全路網是可疊加的輔助圖層，不是 drawer 主視圖。它不能取消路線、站牌或
+ // 行程查詢；關閉圖層時則只作廢自己的載入。
+ const networkRequests = createNavRequestCoordinator()
+@@ -204,8 +222,6 @@
+   locationHydrations.cancel()
+ }
+ 
+-const TRIP_NEARBY_CANDIDATE_LIMIT = 5
+-
+ const cityNetwork = createCityNetworkController({
+   map,
+   layer: networkLayer,
+@@ -501,7 +517,7 @@
+         }
+         if (params.get('trip') === 'select') {
+           clearTripState()
+-          renderTripSelectionStep('from')
++          tripController.start()
+           return
+         }
+         await chooseCity(city)
+@@ -562,8 +578,8 @@
+   const pick = cityNetwork.pickAt(event.latlng, hoverCapable ? 8 : 14, hoverCapable ? 10 : 16)
+   if (trip.stage !== 'idle') {
+     // 規劃選點中,點到小站點就吸附站點座標;點到線只是瞄準地圖,照點的位置處理
+-    if (pick?.kind === 'place') void selectTripCoordinate(pick.place.latitude, pick.place.longitude)
+-    else void selectTripCoordinate(event.latlng.lat, event.latlng.lng)
++    if (pick?.kind === 'place') void tripController.selectCoordinate(pick.place.latitude, pick.place.longitude)
++    else void tripController.selectCoordinate(event.latlng.lat, event.latlng.lng)
+     return
+   }
+   if (pick?.kind === 'place') {
+@@ -584,7 +600,7 @@
+ function showTaiwan() {
+   cancelLocationHydration()
+   cancelNavRequest()
+-  clearPendingTripSelections()
++  tripController.clearPending()
+   clearTripResultsCamera()
+   activeCity = undefined
+   networkButton.hidden = true
+@@ -593,7 +609,7 @@
+   selectionLayer.clearLayers()
+   nearbyLayer.clearLayers()
+   previewLayer.clearLayers()
+-  trip.reset()
++  tripController.reset()
+   setStatus('選一個區域，看看公車如何穿過城市。')
+   renderRegionMarkers()
+   renderDrawer({
+@@ -694,7 +710,7 @@
+ 
+ function showRegion(regionCode: RegionCode) {
+   cancelNavRequest()
+-  clearPendingTripSelections()
++  tripController.clearPending()
+   clearTripResultsCamera()
+   networkButton.hidden = true
+   cityNetwork.hide()
+@@ -760,7 +776,7 @@
+ }
+ 
+ async function chooseCity(city: MapCity) {
+-  clearPendingTripSelections()
++  tripController.clearPending()
+   clearTripResultsCamera()
+   activeCity = city
+   setActiveCity(city.code)
+@@ -774,7 +790,7 @@
+   routeDetail.close()
+   nearbyLayer.clearLayers()
+   previewLayer.clearLayers()
+-  trip.reset()
++  tripController.reset()
+   setDocumentTitle(`${city.name}公車地圖`)
+   setStatus(`${city.name} · 正在整理路線…`)
+   renderDrawer({
+@@ -1010,48 +1026,23 @@
+     return []
+   }
+ }
+-function pendingTripSelection(kind: TripSelectionKind): TripPendingSelection | undefined {
+-  return trip.pending(kind)
+-}
+-
+-function setPendingTripSelection(selection: TripPendingSelection) {
+-  trip.setPending(selection)
+-}
+-
+-function clearPendingTripSelection(kind: TripSelectionKind) {
+-  trip.clearPending(kind)
+-}
+-
+-function clearPendingTripSelections() {
+-  trip.clearPending()
+-}
+-
+-
+-function tripSelectionConflict(kind: TripSelectionKind, candidate: NearbyPlace): string | undefined {
+-  return getTripSelectionConflict(kind, candidate, trip.from, trip.to)
+-}
+-
+ function tripMatchedSummary(kind: TripSelectionKind): HTMLElement | undefined {
+   const 
