@@ -1,0 +1,3 @@
+A6 watchdog evidence repair v2 marker.
+
+This marker triggers the existing snapshot watchdog workflow to refresh NewTaipei and Taipei scheduled evidence and verify the final A6 production state.
