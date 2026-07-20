@@ -5,9 +5,10 @@ import journeyPreviewSource from './journey-preview-controller.ts?raw'
 import journeyPreviewMapSource from './journey-preview-map.ts?raw'
 import previewMapPrimitivesSource from './preview-map-primitives.ts?raw'
 import placeRoutesSource from './place-routes-controller.ts?raw'
+import placeRoutesViewSource from './place-routes-view.ts?raw'
 import routeDetailSurfaceSource from './route-detail-surface.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 1930
+const MAP_MAIN_LINE_LIMIT = 1828
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -116,6 +117,47 @@ describe('map main architecture boundary', () => {
       'toggleFavoriteDirection',
     ]) {
       expect(placeRoutesSource).not.toContain(dependency)
+    }
+  })
+
+  it('delegates Place route Drawer presentation to the Place routes view', () => {
+    expect(mainSource).toContain('createPlaceRoutesView')
+    expect(mainSource).not.toContain('function renderPlaceRoutesLoading(')
+    expect(mainSource).not.toContain('function renderPlaceRoutes(')
+    expect(mainSource).not.toContain('function renderPlaceRoutesError(')
+    expect(mainSource).not.toContain('function etaPresentationNode(')
+    for (const marker of [
+      "className = 'place-route-list'",
+      "className = 'place-route-row'",
+      "className = 'place-route-button'",
+      "className = 'place-route-main'",
+      "className = 'eta-freshness'",
+    ]) {
+      expect(mainSource).not.toContain(marker)
+    }
+    expect(placeRoutesViewSource).toContain('createPlaceRoutesView')
+    expect(placeRoutesViewSource).toContain("className = 'place-route-list'")
+    expect(placeRoutesViewSource).toContain('options.createFavoriteControl(place, route)')
+    expect(placeRoutesViewSource).toContain('options.onOpenRoute(')
+    expect(placeRoutesViewSource).toContain('options.onRetry(place)')
+    for (const dependency of [
+      'leaflet',
+      'history.',
+      'camera.',
+      'trip.',
+      'mapApi.',
+      'routeDetail',
+      'readBoards',
+      'toggleFavoriteDirection',
+      'isFavoriteDirection',
+      'placeRoutes.open',
+      'setStatus(',
+      'clearStatus(',
+      'createPlaceRoutesController',
+      'boards/store',
+      './main',
+    ]) {
+      expect(placeRoutesViewSource).not.toContain(dependency)
     }
   })
 
