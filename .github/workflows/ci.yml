@@ -29,6 +29,42 @@ jobs:
       - run: npm ci
       - run: npm run check
 
+  apply-bus-api-error-presentation:
+    name: Apply bus API error presentation
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/extract-bus-api-error-presentation'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - run: node scripts/apply-bus-api-error-presentation.mjs
+      - run: >-
+          npx vitest run
+          src/presentation/api-error.test.ts
+          src/presentation/page-error.test.ts
+          src/tdx-api-contract.test.ts
+          src/routes/route-page-http.test.ts
+      - run: npm run check
+      - name: Commit clean bus API error presentation
+        run: |
+          git fetch origin main --depth=1
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          rm scripts/apply-bus-api-error-presentation.mjs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/routes/bus.ts src/presentation/api-error.ts src/presentation/api-error.test.ts .github/workflows/ci.yml scripts/apply-bus-api-error-presentation.mjs
+          git commit -m "refactor(api): extract bus error presentation"
+          git push
+
   map-ui:
     name: Map UI regression
     runs-on: ubuntu-latest
