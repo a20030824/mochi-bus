@@ -13,6 +13,13 @@ import {
   type PlaceRoutesPresentation,
 } from './place-routes-controller'
 import { createPlaceRoutesView } from './place-routes-view'
+import {
+  createNearbyPlacesController,
+  type NearbyPlacesController,
+  type NearbyPlacesFailure,
+  type NearbyPlacesPresentation,
+  type NearbyPlacesRequest,
+} from './nearby-places-controller'
 import { createNearbyPlacesView } from './nearby-places-view'
 import { createPreviewStopDotManager, createSelectablePreviewLineRenderer } from './preview-map-primitives'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
@@ -264,6 +271,17 @@ const nearbyPlacesView = createNearbyPlacesView({
   createRetryButton: retryButton,
   createTripModeButton: tripModeButton,
   onOpenPlace: (place) => void openNearbyPlace(place),
+})
+let nearbyPlaces!: NearbyPlacesController
+nearbyPlaces = createNearbyPlacesController({
+  currentCityCode: () => activeCity?.code,
+  beginRequest: beginNavRequest,
+  isStaleRequest: isStaleNav,
+  loadNearby: mapApi.nearby,
+  onStart: prepareNearbyPlacesLoad,
+  onPlaces: presentNearbyPlaces,
+  onAutoPreview: (place) => openNearbyPlace(place),
+  onError: presentNearbyPlacesError,
 })
 const placeRoutes = createPlaceRoutesController({
   currentCityCode: () => activeCity?.code,
@@ -1418,43 +1436,50 @@ async function findNearbyPlaces(
   interactionMode = 'nearby'
   clearPreviewLayer()
   routeDetail.close()
-  nearbyPlacesView.renderLoading({
+  await nearbyPlaces.load({
     cityCode: activeCity.code,
     origin: [latitude, longitude],
+    radiusMeters: map.getZoom() >= 15 ? 300 : 500,
+    autoPreview,
+  })
+}
+
+function prepareNearbyPlacesLoad({ cityCode, origin }: NearbyPlacesRequest): void {
+  nearbyPlacesView.renderLoading({
+    cityCode,
+    origin,
     backLabel: '附近站牌',
     onBack: renderNearbyPlaces,
   })
   nearbyLayer.clearLayers()
-  lastNearbyOrigin = [latitude, longitude]
-  const city = activeCity
-  const radius = map.getZoom() >= 15 ? 300 : 500
-  unifiedStopMarker([latitude, longitude], true, stopFillAccent).addTo(nearbyLayer)
+  lastNearbyOrigin = [...origin]
+  unifiedStopMarker(origin, true, stopFillAccent).addTo(nearbyLayer)
   setStatus('正在找這附近的站牌…')
-  const { requestId, signal } = beginNavRequest()
-
-  try {
-    const places = await mapApi.nearby(city.code, latitude, longitude, radius, signal)
-    if (isStaleNav(requestId)) return
-    lastNearbyPlaces = places.slice(0, 12)
-    renderNearbyPlaces()
-    if (autoPreview && lastNearbyPlaces[0]) await openNearbyPlace(lastNearbyPlaces[0])
-  } catch (error) {
-    if (isStaleNav(requestId)) return
-    const message = nearbyPlacesView.renderError({
-      cityCode: city.code,
-      origin: [latitude, longitude],
-      error,
-      backLabel: '附近站牌',
-      onBack: renderNearbyPlaces,
-      onRetry: () => void findNearbyPlaces(latitude, longitude, autoPreview, 'replace'),
-    })
-    setStatus(message, true)
-  }
 }
 
-function renderNearbyPlaces() {
+function presentNearbyPlaces({ places }: NearbyPlacesPresentation): void {
+  lastNearbyPlaces = places
+  renderNearbyPlaces(false)
+}
+
+function presentNearbyPlacesError({ cityCode, origin, error }: NearbyPlacesFailure): void {
+  const message = nearbyPlacesView.renderError({
+    cityCode,
+    origin,
+    error,
+    backLabel: '附近站牌',
+    onBack: renderNearbyPlaces,
+    onRetry: () => void nearbyPlaces.retry(),
+  })
+  setStatus(message, true)
+}
+
+function renderNearbyPlaces(cancelRequest = true) {
   if (!activeCity || !lastNearbyOrigin) return
-  cancelNavRequest()
+  if (cancelRequest) {
+    nearbyPlaces.cancel()
+    cancelNavRequest()
+  }
   nearbyLayer.clearLayers()
   const origin = unifiedStopMarker(lastNearbyOrigin, true, stopFillAccent).addTo(nearbyLayer)
   bindHoverTooltip(origin, '你點的位置')

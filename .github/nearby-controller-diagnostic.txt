@@ -1,0 +1,43 @@
+focused=failure
+complete=skipped
+whitespace=success
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90m/home/runner/work/mochi-bus/mochi-bus[39m
+
+ [32m✓[39m [30m[43m node [49m[39m web/map/nearby-places-view.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m [30m[43m node [49m[39m web/map/nearby-places-controller.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [31m❯[39m [30m[43m node [49m[39m web/map/main-size.test.ts [2m([22m[2m10 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 15[2mms[22m[39m
+[31m     [31m×[31m does not grow without extracting another responsibility[39m[32m 6[2mms[22m[39m
+     [32m✓[39m delegates Trip preview orchestration to the Journey preview controller[32m 1[2mms[22m[39m
+     [32m✓[39m delegates Leaflet Trip preview drawing to the Journey preview map surface[32m 1[2mms[22m[39m
+     [32m✓[39m shares low-level preview lines and stop dots through preview map primitives[32m 1[2mms[22m[39m
+     [32m✓[39m delegates Place route loading, ranking, and preview completion to the Place routes controller[32m 1[2mms[22m[39m
+     [32m✓[39m delegates Place route Drawer presentation to the Place routes view[32m 1[2mms[22m[39m
+     [32m✓[39m delegates Nearby Places loading and request lifecycle to the Nearby places controller[32m 1[2mms[22m[39m
+     [32m✓[39m delegates Nearby Places Drawer presentation to the Nearby places view[32m 1[2mms[22m[39m
+     [32m✓[39m delegates Trip result Drawer construction to the Trip results view[32m 0[2mms[22m[39m
+     [32m✓[39m delegates Trip state transitions to the Trip controller[32m 1[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m [30m[43m node [49m[39m web/map/main-size.test.ts[2m > [22mmap main architecture boundary[2m > [22mdoes not grow without extracting another responsibility
+[31m[1mAssertionError[22m: expected 1827 to be less than or equal to 1826[39m
+[36m [2m❯[22m web/map/main-size.test.ts:[2m36:23[22m[39m
+    [90m 34|[39m   [34mit[39m([32m'does not grow without extracting another responsibility'[39m[33m,[39m () [33m=>[39m {
+    [90m 35|[39m     [35mconst[39m lineCount [33m=[39m mainSource[33m.[39m[34msplit[39m([36m/\r?\n/[39m)[33m.[39mlength
+    [90m 36|[39m     [34mexpect[39m(lineCount)[33m.[39m[34mtoBeLessThanOrEqual[39m([33mMAP_MAIN_LINE_LIMIT[39m)
+    [90m   |[39m                       [31m^[39m
+    [90m 37|[39m   })
+    [90m 38|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m2 passed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m21 passed[39m[22m[90m (22)[39m
+[2m   Start at [22m 20:00:06
+[2m   Duration [22m 307ms[2m (transform 172ms, setup 0ms, import 250ms, tests 50ms, environment 0ms)[22m
+
+
+::error file=/home/runner/work/mochi-bus/mochi-bus/web/map/main-size.test.ts,title=[node] web/map/main-size.test.ts > map main architecture boundary > does not grow without extracting another responsibility,line=36,column=23::AssertionError: expected 1827 to be less than or equal to 1826%0A ❯ web/map/main-size.test.ts:36:23%0A%0A
