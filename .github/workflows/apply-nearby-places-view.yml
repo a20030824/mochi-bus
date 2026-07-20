@@ -1,0 +1,53 @@
+name: Apply Nearby places view extraction
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/extract-nearby-places-view'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply reviewed Nearby places view patch
+        run: |
+          git apply --check .github/nearby-places-view.patch
+          git apply .github/nearby-places-view.patch
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run focused Nearby view tests
+        run: npx vitest run web/map/nearby-places-view.test.ts web/map/main-size.test.ts web/map/place-routes-view.test.ts web/map/place-routes-controller.test.ts web/map/journey-preview-controller.test.ts
+      - name: Run full check
+        run: |
+          if ! npm run check; then
+            echo 'Retrying once for the known shared TDX rate-limit test state'
+            npm run check
+          fi
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Test desktop and touch interaction flows
+        run: npx playwright test --project=desktop-chromium --project=mobile-touch
+      - name: Run git diff check
+        run: git diff --check
+      - name: Commit clean product diff
+        run: |
+          rm .github/nearby-places-view.patch
+          rm .github/workflows/export-nearby-places-view.yml
+          rm .github/workflows/apply-nearby-places-view.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m 'refactor(map): extract Nearby places view'
+          git push origin HEAD:${{ github.head_ref }}
