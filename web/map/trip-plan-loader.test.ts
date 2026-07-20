@@ -200,4 +200,17 @@ describe('trip plan loader', () => {
     await expect(harness.loader.load({ ...request, signal: controller.signal })).resolves.toBeUndefined()
     expect(harness.options.loadJourneyEta).not.toHaveBeenCalled()
   })
+
+  it('stops after an aborted transfer result and does not start leg ETA work', async () => {
+    const controller = new AbortController()
+    const harness = createHarness({
+      loadTransfer: vi.fn(async () => {
+        controller.abort()
+        return [transferPlan('307', '605')]
+      }),
+    })
+
+    await expect(harness.loader.load({ ...request, signal: controller.signal })).resolves.toBeUndefined()
+    expect(harness.options.loadJourneyEta).not.toHaveBeenCalled()
+  })
 })
