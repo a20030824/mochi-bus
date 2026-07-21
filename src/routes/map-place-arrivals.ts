@@ -112,6 +112,7 @@ function routeIdentity(routeName: string, routeUid?: string): string {
 
 // This module owns the stateful Place Arrivals boundary as one unit: snapshot schedules,
 // candidate batching, realtime cooldown, stale replay, warning aggregation, and completion telemetry.
+// Journey ETA keeps its shared warning selection and route URL helpers in map.ts.
 export async function readPlaceArrivals(c: Context<MapEnv>) {
   const tracker = beginMapOperation(c, 'map_place_arrivals', telemetryCity(c.req.query('city')?.trim()))
   try {
