@@ -159,7 +159,6 @@ jobs:
               'RouteEtaPresentationState',
               'selectRouteStopGroup',
               'TransitBindings',
-              'toETAResult',
               'BUS_ETA_CACHE_SECONDS',
               'export type RouteEtaTone',
               'export type RouteDetail',
