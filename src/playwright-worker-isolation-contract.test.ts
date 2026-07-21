@@ -22,9 +22,9 @@ describe('Playwright Worker state isolation boundary', () => {
     expect(ciSource).toContain("PLAYWRIGHT_WORKER_STATEFUL: '1'")
   })
 
-  it('blocks accidental live Worker API calls from ordinary UI specs', () => {
-    expect(uiFixturesSource).toContain('await page.route(/\\/api\\/v1\\//')
-    expect(uiFixturesSource).toContain('worker-stateful.spec.ts')
+  it('firewalls live Worker API calls from ordinary UI specs', () => {
+    expect(uiFixturesSource).toContain("workerApiFirewall: void")
+    expect(uiFixturesSource).toContain("await page.route(/\\/api\\/v1\\//, (route) => route.abort('blockedbyclient'))")
     expect(statefulFixturesSource).toContain("request.post('/__test/tdx-state/reset')")
   })
 
