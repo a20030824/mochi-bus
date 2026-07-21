@@ -15,6 +15,7 @@ import {
 } from '../lib/api-input'
 import { mapJsonError, type MapEnv } from './map-http-context'
 
+// map.ts owns public paths and registration order; this module owns request handling only.
 export async function searchPlaces(c: Context<MapEnv>) {
   try {
     const city = c.req.query('city')?.trim()
