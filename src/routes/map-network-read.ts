@@ -4,7 +4,7 @@ import { QueryValidationError } from '../domain/bus-query'
 import { getCityNetwork } from '../infrastructure/transit/snapshot-repository'
 import { mapJsonError, type MapEnv } from './map-http-context'
 
-// This handler owns only the HTTP contract; the repository decides stream versus inline delivery.
+// The repository owns the delivery mode; this handler owns the public HTTP contract for both modes.
 export async function readCityNetwork(c: Context<MapEnv>) {
   try {
     const city = c.req.query('city')?.trim()
