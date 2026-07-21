@@ -254,15 +254,6 @@ export function persistHomeBoard(board: FavoriteBoard): void {
   writeBoards(readBoards().map((candidate) => candidate.id === board.id ? board : candidate))
 }
 
-// 舊名稱保留給尚未拆出的地圖 entry；語意已改成只操作首頁，不再增刪正式常用。
-export function isFavoriteDirection(city: string, placeId: string, bus: FavoriteBus): boolean {
-  return isHomeDirection(city, placeId, bus)
-}
-
-export function toggleFavoriteDirection(city: string, place: FavoritePlace, bus: FavoriteBus): boolean {
-  return toggleHomeDirection(city, place, bus)
-}
-
 function announceHomeDirection(detail: HomeDirectionChangedDetail): void {
   if (typeof globalThis.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return
   queueMicrotask(() => globalThis.dispatchEvent(new CustomEvent(HOME_DIRECTION_CHANGED_EVENT, { detail })))

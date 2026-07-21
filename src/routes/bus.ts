@@ -184,35 +184,6 @@ bus.get('/api/v1/stop-routes', async (c) => {
   }
 })
 
-// 舊版 API 相容端點。
-bus.get('/api/eta', async (c) => {
-  try {
-    const env = tdxEnv(c)
-    const resolved = await resolveBusQuery(env, defaultBusQuery)
-    return c.json(await getCommuteETA(env, resolved), 200, noStoreHeaders)
-  } catch (error) {
-    return jsonError(c, error)
-  }
-})
-
-const shortcutHandler = async (c: Context<Env>) => {
-  try {
-    const query = hasBusQuery(c) ? parseRequestQuery(c) : defaultBusQuery
-    const env = tdxEnv(c)
-    const resolved = await resolveBusQuery(env, query)
-    const result = await getCommuteETA(env, resolved)
-    const staleText = result.stale ? '\n⚠️ 資料可能延遲' : ''
-    return c.text(`${result.routeName}｜${result.stopName}\n${result.label}${staleText}`, 200, noStoreHeaders)
-  } catch (error) {
-    console.error('shortcut_eta_failed', error)
-    return c.text(toPublicError(error), error instanceof QueryValidationError ? 400 : 503)
-  }
-}
-
-bus.get('/shortcut', shortcutHandler)
-bus.get('/bus/text', shortcutHandler)
-bus.get('/text', shortcutHandler)
-
 bus.get('/robots.txt', (c) => c.text([
   'User-agent: *',
   // API 是無限的查詢參數空間,別讓爬蟲在裡面亂逛
