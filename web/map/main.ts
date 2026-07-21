@@ -14,6 +14,7 @@ import {
 } from './place-routes-controller'
 import { createPlaceRoutesView } from './place-routes-view'
 import { createNearbyPlacesController } from './nearby-places-controller'
+import { createNearbyPlacesMap } from './nearby-places-map'
 import { createNearbyPlacesView } from './nearby-places-view'
 import { createPreviewStopDotManager, createSelectablePreviewLineRenderer } from './preview-map-primitives'
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
@@ -156,6 +157,12 @@ const selectablePreviewLine = createSelectablePreviewLineRenderer({ hoverCapable
 const previewStopDots = createPreviewStopDotManager({ map })
 const journeyPreviewMap = createJourneyPreviewMap({ map, layer: previewLayer, hoverCapable })
 const nearbyLayer = L.layerGroup().addTo(map)
+const nearbyPlacesMap = createNearbyPlacesMap({
+  layer: nearbyLayer,
+  hoverCapable,
+  createStopMarker: unifiedStopMarker,
+  onOpenPlace: openNearbyPlace,
+})
 const networkLayer = L.layerGroup().addTo(map)
 const vehicleLayer = L.layerGroup().addTo(map)
 let cities: MapCity[] = readBootstrapCities()
@@ -273,9 +280,8 @@ const nearbyPlaces = createNearbyPlacesController({
   loadNearby: mapApi.nearby,
   onStart: ({ cityCode, origin }) => {
     nearbyPlacesView.renderLoading({ cityCode, origin, backLabel: '附近站牌', onBack: renderNearbyPlaces })
-    nearbyLayer.clearLayers()
     lastNearbyOrigin = [...origin]
-    unifiedStopMarker([...origin], true, stopFillAccent).addTo(nearbyLayer)
+    nearbyPlacesMap.renderLoadingOrigin(origin)
     setStatus('正在找這附近的站牌…')
   },
   onPlaces: ({ places }) => { lastNearbyPlaces = places; renderNearbyPlaces() },
@@ -1450,18 +1456,7 @@ function renderNearbyPlaces() {
   if (!activeCity || !lastNearbyOrigin) return
   nearbyPlaces.cancel()
   cancelNavRequest()
-  nearbyLayer.clearLayers()
-  const origin = unifiedStopMarker(lastNearbyOrigin, true, stopFillAccent).addTo(nearbyLayer)
-  bindHoverTooltip(origin, '你點的位置')
-
-  for (const place of lastNearbyPlaces) {
-    bindHoverTooltip(unifiedStopMarker([place.latitude, place.longitude], true), `${place.name} · ${Math.round(place.distanceMeters)} m`)
-      .on('click', (event) => {
-        L.DomEvent.stopPropagation(event)
-        void openNearbyPlace(place)
-      })
-      .addTo(nearbyLayer)
-  }
+  nearbyPlacesMap.renderPlaces(lastNearbyOrigin, lastNearbyPlaces)
   drawTripEndpoints()
 
   const managedNearbyParent = history.state?.mapView === 'nearby' && history.state?.mapParent
