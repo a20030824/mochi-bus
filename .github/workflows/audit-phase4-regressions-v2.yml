@@ -1,0 +1,351 @@
+name: Audit Phase 4 regressions v2
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-phase4-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHASE4_BASE_SHA: 9cf23a6d0b815a9959f7563cae3a3dc1707677c7
+
+jobs:
+  differential:
+    name: Corrected legacy differential
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - name: Generate baseline module and differential contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "${PHASE4_BASE_SHA}:src/lib/tdx.ts" > src/lib/tdx-legacy-audit.ts
+          cat > src/lib/tdx-phase4-differential.test.ts <<'TS'
+          import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+          type TDXModule = typeof import('./tdx')
+          type Loader = () => Promise<TDXModule>
+
+          const loadCurrent: Loader = async () => {
+            vi.resetModules()
+            return import('./tdx')
+          }
+          const loadLegacy: Loader = async () => {
+            vi.resetModules()
+            return import('./tdx-legacy-audit') as Promise<TDXModule>
+          }
+
+          const query = {
+            city: 'Taipei',
+            routeName: 'Audit307',
+            stopName: '捷運西門站',
+            stopUid: 'STOP-A',
+            routeUid: 'TPE-AUDIT-307',
+            subRouteUid: 'SUB-A',
+            direction: 0 as const,
+          }
+
+          beforeEach(() => {
+            vi.useFakeTimers()
+            vi.setSystemTime(new Date('2026-07-21T12:00:00.000Z'))
+            vi.stubGlobal('caches', {
+              default: {
+                match: vi.fn(async () => undefined),
+                put: vi.fn(async () => undefined),
+              },
+            })
+          })
+
+          afterEach(() => {
+            vi.unstubAllGlobals()
+            vi.useRealTimers()
+          })
+
+          async function capture<T>(
+            loader: Loader,
+            token: string,
+            responder: (request: Request) => unknown,
+            action: (module: TDXModule, env: ReturnType<TDXModule['withUserTDXAccessToken']>) => Promise<T>,
+          ) {
+            const module = await loader()
+            module.resetTDXTestState()
+            const requests: Array<{ url: string; method: string }> = []
+            vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+              const request = input instanceof Request && !init ? input : new Request(input, init)
+              requests.push({ url: request.url, method: request.method })
+              return new Response(JSON.stringify(responder(request)), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              })
+            })
+            const env = module.withUserTDXAccessToken({
+              TDX_CLIENT_ID: 'audit-id',
+              TDX_CLIENT_SECRET: 'audit-secret',
+            }, token)
+            return { result: await action(module, env), requests }
+          }
+
+          describe('Phase 4 differential parity with the original façade', () => {
+            it('preserves pure ETA, route scope, validator, and route-variant behavior', async () => {
+              const current = await loadCurrent()
+              const legacy = await loadLegacy()
+
+              for (const status of [-1, 0, 1, 2, 3, 4, 5, 99]) {
+                expect(current.formatStopStatus(status)).toBe(legacy.formatStopStatus(status))
+                for (const minutes of [null, 0, 1, 2, 15]) {
+                  expect(current.formatETALabel(minutes, status)).toBe(legacy.formatETALabel(minutes, status))
+                }
+              }
+
+              const eta = {
+                RouteUID: query.routeUid,
+                SubRouteUID: query.subRouteUid,
+                StopUID: query.stopUid,
+                StopName: { Zh_tw: '測試站' },
+                Direction: query.direction,
+                EstimateTime: 125,
+                StopStatus: 0,
+                DataTime: '2026-07-21T11:59:00.000Z',
+              }
+              const now = new Date('2026-07-21T12:00:00.000Z')
+              expect(current.toETAResult(eta, query, now)).toEqual(legacy.toETAResult(eta, query, now))
+
+              for (const [city, routeUid] of [
+                ['Taipei', undefined],
+                ['New Taipei', 'NWT-AUDIT'],
+                ['Taipei', 'THB9001'],
+              ] as const) {
+                expect(current.tdxRouteScope(city, routeUid)).toBe(legacy.tdxRouteScope(city, routeUid))
+              }
+
+              for (const value of [[], [{ value: 1 }], [null], [['nested']], ['text'], { value: 1 }]) {
+                expect(current.isTDXRecordArray(value)).toBe(legacy.isTDXRecordArray(value))
+              }
+
+              const groups = [{
+                direction: 0 as const,
+                label: '往乙',
+                routeUid: 'R-AUDIT',
+                subRouteUid: 'SUB-A',
+                subRouteName: 'Audit307',
+                stops: [
+                  { routeUid: 'R-AUDIT', subRouteUid: 'SUB-A', subRouteName: 'Audit307', stopUid: 'A', stopName: '甲', direction: 0 as const, sequence: 1 },
+                  { routeUid: 'R-AUDIT', subRouteUid: 'SUB-A', subRouteName: 'Audit307', stopUid: 'B', stopName: '乙', direction: 0 as const, sequence: 2 },
+                ],
+              }]
+              expect(current.mergeEquivalentStopGroups(structuredClone(groups))).toEqual(
+                legacy.mergeEquivalentStopGroups(structuredClone(groups)),
+              )
+            })
+
+            it('preserves schedule endpoint requests and results', async () => {
+              const schedules = [{ SubRouteUID: 'SUB-A', Direction: 0, Timetables: [] }]
+              const run = (loader: Loader, token: string) => capture(
+                loader,
+                token,
+                () => schedules,
+                (module, env) => module.getBusSchedule(env, 'Taipei', 'Audit307', query.routeUid),
+              )
+              const legacy = await run(loadLegacy, 'legacy-schedule-token')
+              const current = await run(loadCurrent, 'current-schedule-token')
+              expect(current.result).toEqual(legacy.result)
+              expect(current.requests).toEqual(legacy.requests)
+            })
+
+            it('preserves route catalog mapping, sorting, and request identity', async () => {
+              const routes = [
+                { RouteUID: 'R10', RouteName: { Zh_tw: '10' }, DepartureStopNameZh: '甲', DestinationStopNameZh: '乙' },
+                { RouteUID: 'R2', RouteName: { Zh_tw: '2' }, DepartureStopNameZh: '丙', DestinationStopNameZh: '丁' },
+              ]
+              const run = (loader: Loader, token: string) => capture(
+                loader,
+                token,
+                () => routes,
+                (module, env) => module.getRouteCatalog(env, 'Taipei'),
+              )
+              const legacy = await run(loadLegacy, 'legacy-catalog-token')
+              const current = await run(loadCurrent, 'current-catalog-token')
+              expect(current.result).toEqual(legacy.result)
+              expect(current.requests).toEqual(legacy.requests)
+            })
+
+            it('preserves stop groups and route-detail ETA presentation', async () => {
+              const stopGroups = [{
+                RouteUID: query.routeUid,
+                RouteName: { Zh_tw: query.routeName },
+                SubRouteUID: query.subRouteUid,
+                SubRouteName: { Zh_tw: query.routeName },
+                Direction: 0,
+                Stops: [
+                  { StopUID: 'STOP-A', StopName: { Zh_tw: '甲站' }, StopSequence: 1, StopPosition: { PositionLat: 25.04, PositionLon: 121.51 } },
+                  { StopUID: 'STOP-B', StopName: { Zh_tw: '乙站' }, StopSequence: 2, StopPosition: { PositionLat: 25.05, PositionLon: 121.52 } },
+                ],
+              }]
+              const eta = [
+                { RouteUID: query.routeUid, SubRouteUID: query.subRouteUid, StopUID: 'STOP-A', Direction: 0, EstimateTime: 120, StopStatus: 0 },
+                { RouteUID: query.routeUid, SubRouteUID: query.subRouteUid, StopUID: 'STOP-B', Direction: 0, EstimateTime: null, StopStatus: 1 },
+              ]
+              const responder = (request: Request) => request.url.includes('/StopOfRoute/') ? stopGroups : eta
+              const runGroups = (loader: Loader, token: string) => capture(
+                loader,
+                token,
+                responder,
+                (module, env) => module.getRouteStopGroups(env, query.city, query.routeName, query.routeUid),
+              )
+              const legacyGroups = await runGroups(loadLegacy, 'legacy-groups-token')
+              const currentGroups = await runGroups(loadCurrent, 'current-groups-token')
+              expect(currentGroups.result).toEqual(legacyGroups.result)
+              expect(currentGroups.requests).toEqual(legacyGroups.requests)
+
+              const runDetail = (loader: Loader, token: string) => capture(
+                loader,
+                token,
+                responder,
+                (module, env) => module.getRouteDetail(env, query),
+              )
+              const legacyDetail = await runDetail(loadLegacy, 'legacy-detail-token')
+              const currentDetail = await runDetail(loadCurrent, 'current-detail-token')
+              expect(currentDetail.result).toEqual(legacyDetail.result)
+              expect(currentDetail.requests.sort((a, b) => a.url.localeCompare(b.url))).toEqual(
+                legacyDetail.requests.sort((a, b) => a.url.localeCompare(b.url)),
+              )
+            })
+
+            it('preserves commute realtime selection and result metadata', async () => {
+              const eta = [{
+                RouteUID: query.routeUid,
+                SubRouteUID: query.subRouteUid,
+                StopUID: query.stopUid,
+                StopName: { Zh_tw: query.stopName },
+                Direction: query.direction,
+                EstimateTime: 125,
+                StopStatus: 0,
+                DataTime: '2026-07-21T11:59:00.000Z',
+              }]
+              const run = (loader: Loader, token: string) => capture(
+                loader,
+                token,
+                () => eta,
+                (module, env) => module.getCommuteETA(env, query),
+              )
+              const legacy = await run(loadLegacy, 'legacy-commute-token')
+              const current = await run(loadCurrent, 'current-commute-token')
+              expect(current.result).toEqual(legacy.result)
+              expect(current.requests).toEqual(legacy.requests)
+            })
+          })
+          TS
+      - name: Run corrected legacy differential
+        shell: bash
+        run: |
+          set +e
+          npx vitest run src/lib/tdx-phase4-differential.test.ts --reporter=verbose > phase4-differential-v2.txt 2>&1
+          code=$?
+          cat phase4-differential-v2.txt
+          exit ${code}
+      - name: Upload differential output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4-differential-v2
+          path: phase4-differential-v2.txt
+          if-no-files-found: error
+          retention-days: 3
+
+  stress:
+    name: Corrected shuffled and state stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - name: Collect TDX integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -type f -name '*.test.ts' \
+            | grep -E '(^src/lib/tdx|tdx|route-eta|map-journey-eta|map-place-arrivals|map-vehicles-read|map-route-reads|route-page)' \
+            | sort -u > phase4-test-files.txt
+          cat phase4-test-files.txt
+          test -s phase4-test-files.txt
+      - name: Exercise shuffled, non-isolated, and threads modes
+        shell: bash
+        run: |
+          set +e
+          mapfile -t tests < phase4-test-files.txt
+          status=0
+          for mode in seed-1701 seed-2402 no-isolate threads; do
+            case "${mode}" in
+              seed-1701) args=(--sequence.shuffle --sequence.seed=1701) ;;
+              seed-2402) args=(--sequence.shuffle --sequence.seed=2402) ;;
+              no-isolate) args=(--no-isolate --sequence.shuffle --sequence.seed=31415) ;;
+              threads) args=(--pool=threads --sequence.shuffle --sequence.seed=27182) ;;
+            esac
+            echo "===== ${mode} =====" | tee -a phase4-stress-v2.txt
+            npx vitest run "${tests[@]}" "${args[@]}" 2>&1 | tee -a phase4-stress-v2.txt
+            code=${PIPESTATUS[0]}
+            if [[ ${code} -ne 0 ]]; then status=${code}; fi
+          done
+          exit ${status}
+      - name: Upload stress output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4-stress-v2
+          path: |
+            phase4-stress-v2.txt
+            phase4-test-files.txt
+          if-no-files-found: error
+          retention-days: 3
+
+  repeated-map-ui:
+    name: Repeated desktop and touch UI v2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Repeat every desktop and touch flow twice
+        run: >-
+          npx playwright test
+          --project=desktop-chromium
+          --project=mobile-touch
+          --repeat-each=2
+          --reporter=line,html
+      - name: Upload repeated Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4-repeated-map-ui-v2
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 3
