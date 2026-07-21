@@ -25,35 +25,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Harden focused contract typing
-        shell: bash
+      - name: Verify focused contract typing
         run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('src/lib/tdx/resolution-cache.test.ts')
-          text = path.read_text()
-          replacements = [
-              (
-                  "function stubCache(match = vi.fn(async () => undefined)) {",
-                  "function stubCache(match: (request: Request) => Promise<Response | undefined> = vi.fn(async () => undefined)) {",
-              ),
-              (
-                  "    const state = setup({ fetchUpstream: vi.fn(async () => success([{ id: 'follower' }], false)) })\n",
-                  "    const fetchUpstream = vi.fn(async () => success([{ id: 'follower' }], false))\n"
-                  "    const state = setup({ fetchUpstream })\n",
-              ),
-              (
-                  "    expect(state.fetchUpstream).toHaveBeenCalledOnce()\n",
-                  "    expect(fetchUpstream).toHaveBeenCalledOnce()\n",
-              ),
-          ]
-          for old, new in replacements:
-              if text.count(old) != 1:
-                  raise SystemExit(f'test typing anchor count={text.count(old)} for {old!r}')
-              text = text.replace(old, new)
-          path.write_text(text)
-          PY
+          grep -F "match: (request: Request) => Promise<Response | undefined>" src/lib/tdx/resolution-cache.test.ts
+          grep -F "const fetchUpstream = vi.fn(async () => success([{ id: 'follower' }], false))" src/lib/tdx/resolution-cache.test.ts
       - name: Integrate resolution cache boundary
         shell: bash
         run: |
