@@ -20,10 +20,10 @@ import { createPreviewStopDotManager, createSelectablePreviewLineRenderer } from
 import { createNavRequestCoordinator } from '../../src/domain/map/nav-request'
 import { captureMapCamera, restoreMapCamera, type MapCameraState } from '../../src/domain/map/journey-camera'
 import {
-  isFavoriteDirection,
+  isHomeDirection,
   readBoards,
   setActiveCity,
-  toggleFavoriteDirection,
+  toggleHomeDirection,
   type FavoriteBus,
 } from '../boards/store'
 import { tdxWarningMessages } from '../../src/domain/tdx-warning'
@@ -1636,7 +1636,7 @@ function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLBu
     direction: route.direction,
     directionLabel: route.label,
   }
-  let selected = activeCity ? isFavoriteDirection(activeCity.code, place.placeId, bus) : false
+  let selected = activeCity ? isHomeDirection(activeCity.code, place.placeId, bus) : false
 
   const render = () => {
     control.textContent = '⌂'
@@ -1652,7 +1652,7 @@ function directionFavoriteControl(place: NearbyPlace, route: PlaceRoute): HTMLBu
     // 這件事必須講出來,不能讓使用者之後才發現收藏「憑空消失」。
     const replaced = readBoards().find((board) =>
       board.placeId && !(board.city === activeCity!.code && board.placeId === place.placeId))
-    selected = toggleFavoriteDirection(activeCity.code, place, { ...bus, city: activeCity.code })
+    selected = toggleHomeDirection(activeCity.code, place, { ...bus, city: activeCity.code })
     render()
     if (selected) {
       setStatus(replaced
