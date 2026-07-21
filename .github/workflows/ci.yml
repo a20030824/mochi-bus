@@ -115,7 +115,9 @@ jobs:
             fetchTDXJson,
             getRouteStopGroups: busRouteQueries.getRouteStopGroups,
             getBusSchedule,
-            getSnapshotSchedule,
+            getSnapshotSchedule: (env, city, routeName, routeUid) => (
+              getSnapshotSchedule(env, city, routeName, routeUid)
+            ),
             now: () => new Date(),
           })
 
@@ -162,7 +164,7 @@ jobs:
               'const commuteRoutePresentation = createTDXCommuteRoutePresentation({',
               'getRouteStopGroups: busRouteQueries.getRouteStopGroups',
               'getBusSchedule,',
-              'getSnapshotSchedule,',
+              'getSnapshotSchedule: (env, city, routeName, routeUid) => (',
               'now: () => new Date()',
               'export const getCommuteETA = commuteRoutePresentation.getCommuteETA',
               'export const getRouteDetail = commuteRoutePresentation.getRouteDetail',
@@ -199,7 +201,7 @@ jobs:
         run: |
           set -euo pipefail
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git rm .github/workflows/diagnose-tdx-commute.yml
+          git rm .github/workflows/diagnose-tdx-commute.yml .github/workflows/diagnose-tdx-commute-full.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/lib/tdx.ts src/lib/tdx/commute-route-presentation.ts src/lib/tdx/commute-route-presentation.test.ts .github/workflows/ci.yml
