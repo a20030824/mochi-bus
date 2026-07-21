@@ -1,4 +1,4 @@
-import { drawerRetryDecision, shouldRevealDrawerFailure, type RetryDecision } from '../lib/retry-policy'
+import { placeRetryDecision, shouldRevealPlaceFailure, type RetryDecision } from '../lib/retry-policy'
 import type {
   NearbyPlace,
   PlaceArrivalsResponse,
@@ -76,8 +76,8 @@ export function createPlaceRoutesController(
     throw new Error('Place route preview limit must be a positive integer')
   }
 
-  const decideRetry = options.retryDecision ?? drawerRetryDecision
-  const revealFailure = options.shouldRevealFailure ?? shouldRevealDrawerFailure
+  const decideRetry = options.retryDecision ?? placeRetryDecision
+  const revealFailure = options.shouldRevealFailure ?? shouldRevealPlaceFailure
   const scheduleRetry = options.scheduleRetry ?? ((callback, delayMs) => setTimeout(callback, delayMs))
   const cancelRetry = options.cancelRetry ?? clearTimeout
   let generation = 0
