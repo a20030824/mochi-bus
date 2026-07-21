@@ -64,6 +64,7 @@ type TokenCacheEntry = { value: string; expiresAt: number }
 
 // Token credential/cache ownership lives here. Circuit state, bounded response reading and safe logging
 // remain injected by the TDX client façade so token and data state machines stay separate.
+// Global fetch and clock are resolved at call time so Worker/test injection remains effective.
 export function createTDXTokenClient(dependencies: TDXTokenClientDependencies): {
   getTDXToken: (env: TDXCredentialEnv) => Promise<TDXTokenResult>
   resetTDXTokenState: () => void
