@@ -103,14 +103,14 @@ jobs:
           """
           text = text[:upstream_start] + upstream_replacement + text[upstream_end:]
 
+          helpers_start = text.index('function dataFlightKey(')
+          helpers_end = text.index('function validPayload', helpers_start)
+          text = text[:helpers_start] + text[helpers_end:]
+
           resource_line = '      resource: tdxResponseResource(url),\n'
           if text.count(resource_line) != 1:
               raise SystemExit(f'resolution resource line count={text.count(resource_line)}')
           text = text.replace(resource_line, '      resource,\n')
-
-          helpers_start = text.index('function dataFlightKey(')
-          helpers_end = text.index('function validPayload', helpers_start)
-          text = text[:helpers_start] + text[helpers_end:]
 
           forbidden = [
               'type TDXUpstreamOutcome',
