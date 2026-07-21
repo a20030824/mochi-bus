@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - feat/preserve-timetable-stop-context
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: write
@@ -24,63 +21,40 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Patch map entry
+      - name: Finish map entry patch
         shell: python
         run: |
           from pathlib import Path
 
           path = Path('web/map/main.ts')
           source = path.read_text(encoding='utf-8')
-
           replacements = [
               (
-                  "  writeVariantLocation: (cityCode, variant) => {\n",
-                  "  writeVariantLocation: (cityCode, variant, stopUid) => {\n",
+                  "  writePickerLocation: (cityCode, routeName) => {\n",
+                  "  writePickerLocation: (cityCode, routeName, stopUid) => {\n",
               ),
               (
-                  "      variant: variant.variantKey,\n    })\n    const currentState = historyRecord()",
-                  "      variant: variant.variantKey,\n    })\n    if (stopUid) params.set('stopUid', stopUid)\n    const currentState = historyRecord()",
+                  "      `/map?city=${encodeURIComponent(cityCode)}&route=${encodeURIComponent(routeName)}`,\n",
+                  "      `/map?city=${encodeURIComponent(cityCode)}&route=${encodeURIComponent(routeName)}${stopUid ? `&stopUid=${encodeURIComponent(stopUid)}` : ''}`,\n",
               ),
               (
-                  "})\n\nfunction browserStorage(): Storage | undefined {",
-                  "})\nfunction browserStorage(): Storage | undefined {",
+                  "  stopBackAction?: () => void, preferredTimetableStopUid?: string | null,\n",
+                  "  stopBackAction?: () => void,\n  preferredTimetableStopUid?: string | null,\n",
               ),
               (
-                  "        await openRouteDetail(routeName, params.get('variant'), returnToTrip)",
-                  "        await openRouteDetail(routeName, params.get('variant'), returnToTrip, stopFillAccent, undefined, params.get('stopUid'))",
+                  "    stopBackAction, preferredTimetableStopUid,\n",
+                  "    stopBackAction,\n    preferredTimetableStopUid,\n",
               ),
               (
-                  "function openChildRoute(routeName: string, preferredVariant?: string | null, color = routeColor(routeName)) {",
-                  "function openChildRoute(routeName: string, preferredVariant?: string | null, color = routeColor(routeName), preferredTimetableStopUid?: string | null) {",
-              ),
-              (
-                  "  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}`)\n  void openRouteDetail(routeName, preferredVariant, false, color, parent === 'catalogue' ? undefined : () => history.back())",
-                  "  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}${preferredTimetableStopUid ? `&stopUid=${encodeURIComponent(preferredTimetableStopUid)}` : ''}`)\n  void openRouteDetail(routeName, preferredVariant, false, color, parent === 'catalogue' ? undefined : () => history.back(), preferredTimetableStopUid)",
-              ),
-              (
-                  "  stopBackAction?: () => void,\n): Promise<void> {",
-                  "  stopBackAction?: () => void, preferredTimetableStopUid?: string | null,\n): Promise<void> {",
-              ),
-              (
-                  "    color,\n    stopBackAction,\n  })",
-                  "    color,\n    stopBackAction, preferredTimetableStopUid,\n  })",
-              ),
-              (
-                  "function renderPlaceRoutePreview({ variant, color }: PlaceRoutePreview): void {",
-                  "function renderPlaceRoutePreview({ route, variant, color }: PlaceRoutePreview): void {",
-              ),
-              (
-                  "    openChildRoute(variant.routeName, variant.variantKey, color)",
-                  "    openChildRoute(variant.routeName, variant.variantKey, color, route.stopUid)",
+                  "  })\n}\n\n\nfunction stopStyleForZoom",
+                  "  })\n}\nfunction stopStyleForZoom",
               ),
           ]
-
           for old, new in replacements:
               count = source.count(old)
               if count != 1:
                   raise SystemExit(f'Expected one match, found {count}: {old!r}')
               source = source.replace(old, new)
-
           path.write_text(source, encoding='utf-8')
       - name: Verify focused checks
         run: |
@@ -92,5 +66,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add web/map/main.ts
-          git commit -m "feat(map): preserve timetable stop through route navigation"
+          git commit -m "fix(map): preserve stop through variant selection"
           git push origin HEAD:feat/preserve-timetable-stop-context
