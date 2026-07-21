@@ -12,29 +12,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  integrate-tdx-error-classification:
+  diagnose-tdx-error-classification:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
           persist-credentials: true
           fetch-depth: 0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Integrate error classification façade
+      - name: Capture exact integration counts
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('src/lib/tdx.ts')
-          text = path.read_text()
-          before_lines = len(text.splitlines())
+          text = Path('src/lib/tdx.ts').read_text()
+          output = [f'lines={len(text.splitlines())}']
 
           eta_import = """import {
             formatETALabel,
@@ -44,39 +39,9 @@ jobs:
             type LocalizedName,
           } from './tdx/eta-formatting'
           """
-          error_import = """import {
-            TDXServiceError,
-            asTDXServiceError,
-            classifyTDXWarning,
-            isRejectedUserTdxToken,
-            observeTDXResponseFailure,
-            observeTDXResponseSuccess,
-            resetTDXRateLimitTracking,
-            responseFailureClass,
-            tdxWarningFromError,
-            transportFailureClass,
-          } from './tdx/error-classification'
-          """
-          if text.count(eta_import) != 1:
-              raise SystemExit(f'eta import count={text.count(eta_import)}')
-          text = text.replace(eta_import, eta_import + error_import)
-
           export_anchor = """export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
           export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
           """
-          export_block = """export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
-          export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
-          export {
-            TDXServiceError,
-            isRejectedUserTdxToken,
-            resetTDXRateLimitTracking,
-            tdxWarningFromError,
-          }
-          """
-          if text.count(export_anchor) != 1:
-              raise SystemExit(f'export anchor count={text.count(export_anchor)}')
-          text = text.replace(export_anchor, export_block)
-
           service_block = """export class TDXServiceError extends Error {
             warning?: TDXWarning
             failureKind?: TelemetryFailureClass
@@ -103,47 +68,15 @@ jobs:
           }
 
           """
-          if text.count(service_block) != 1:
-              raise SystemExit(f'service block count={text.count(service_block)}')
-          text = text.replace(service_block, '')
-
-          tracking_start = text.index('// 額度用完與頻率超限 TDX 都只回 429')
           tracking_end_marker = """export function resetTDXRateLimitTracking(): void {
             sharedRateLimitedSince = null
           }
 
           """
-          tracking_end = text.index(tracking_end_marker, tracking_start) + len(tracking_end_marker)
-          text = text[:tracking_start] + text[tracking_end:]
-
           observe_block = """  if (isShared && (response.status === 429 || warning === 'tdx-rate-limit' || warning === 'tdx-quota')) {
             sharedRateLimitedSince ??= Date.now()
           }
           """
-          if text.count(observe_block) != 1:
-              raise SystemExit(f'observe block count={text.count(observe_block)}')
-          text = text.replace(observe_block, "  observeTDXResponseFailure(response.status, warning, isShared)\n")
-
-          classify_start = text.index('function classifyTDXWarning(status: number, body: string): TDXWarning | undefined {')
-          classify_end_marker = """  return undefined
-          }
-
-          """
-          classify_end = text.index(classify_end_marker, classify_start) + len(classify_end_marker)
-          text = text[:classify_start] + text[classify_end:]
-
-          test_reset_line = '  sharedRateLimitedSince = null\n'
-          test_reset_count = text.count(test_reset_line)
-          if test_reset_count != 1:
-              raise SystemExit(f'test reset count={test_reset_count}')
-          text = text.replace(test_reset_line, '  resetTDXRateLimitTracking()\n')
-
-          success_reset_line = '  if (isShared) sharedRateLimitedSince = null\n'
-          success_reset_count = text.count(success_reset_line)
-          if success_reset_count != 2:
-              raise SystemExit(f'success reset count={success_reset_count}')
-          text = text.replace(success_reset_line, '  observeTDXResponseSuccess(isShared)\n')
-
           failure_block = """function responseFailureClass(status: number, warning?: TDXWarning): TelemetryFailureClass {
             if (warning === 'tdx-quota') return 'quota'
             if (status === 429 || warning === 'tdx-rate-limit') return 'rate_limited'
@@ -159,10 +92,6 @@ jobs:
           }
 
           """
-          if text.count(failure_block) != 1:
-              raise SystemExit(f'failure block count={text.count(failure_block)}')
-          text = text.replace(failure_block, '')
-
           wrapper_block = """function asTDXServiceError(error: unknown): TDXServiceError {
             if (error instanceof TDXServiceError) return error
             return new TDXServiceError('TDX resolution failed', undefined, {
@@ -172,47 +101,48 @@ jobs:
           }
 
           """
-          if text.count(wrapper_block) != 1:
-              raise SystemExit(f'wrapper block count={text.count(wrapper_block)}')
-          text = text.replace(wrapper_block, '')
 
-          forbidden = [
-              'class TDXServiceError',
-              'function classifyTDXWarning',
-              'function responseFailureClass',
-              'function transportFailureClass',
-              'function asTDXServiceError',
-              'sharedRateLimitedSince',
-              'QUOTA_SUSPECT_AFTER_MS',
-          ]
-          for token in forbidden:
-              if token in text:
-                  raise SystemExit(f'forbidden token remains: {token}')
+          checks = {
+            'eta_import': text.count(eta_import),
+            'export_anchor': text.count(export_anchor),
+            'service_block': text.count(service_block),
+            'tracking_start': text.count('// 額度用完與頻率超限 TDX 都只回 429'),
+            'tracking_end_marker': text.count(tracking_end_marker),
+            'observe_block': text.count(observe_block),
+            'classify_start': text.count('function classifyTDXWarning(status: number, body: string): TDXWarning | undefined {'),
+            'classify_end_marker_total': text.count('  return undefined\n}\n\n'),
+            'plain_reset_line_initial': text.count('  sharedRateLimitedSince = null\n'),
+            'success_reset_line': text.count('  if (isShared) sharedRateLimitedSince = null\n'),
+            'failure_block': text.count(failure_block),
+            'wrapper_block': text.count(wrapper_block),
+          }
+          output.extend(f'{key}={value}' for key, value in checks.items())
 
-          path.write_text(text)
-          after_lines = len(text.splitlines())
-          print(f'src/lib/tdx.ts: {before_lines} -> {after_lines} lines')
+          try:
+            tracking_start = text.index('// 額度用完與頻率超限 TDX 都只回 429')
+            tracking_end = text.index(tracking_end_marker, tracking_start) + len(tracking_end_marker)
+            after_tracking = text[:tracking_start] + text[tracking_end:]
+            output.append(f'plain_reset_after_tracking={after_tracking.count("  sharedRateLimitedSince = null" + chr(10))}')
+          except Exception as error:
+            output.append(f'tracking_simulation_error={type(error).__name__}:{error}')
+
+          try:
+            classify_start = text.index('function classifyTDXWarning(status: number, body: string): TDXWarning | undefined {')
+            classify_end = text.index('  return undefined\n}\n\n', classify_start)
+            output.append(f'classify_end_offset={classify_end - classify_start}')
+          except Exception as error:
+            output.append(f'classify_simulation_error={type(error).__name__}:{error}')
+
+          Path('tdx-classification-diagnostic.txt').write_text('\n'.join(output) + '\n')
+          print('\n'.join(output))
           PY
-      - run: npm ci --silent
-      - name: Run focused contracts
-        run: >-
-          npx vitest run
-          src/lib/tdx/error-classification.test.ts
-          src/lib/tdx.test.ts
-          src/routes/map-place-arrivals-contract.test.ts
-          src/routes/map-journey-eta.test.ts
-          src/routes/map-vehicles-read.test.ts
-          src/routes/route-eta.test.ts
-      - run: npm run check
-      - run: git diff --check
-      - name: Commit clean extraction
+      - name: Publish diagnostic and restore canonical CI
         shell: bash
         run: |
           set -euo pipefail
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/lib/tdx.ts src/lib/tdx/error-classification.ts src/lib/tdx/error-classification.test.ts .github/workflows/ci.yml
-          git diff --cached --check
-          git commit -m "refactor(tdx): extract error classification boundary"
+          git add tdx-classification-diagnostic.txt .github/workflows/ci.yml
+          git commit -m "chore: capture TDX classification integration diagnostic"
           git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
