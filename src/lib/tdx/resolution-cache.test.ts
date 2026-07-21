@@ -17,7 +17,7 @@ function environment(events: TelemetryEnvelope[] = []): TDXEnv {
       random: () => 0,
       emitter: (event) => events.push(event),
     },
-  } as TDXEnv
+  } as unknown as TDXEnv
 }
 
 function success(data: unknown = [{ id: 'fresh' }], leader = true): TDXUpstreamResult {
