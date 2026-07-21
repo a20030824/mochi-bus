@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resetTDXTestState } from '../lib/tdx'
 import testState from './playwright-test-state'
 
@@ -11,6 +11,7 @@ function request(path: string, init: RequestInit = {}, bindings: CloudflareBindi
   return Promise.resolve(testState.request(`https://bus.example${path}`, init, bindings))
 }
 
+beforeEach(() => resetTDXTestState())
 afterEach(() => resetTDXTestState())
 
 describe('Playwright Worker state controls', () => {
