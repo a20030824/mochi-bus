@@ -77,6 +77,7 @@ function mapFailureClass(error: unknown, authorization?: string): TelemetryFailu
   return error.status === undefined ? 'network' : 'unknown'
 }
 
+// Endpoint handlers own fallback and degradation; this helper presents only terminal errors.
 export function completeMapError(
   c: Context<MapEnv>,
   tracker: ApiOperationTracker,
