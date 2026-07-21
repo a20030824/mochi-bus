@@ -1,3 +1,4 @@
+import { drawerRetryDecision, shouldRevealDrawerFailure, type RetryDecision } from '../lib/retry-policy'
 import type {
   NearbyPlace,
   PlaceArrivalsResponse,
@@ -6,10 +7,6 @@ import type {
 } from './map-api-client'
 
 const DEFAULT_PREVIEW_LIMIT = 8
-
-type RetryDecision =
-  | { retry: false }
-  | { retry: true; delayMs: number }
 
 export type PlaceRouteEntry = {
   route: PlaceRoute
@@ -79,6 +76,8 @@ export function createPlaceRoutesController(
     throw new Error('Place route preview limit must be a positive integer')
   }
 
+  const decideRetry = options.retryDecision ?? drawerRetryDecision
+  const revealFailure = options.shouldRevealFailure ?? shouldRevealDrawerFailure
   const scheduleRetry = options.scheduleRetry ?? ((callback, delayMs) => setTimeout(callback, delayMs))
   const cancelRetry = options.cancelRetry ?? clearTimeout
   let generation = 0
@@ -161,16 +160,16 @@ export function createPlaceRoutesController(
     } catch (error) {
       if (!isCurrent(requestGeneration, cityCode, requestId)) return false
 
-      if (routesPresented || !options.retryDecision) {
+      if (routesPresented) {
         options.onError({ cityCode, place, error })
         return false
       }
 
       consecutiveFailures += 1
-      const decision = options.retryDecision(error, consecutiveFailures)
-      const reveal = !decision.retry
-        || (options.shouldRevealFailure?.(consecutiveFailures) ?? true)
-      if (reveal) options.onError({ cityCode, place, error })
+      const decision = decideRetry(error, consecutiveFailures)
+      if (!decision.retry || revealFailure(consecutiveFailures)) {
+        options.onError({ cityCode, place, error })
+      }
       if (decision.retry) {
         scheduleNextAttempt(place, cityCode, requestGeneration, decision.delayMs)
       }
