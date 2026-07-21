@@ -45,8 +45,8 @@ export const journeyEtaBodyLimit = bodyLimit({
   }),
 })
 
-// This handler owns the complete journey ETA contract: bounded input, per-route realtime
-// resolution, snapshot-first schedule fallback, warning aggregation, and completion telemetry.
+// This module owns both journey ETA middleware and handling: bounded input, per-route
+// realtime resolution, snapshot-first schedule fallback, warning aggregation, and telemetry.
 export async function readJourneyEta(c: Context<MapEnv>) {
   const tracker = beginMapOperation(c, 'map_journey_eta', null)
   let observedCity: TelemetryCity | null = null
