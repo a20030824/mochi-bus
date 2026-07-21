@@ -153,7 +153,7 @@ describe('route detail controller', () => {
       expect.anything(),
     )
     expect(harness.options.startVehicleRefresh).toHaveBeenCalledWith('Taipei', firstVariant)
-    expect(harness.options.writeVariantLocation).toHaveBeenCalledWith('Taipei', firstVariant)
+    expect(harness.options.writeVariantLocation).toHaveBeenCalledWith('Taipei', firstVariant, undefined)
     expect(harness.controller.isVehicleSessionActive({ cityCode: 'Taipei', route: firstVariant })).toBe(true)
   })
 
@@ -171,7 +171,7 @@ describe('route detail controller', () => {
     harness.routeOptions()?.onBack()
     expect(harness.surface.showVariantPicker).toHaveBeenCalledTimes(2)
     expect(harness.options.stopVehicleRefresh).toHaveBeenCalled()
-    expect(harness.options.writePickerLocation).toHaveBeenLastCalledWith('Taipei', '307')
+    expect(harness.options.writePickerLocation).toHaveBeenLastCalledWith('Taipei', '307', undefined)
   })
 
   it('discards a late variant response after a newer route session starts', async () => {
@@ -212,6 +212,29 @@ describe('route detail controller', () => {
     harness.timetableBack()?.()
     expect(harness.options.startVehicleRefresh).toHaveBeenCalledTimes(2)
     expect(harness.controller.isVehicleSessionActive({ cityCode: 'Taipei', route: firstVariant })).toBe(true)
+  })
+
+  it('defaults the timetable to the place stop and remembers a later stop selection', async () => {
+    const harness = createHarness()
+    await harness.controller.open({ ...request, preferredTimetableStopUid: 'STOP-A' })
+
+    await harness.controller.openTimetable()
+    expect(harness.options.loadTimetable).toHaveBeenLastCalledWith(
+      'Taipei',
+      firstVariant,
+      'STOP-A',
+      expect.any(AbortSignal),
+    )
+
+    await harness.controller.openTimetable('STOP-B')
+    await harness.controller.openTimetable()
+    expect(harness.options.loadTimetable).toHaveBeenLastCalledWith(
+      'Taipei',
+      firstVariant,
+      'STOP-B',
+      expect.any(AbortSignal),
+    )
+    expect(harness.options.writeVariantLocation).toHaveBeenLastCalledWith('Taipei', firstVariant, 'STOP-B')
   })
 
   it('closes the session and clears route-owned surfaces', async () => {

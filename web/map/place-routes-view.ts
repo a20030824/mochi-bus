@@ -16,7 +16,7 @@ type PlaceRoutesViewOptions = {
   backLabel: () => string
   onBack: () => void
   onRetry: (place: NearbyPlace) => void
-  onOpenRoute: (routeName: string, variantKey: string, color: string) => void
+  onOpenRoute: (routeName: string, variantKey: string, color: string, stopUid: string) => void
   createFavoriteControl: (place: NearbyPlace, route: PlaceRoute) => HTMLButtonElement
   isCredentialRecovery: (error: unknown) => boolean
 }
@@ -81,7 +81,12 @@ export function createPlaceRoutesView(options: PlaceRoutesViewOptions): PlaceRou
         button.appendChild(tick)
         button.appendChild(line)
         button.appendChild(detail)
-        button.addEventListener('click', () => options.onOpenRoute(route.routeName, route.variantKey, color))
+        button.addEventListener('click', () => options.onOpenRoute(
+          route.routeName,
+          route.variantKey,
+          color,
+          route.stopUid,
+        ))
 
         row.appendChild(button)
         row.appendChild(options.createFavoriteControl(place, route))
