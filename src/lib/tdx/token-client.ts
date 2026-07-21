@@ -70,8 +70,7 @@ export function createTDXTokenClient(dependencies: TDXTokenClientDependencies): 
 } {
   const tokenCache = new Map<string, TokenCacheEntry>()
   const tokenFlights = new Map<string, Promise<string>>()
-  const fetcher = dependencies.fetcher ?? fetch
-  const now = dependencies.now ?? Date.now
+  const now = () => dependencies.now ? dependencies.now() : Date.now()
   const maxTokenCacheEntries = dependencies.maxTokenCacheEntries ?? DEFAULT_MAX_TOKEN_CACHE_ENTRIES
   const maxTokenSingleflightEntries = dependencies.maxTokenSingleflightEntries
     ?? DEFAULT_MAX_TOKEN_SINGLEFLIGHT_ENTRIES
@@ -126,7 +125,7 @@ export function createTDXTokenClient(dependencies: TDXTokenClientDependencies): 
     })
     let response: Response
     try {
-      response = await fetcher(TDX_TOKEN_ENDPOINT, {
+      response = await (dependencies.fetcher ?? fetch)(TDX_TOKEN_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body,
