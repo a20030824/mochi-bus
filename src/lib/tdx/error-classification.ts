@@ -1,6 +1,8 @@
 import type { TDXWarning } from '../../domain/tdx-warning'
 import type { TelemetryFailureClass } from '../../observability/telemetry'
 
+// This boundary owns error identity, warning/failure classification, and shared-quota state.
+// The TDX client remains responsible for bounded response reads, safe logging, retries, and circuits.
 const QUOTA_SUSPECT_AFTER_MS = 10 * 60 * 1000
 
 let sharedRateLimitedSince: number | null = null
