@@ -26,11 +26,8 @@ function request(overrides: Partial<TDXUpstreamRequest> = {}): TDXUpstreamReques
 function serviceError(
   failureKind: TDXServiceError['failureKind'],
   status?: number,
-  rateLimited = false,
 ): TDXServiceError {
-  const error = new TDXServiceError('upstream failed', status, { failureKind })
-  error.rateLimited = rateLimited
-  return error
+  return new TDXServiceError('upstream failed', status, { failureKind })
 }
 
 function dependencies(overrides: Partial<TDXUpstreamDataClientDependencies> = {}) {
@@ -38,7 +35,7 @@ function dependencies(overrides: Partial<TDXUpstreamDataClientDependencies> = {}
   const recordCircuitSuccess = vi.fn()
   const assertCircuitClosed = vi.fn()
   const responseError = vi.fn(async (_context: string, response: Response) => {
-    if (response.status === 429) return serviceError('rate_limited', 429, true)
+    if (response.status === 429) return serviceError('rate_limited', 429)
     return serviceError(response.status >= 500 ? 'upstream_5xx' : 'upstream_4xx', response.status)
   })
   return {

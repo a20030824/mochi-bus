@@ -34,11 +34,9 @@ import {
   classifyTDXWarning,
   isRejectedUserTdxToken,
   observeTDXResponseFailure,
-  observeTDXResponseSuccess,
   resetTDXRateLimitTracking,
   responseFailureClass,
   tdxWarningFromError,
-  transportFailureClass,
 } from './tdx/error-classification'
 import {
   createTDXTokenClient,
@@ -48,7 +46,6 @@ import {
 } from './tdx/token-client'
 import {
   createTDXCircuitBreaker,
-  dataCircuitKey,
 } from './tdx/circuit-breaker'
 import {
   DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES,
@@ -63,6 +60,7 @@ import {
   type TDXBoundedTextResponse,
   type TDXResponseObservation,
 } from './tdx/bounded-response'
+import { createTDXUpstreamDataClient } from './tdx/upstream-data-client'
 
 export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
 export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
@@ -254,37 +252,17 @@ async function tdxResponseError(
   return error
 }
 
-type TDXUpstreamOutcome =
-  | {
-      ok: true
-      data: unknown
-      status: number
-      receivedBytes: number
-      declaredBytes?: number
-      retryCount: number
-      initialFailureClass?: TelemetryFailureClass
-    }
-  | {
-      ok: false
-      error: TDXServiceError
-      retryCount: number
-      initialFailureClass?: TelemetryFailureClass
-    }
-
-const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
-
 // 測試用：模擬 isolate 重建，避免模組層快取讓案例彼此污染。
 export function resetTDXTestState(): void {
   resetTDXRateLimitTracking()
   resetTDXTokenState()
   circuitBreaker.reset()
-  dataFlights.clear()
+  upstreamDataClient.resetTDXUpstreamState()
 }
 
 const ETA_CACHE_SECONDS = 12
 const STATIC_CACHE_SECONDS = 60 * 60
 const REQUEST_TIMEOUT_MS = 6000
-const MAX_TDX_SINGLEFLIGHT_ENTRIES = 128
 // 公路客運(公路總局)的資源掛在 /InterCity 底下,沒有 /City/{city} 路徑段;
 // RouteUID 固定 THB 開頭。凡是「按路線」的即時/時刻表/站序/線形查詢都要據此換端點。
 export function tdxRouteScope(city: string, routeUid?: string): string {
@@ -319,6 +297,17 @@ const tokenClient = createTDXTokenClient({
 
 export const getTDXToken = tokenClient.getTDXToken
 const resetTDXTokenState = tokenClient.resetTDXTokenState
+
+
+const upstreamDataClient = createTDXUpstreamDataClient({
+  requestTimeoutMs: REQUEST_TIMEOUT_MS,
+  assertCircuitClosed: (key) => { circuitBreaker.assertClosed(key) },
+  recordCircuitFailure: (key, error, retryAfter) => circuitBreaker.recordFailure(key, error, retryAfter),
+  recordCircuitSuccess: circuitBreaker.recordSuccess,
+  responseError: (context, response, isShared, observation) => (
+    tdxResponseError(context, response, isShared, observation)
+  ),
+})
 
 export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<ResolvedBusQuery> {
   const groups = await getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
@@ -827,30 +816,22 @@ export async function resolveTDXJson<T>(
     )
   }
   const { token, isShared, credentialKey } = tokenInfo
-  const circuitKey = dataCircuitKey(credentialKey)
-  const flightKey = dataFlightKey(
-    credentialKey,
-    url,
-    maxResponseBytes,
-    ttlSeconds,
-    options.operation,
-    Boolean(options.validate),
-  )
-  const existingFlight = dataFlights.get(flightKey)
-  if (!existingFlight) {
-    try {
-      circuitBreaker.assertClosed(circuitKey)
-    } catch (error) {
-      return finishFailure(asTDXServiceError(error), false)
-    }
+  let upstreamResult: Awaited<ReturnType<typeof upstreamDataClient.fetchUpstream>>
+  try {
+    upstreamResult = await upstreamDataClient.fetchUpstream({
+      url,
+      maxResponseBytes,
+      operation: options.operation,
+      token,
+      isShared,
+      credentialKey,
+      ttlSeconds,
+      validatesPayload: Boolean(options.validate),
+    })
+  } catch (error) {
+    return finishFailure(asTDXServiceError(error), false)
   }
-
-  const { promise: upstreamPromise, leader } = joinSingleflight(
-    dataFlights,
-    flightKey,
-    () => fetchTDXUpstream(url, maxResponseBytes, options.operation, token, isShared, circuitKey),
-  )
-  const upstream = await upstreamPromise
+  const { outcome: upstream, leader, circuitKey, resource } = upstreamResult
   retryCount = upstream.retryCount
   initialFailureClass = upstream.initialFailureClass
   if (!upstream.ok) return finishFailure(upstream.error, true)
@@ -858,7 +839,7 @@ export async function resolveTDXJson<T>(
   if (leader) {
     logTDXResponseSize({
       operation: options.operation,
-      resource: tdxResponseResource(url),
+      resource,
       credentialScope,
       maxBytes: maxResponseBytes,
       receivedBytes: upstream.receivedBytes,
@@ -890,139 +871,6 @@ export async function resolveTDXJson<T>(
     }), 'tdx', env.TDX_BACKGROUND_TASKS)
   }
   return resolved
-}
-
-function dataFlightKey(
-  credentialKey: string,
-  url: URL,
-  maxResponseBytes: number,
-  ttlSeconds: number,
-  operation: TelemetryTdxOperation | undefined,
-  validatesPayload: boolean,
-): string {
-  return [
-    credentialKey,
-    operation ?? 'default',
-    maxResponseBytes,
-    ttlSeconds,
-    validatesPayload ? 'validated' : 'unvalidated',
-    url.toString(),
-  ].join('\0')
-}
-
-function joinSingleflight<T>(
-  flights: Map<string, Promise<T>>,
-  key: string,
-  create: () => Promise<T>,
-): { promise: Promise<T>; leader: boolean } {
-  const existing = flights.get(key)
-  if (existing) return { promise: existing, leader: false }
-
-  const promise = create()
-  if (flights.size < MAX_TDX_SINGLEFLIGHT_ENTRIES) {
-    flights.set(key, promise)
-    void promise.finally(() => {
-      if (flights.get(key) === promise) flights.delete(key)
-    }).catch(() => undefined)
-  }
-  return { promise, leader: true }
-}
-
-async function fetchTDXUpstream(
-  url: URL,
-  maxResponseBytes: number,
-  operation: TelemetryTdxOperation | undefined,
-  token: string,
-  isShared: boolean,
-  circuitKey: string,
-): Promise<TDXUpstreamOutcome> {
-  let retryCount = 0
-  let initialFailureClass: TelemetryFailureClass | undefined
-
-  while (true) {
-    let response: Response
-    try {
-      response = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      })
-    } catch (error) {
-      const serviceError = new TDXServiceError('TDX request failed', undefined, {
-        cause: error,
-        failureKind: transportFailureClass(error),
-      })
-      if (shouldRetryResolution(serviceError, operation, retryCount)) {
-        retryCount += 1
-        initialFailureClass = serviceError.failureKind
-        continue
-      }
-      circuitBreaker.recordFailure(circuitKey, serviceError)
-      return { ok: false, error: serviceError, retryCount, initialFailureClass }
-    }
-
-    if (!response.ok) {
-      const error = await tdxResponseError('TDX request failed', response, isShared, {
-        operation,
-        resource: tdxResponseResource(url),
-      })
-      if (shouldRetryResolution(error, operation, retryCount)) {
-        retryCount += 1
-        initialFailureClass = error.failureKind
-        continue
-      }
-      circuitBreaker.recordFailure(circuitKey, error, response.headers.get('Retry-After'))
-      return { ok: false, error, retryCount, initialFailureClass }
-    }
-    observeTDXResponseSuccess(isShared)
-
-    try {
-      const parsed = await readJsonResponse(response, maxResponseBytes)
-      return {
-        ok: true,
-        data: parsed.data,
-        status: response.status,
-        receivedBytes: parsed.receivedBytes,
-        declaredBytes: parsed.declaredBytes,
-        retryCount,
-        initialFailureClass,
-      }
-    } catch (error) {
-      const serviceError = error instanceof TDXPayloadTooLargeError
-        ? error
-        : new TDXServiceError('TDX response is invalid JSON', 502, {
-            cause: error,
-            failureKind: 'invalid_json',
-          })
-      if (serviceError instanceof TDXPayloadTooLargeError) {
-        circuitBreaker.recordSuccess(circuitKey)
-        logTDXResponseTooLarge(serviceError, {
-          operation,
-          resource: tdxResponseResource(url),
-          credentialScope: isShared ? 'shared' : 'byok',
-        })
-      } else {
-        circuitBreaker.recordFailure(circuitKey, serviceError)
-      }
-      return { ok: false, error: serviceError, retryCount, initialFailureClass }
-    }
-  }
-}
-
-function tdxResponseResource(url: URL): string {
-  const segments = url.pathname.split('/').filter(Boolean)
-  const busIndex = segments.indexOf('Bus')
-  const resource = busIndex >= 0 ? segments[busIndex + 1] : undefined
-  return resource && [
-    'EstimatedTimeOfArrival',
-    'Route',
-    'Schedule',
-    'Shape',
-    'Stop',
-    'StopOfRoute',
-    'Vehicle',
-  ].includes(resource)
-    ? resource
-    : 'other'
 }
 
 function validPayload<T>(value: unknown, validate?: (value: unknown) => value is T): value is T {
@@ -1062,18 +910,6 @@ function telemetryNow(env: TDXEnv): () => number {
       return Date.now()
     }
   }
-}
-
-function shouldRetryResolution(
-  error: TDXServiceError,
-  operation: TelemetryTdxOperation | undefined,
-  retryCount: number,
-): boolean {
-  return Boolean(operation)
-    && retryCount === 0
-    && (error.failureKind === 'timeout'
-      || error.failureKind === 'network_error'
-      || error.failureKind === 'upstream_5xx')
 }
 
 function dedupeStops(stops: RouteStop[]): RouteStop[] {
