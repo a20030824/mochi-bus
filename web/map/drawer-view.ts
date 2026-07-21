@@ -69,8 +69,6 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
       scrollRegion = document.createElement('div')
       scrollRegion.className = 'drawer-scroll-region'
       appendNodes(scrollRegion, view.content)
-      scrollRegion.scrollTop = restoredScrollTop
-      currentScrollRegion = scrollRegion
       if (animateContent) scrollRegion.classList.add('drawer-content-enter')
 
       const fade = document.createElement('div')
@@ -81,6 +79,8 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
       appendNodes(drawer, view.header)
       drawer.appendChild(shell)
       appendNodes(drawer, view.footer ?? [])
+      scrollRegion.scrollTop = restoredScrollTop
+      currentScrollRegion = scrollRegion
 
       cleanups.push(attachScrollFade(scrollRegion))
     }
