@@ -1,6 +1,5 @@
 import type { BusQuery, Direction, ResolvedBusQuery } from '../domain/bus-query'
 import { supportedCityCodes } from '../config'
-import { classifyRouteName, type RouteCategory } from '../domain/route-category'
 import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem } from '../domain/schedule'
 import { tdxWarningMessages, type TDXWarning } from '../domain/tdx-warning'
 import { selectBestEta } from '../domain/map/eta'
@@ -16,7 +15,6 @@ import {
   toETAResult,
   type BusETAItem,
   type ETAResult,
-  type LocalizedName,
 } from './tdx/eta-formatting'
 import {
   TDXServiceError,
@@ -55,6 +53,12 @@ import {
   type TDXResolutionOptions,
   type TDXResolvedData,
 } from './tdx/resolution-cache'
+import {
+  BUS_ETA_CACHE_SECONDS,
+  QueryResolutionError,
+  createTDXBusRouteQueries,
+  tdxRouteScope,
+} from './tdx/bus-route-queries'
 
 export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
 export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
@@ -67,75 +71,17 @@ export {
 export { tdxCredentialScope, withUserTDXAccessToken } from './tdx/token-client'
 export { withTDXBackgroundTasks }
 export type { TDXEnv, TDXResolutionOptions, TDXResolvedData }
-
-type StopOfRouteItem = {
-  RouteUID?: string
-  RouteName?: LocalizedName
-  SubRouteUID?: string
-  SubRouteName?: LocalizedName
-  Direction?: number
-  Stops?: Array<{
-    StopUID?: string
-    StopName?: LocalizedName
-    StopSequence?: number
-    StopPosition?: {
-      PositionLat?: number
-      PositionLon?: number
-    }
-  }>
-}
-
-type RouteItem = {
-  RouteUID?: string
-  RouteName?: LocalizedName
-  DepartureStopNameZh?: string
-  DestinationStopNameZh?: string
-}
-
-type StopItem = {
-  StopUID?: string
-  StopName?: LocalizedName
-  StopPosition?: {
-    PositionLat?: number
-    PositionLon?: number
-  }
-}
-
-export type RouteCatalogItem = {
-  routeUid?: string
-  routeName: string
-  departure?: string
-  destination?: string
-  category: RouteCategory
-}
-
-export type RouteStop = {
-  routeUid?: string
-  subRouteUid?: string
-  subRouteName: string
-  stopUid: string
-  stopName: string
-  direction: Direction
-  sequence: number
-  position?: {
-    latitude: number
-    longitude: number
-  }
-}
-
-export type StopGroup = {
-  direction: Direction
-  label: string
-  routeUid?: string
-  subRouteUid?: string
-  subRouteName: string
-  stops: RouteStop[]
-}
-
-export type StopRouteSuggestion = ResolvedBusQuery & {
-  label: string
-  directionLabel: string
-}
+export {
+  QueryResolutionError,
+  mergeEquivalentStopGroups,
+  tdxRouteScope,
+} from './tdx/bus-route-queries'
+export type {
+  RouteCatalogItem,
+  RouteStop,
+  StopGroup,
+  StopRouteSuggestion,
+} from './tdx/bus-route-queries'
 
 // 「estimated 淡墨」保留給未來的時刻表 fallback;目前 Route 只查即時 ETA,
 // 空白不可解讀為已過站(可能是缺漏、支線對應或尚未發車)。
@@ -158,13 +104,6 @@ export type RouteDetail = {
 export type RouteDetailWithEtaStates = {
   detail: RouteDetail
   states: RouteEtaPresentationState[]
-}
-
-export class QueryResolutionError extends Error {
-  constructor(message: string, readonly candidates: RouteStop[] = []) {
-    super(message)
-    this.name = 'QueryResolutionError'
-  }
 }
 
 export { tdxWarningMessages }
@@ -223,15 +162,7 @@ export function resetTDXTestState(): void {
   upstreamDataClient.resetTDXUpstreamState()
 }
 
-const ETA_CACHE_SECONDS = 12
-const STATIC_CACHE_SECONDS = 60 * 60
 const REQUEST_TIMEOUT_MS = 6000
-// 公路客運(公路總局)的資源掛在 /InterCity 底下,沒有 /City/{city} 路徑段;
-// RouteUID 固定 THB 開頭。凡是「按路線」的即時/時刻表/站序/線形查詢都要據此換端點。
-export function tdxRouteScope(city: string, routeUid?: string): string {
-  return routeUid?.startsWith('THB') ? 'InterCity' : `City/${encodeURIComponent(city)}`
-}
-
 const circuitBreaker = createTDXCircuitBreaker({
   onOpened: ({ warning, openMs }) => {
     console.error(JSON.stringify({
@@ -283,35 +214,16 @@ const resolutionCache = createTDXResolutionCache({
 export const fetchTDXJson = resolutionCache.fetchTDXJson
 export const resolveTDXJson = resolutionCache.resolveTDXJson
 
-export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<ResolvedBusQuery> {
-  const groups = await getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
-  const candidates = groups
-    .flatMap((group) => group.stops)
-    .filter((stop) => stop.direction === query.direction)
-    .filter((stop) => query.stopUid
-      ? stop.stopUid === query.stopUid
-      : stop.stopName === query.stopName)
-    // 同一站牌可能有多條支線共用同一個 stopUid(例如共站的幹線與支線變體)；
-    // 有 subRouteUid 時用它排除其他支線，避免撞到錯誤的班次。
-    .filter((stop) => !query.subRouteUid || stop.subRouteUid === query.subRouteUid)
 
-  const unique = dedupeStops(candidates)
-  if (unique.length === 0) {
-    throw new QueryResolutionError(`找不到 ${query.routeName} 的 ${query.stopName ?? query.stopUid}`)
-  }
-  if (unique.length > 1) {
-    throw new QueryResolutionError('找到多個同名站牌，請選擇正確站牌', unique)
-  }
+const busRouteQueries = createTDXBusRouteQueries({
+  fetchTDXJson,
+  telemetryCity,
+})
 
-  const match = unique[0]
-  return {
-    ...query,
-    routeUid: query.routeUid ?? match.routeUid,
-    subRouteUid: query.subRouteUid ?? match.subRouteUid,
-    stopUid: match.stopUid,
-    stopName: match.stopName,
-  }
-}
+export const resolveBusQuery = busRouteQueries.resolveBusQuery
+export const getRouteStopGroups = busRouteQueries.getRouteStopGroups
+export const getRouteCatalog = busRouteQueries.getRouteCatalog
+export const getStopRouteSuggestions = busRouteQueries.getStopRouteSuggestions
 
 export async function getCommuteETA(env: TDXEnv & Partial<TransitBindings>, query: ResolvedBusQuery): Promise<ETAResult> {
   let items: BusETAItem[] = []
@@ -394,200 +306,6 @@ export async function getBusSchedule(env: TDXEnv, city: string, routeName: strin
   })
 }
 
-export async function getRouteStopGroups(
-  env: TDXEnv,
-  city: string,
-  routeName: string,
-  routeUid?: string,
-): Promise<StopGroup[]> {
-  const url = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/StopOfRoute/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
-  )
-  url.searchParams.set('$format', 'JSON')
-  let data = await fetchTDXJson<StopOfRouteItem[]>(env, url, STATIC_CACHE_SECONDS)
-  // 沒有 routeUid 可判斷(setup 選單只傳路名)而市區端點查不到時,退去公路客運端點找:
-  // 快照目錄裡的 THB 路線得靠這個 fallback 拿到站序。
-  if (!data.length && !routeUid) {
-    const intercityUrl = new URL(
-      `https://tdx.transportdata.tw/api/basic/v2/Bus/StopOfRoute/InterCity/${encodeURIComponent(routeName)}`,
-    )
-    intercityUrl.searchParams.set('$format', 'JSON')
-    data = await fetchTDXJson<StopOfRouteItem[]>(env, intercityUrl, STATIC_CACHE_SECONDS)
-  }
-
-  const groups = data
-    .filter((item): item is StopOfRouteItem & { Direction: Direction } =>
-      item.Direction === 0 || item.Direction === 1 || item.Direction === 2,
-    )
-    .map((item) => {
-      const stops = (item.Stops ?? [])
-        .filter((stop): stop is typeof stop & { StopUID: string } => Boolean(stop.StopUID && stop.StopName?.Zh_tw))
-        .map((stop) => ({
-          routeUid: item.RouteUID,
-          subRouteUid: item.SubRouteUID,
-          subRouteName: item.SubRouteName?.Zh_tw ?? item.RouteName?.Zh_tw ?? routeName,
-          stopUid: stop.StopUID,
-          stopName: stop.StopName?.Zh_tw ?? '未知站牌',
-          direction: item.Direction,
-          sequence: stop.StopSequence ?? 0,
-          position: typeof stop.StopPosition?.PositionLat === 'number' && typeof stop.StopPosition.PositionLon === 'number'
-            ? { latitude: stop.StopPosition.PositionLat, longitude: stop.StopPosition.PositionLon }
-            : undefined,
-        }))
-        .sort((a, b) => a.sequence - b.sequence)
-
-      const first = stops.at(0)?.stopName ?? '起點未知'
-      const last = stops.at(-1)?.stopName ?? '終點未知'
-      return {
-        direction: item.Direction,
-        label: `${first} → ${last}`,
-        routeUid: item.RouteUID,
-        subRouteUid: item.SubRouteUID,
-        subRouteName: item.SubRouteName?.Zh_tw ?? item.RouteName?.Zh_tw ?? routeName,
-        stops,
-      }
-    })
-    .filter((group) => group.stops.length > 0)
-
-  return mergeEquivalentStopGroups(groups)
-}
-
-export function mergeEquivalentStopGroups(groups: StopGroup[]): StopGroup[] {
-  const merged = new Map<string, StopGroup>()
-  for (const group of groups) {
-    // 相同站序不代表相同支線；RouteUID/SubRouteUID 不同時必須保留為獨立選項。
-    const signature = [
-      group.routeUid ?? '',
-      group.subRouteUid ?? '',
-      group.direction,
-      group.stops.map((stop) => stop.stopName).join('>'),
-    ].join(':')
-    const existing = merged.get(signature)
-    if (!existing) {
-      merged.set(signature, group)
-      continue
-    }
-
-    const names = new Set([...existing.subRouteName.split('／'), group.subRouteName])
-    existing.subRouteName = [...names].join('／')
-  }
-
-  return [...merged.values()]
-}
-
-export async function getRouteCatalog(env: TDXEnv, city: string): Promise<RouteCatalogItem[]> {
-  const url = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/Route/City/${encodeURIComponent(city)}`,
-  )
-  url.searchParams.set('$format', 'JSON')
-  const data = await fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS, {
-    operation: 'route_catalog',
-    city: telemetryCity(city),
-    validate: isRecordArrayPayload,
-  })
-
-  const routes = data
-    .filter((item): item is RouteItem & { RouteName: { Zh_tw: string } } => Boolean(item.RouteName?.Zh_tw))
-    .map((item) => ({
-      routeUid: item.RouteUID,
-      routeName: item.RouteName.Zh_tw,
-      departure: item.DepartureStopNameZh,
-      destination: item.DestinationStopNameZh,
-      category: classifyRouteName(item.RouteName.Zh_tw, item.RouteUID),
-    }))
-
-  return [...new Map(routes.map((route) => [
-    route.routeUid ?? `${route.routeName}:${route.departure ?? ''}:${route.destination ?? ''}`,
-    route,
-  ])).values()]
-    .sort((a, b) => a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true })
-      || (a.routeUid ?? '').localeCompare(b.routeUid ?? ''))
-}
-
-// 公路客運全目錄(約 500 條、全台一份)。只取方向標籤用得到的欄位,$select 之後
-// 回應只剩幾十 KB,照靜態資料的節奏快取。
-async function getIntercityRouteCatalog(env: TDXEnv): Promise<RouteCatalogItem[]> {
-  const url = new URL('https://tdx.transportdata.tw/api/basic/v2/Bus/Route/InterCity')
-  url.searchParams.set('$select', 'RouteUID,RouteName,DepartureStopNameZh,DestinationStopNameZh')
-  url.searchParams.set('$format', 'JSON')
-  const data = await fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS, {
-    operation: 'route_catalog',
-    city: null,
-    validate: isRecordArrayPayload,
-  })
-  return data
-    .filter((item): item is RouteItem & { RouteName: { Zh_tw: string } } => Boolean(item.RouteName?.Zh_tw))
-    .map((item) => ({
-      routeUid: item.RouteUID,
-      routeName: item.RouteName.Zh_tw,
-      departure: item.DepartureStopNameZh,
-      destination: item.DestinationStopNameZh,
-      category: classifyRouteName(item.RouteName.Zh_tw, item.RouteUID),
-    }))
-}
-
-export async function getStopRouteSuggestions(
-  env: TDXEnv,
-  city: string,
-  stopName: string,
-  anchorStopUid?: string,
-): Promise<StopRouteSuggestion[]> {
-  const filter = `StopName/Zh_tw eq '${stopName.replaceAll("'", "''")}'`
-  const filteredUrl = (path: string) => {
-    const url = new URL(`https://tdx.transportdata.tw/api/basic/v2/Bus/${path}`)
-    url.searchParams.set('$filter', filter)
-    url.searchParams.set('$format', 'JSON')
-    return url
-  }
-  // 公路客運跟市區公車常共用同名站牌,同站建議要兩邊都查;
-  // 公路客運那側失敗只影響客運建議,不拖垮市區結果。
-  const [data, stops, routes, intercityEta, intercityStops, intercityRoutes] = await Promise.all([
-    fetchTDXJson<BusETAItem[]>(env, filteredUrl(`EstimatedTimeOfArrival/City/${encodeURIComponent(city)}`), ETA_CACHE_SECONDS),
-    fetchTDXJson<StopItem[]>(env, filteredUrl(`Stop/City/${encodeURIComponent(city)}`), STATIC_CACHE_SECONDS),
-    getRouteCatalog(env, city),
-    fetchTDXJson<BusETAItem[]>(env, filteredUrl('EstimatedTimeOfArrival/InterCity'), ETA_CACHE_SECONDS).catch(() => [] as BusETAItem[]),
-    fetchTDXJson<StopItem[]>(env, filteredUrl('Stop/InterCity'), STATIC_CACHE_SECONDS).catch(() => [] as StopItem[]),
-    getIntercityRouteCatalog(env).catch(() => [] as RouteCatalogItem[]),
-  ])
-  const nearbyStopUids = findNearbyStopUids([...stops, ...intercityStops], anchorStopUid)
-  const routeByUid = new Map([...routes, ...intercityRoutes]
-    .filter((route) => route.routeUid).map((route) => [route.routeUid, route]))
-
-  const suggestions = [...data, ...intercityEta]
-    .filter((item): item is BusETAItem & { StopUID: string; StopName: { Zh_tw: string }; Direction: Direction } =>
-      Boolean(item.StopUID && item.StopName?.Zh_tw && item.RouteName?.Zh_tw)
-      && (item.Direction === 0 || item.Direction === 1),
-    )
-    .filter((item) => nearbyStopUids.size === 0 || nearbyStopUids.has(item.StopUID))
-    .map((item) => {
-      const route = item.RouteUID ? routeByUid.get(item.RouteUID) : undefined
-      const from = item.Direction === 0 ? route?.departure : route?.destination
-      const to = item.Direction === 0 ? route?.destination : route?.departure
-      return {
-        city,
-        routeName: item.RouteName?.Zh_tw ?? '未知路線',
-        routeUid: item.RouteUID,
-        subRouteUid: item.SubRouteUID,
-        stopName: item.StopName.Zh_tw,
-        stopUid: item.StopUID,
-        direction: item.Direction,
-        directionLabel: from && to ? `${from} → ${to}` : '',
-        label: formatETALabel(
-          typeof item.EstimateTime === 'number' ? Math.ceil(Math.max(0, item.EstimateTime) / 60) : null,
-          item.StopStatus ?? 0,
-        ),
-      }
-    })
-
-  return [...new Map(suggestions.map((item) => [
-    `${item.routeUid ?? item.routeName}:${item.subRouteUid ?? ''}:${item.stopUid}:${item.direction}`,
-    item,
-  ])).values()]
-    .sort((a, b) => a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }))
-    // 前端會依「目前選擇、常搭、ETA」排序後再縮到可閱讀的數量。
-    .slice(0, 40)
-}
-
 export async function getRouteDetail(
   env: TDXEnv,
   query: ResolvedBusQuery,
@@ -647,7 +365,7 @@ async function getBusETA(env: TDXEnv, query: BusQuery): Promise<BusETAItem[]> {
     `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/${tdxRouteScope(query.city, query.routeUid)}/${encodeURIComponent(query.routeName)}`,
   )
   url.searchParams.set('$format', 'JSON')
-  return fetchTDXJson<BusETAItem[]>(env, url, ETA_CACHE_SECONDS)
+  return fetchTDXJson<BusETAItem[]>(env, url, BUS_ETA_CACHE_SECONDS)
 }
 
 export function isTDXRecordArray<T extends object>(value: unknown): value is T[] {
@@ -661,41 +379,4 @@ function isRecordArrayPayload<T extends object>(value: unknown): value is T[] {
 
 function telemetryCity(value: string): TelemetryCity | null {
   return supportedCityCodes.has(value) ? value as TelemetryCity : null
-}
-
-function dedupeStops(stops: RouteStop[]): RouteStop[] {
-  return [...new Map(stops.map((stop) => [[
-    stop.routeUid ?? '',
-    stop.subRouteUid ?? '',
-    stop.direction,
-    stop.stopUid,
-  ].join(':'), stop])).values()]
-}
-
-function findNearbyStopUids(stops: StopItem[], anchorStopUid?: string): Set<string> {
-  if (!anchorStopUid) return new Set()
-  const anchor = stops.find((stop) => stop.StopUID === anchorStopUid)?.StopPosition
-  if (typeof anchor?.PositionLat !== 'number' || typeof anchor.PositionLon !== 'number') {
-    return new Set([anchorStopUid])
-  }
-
-  return new Set(stops
-    .filter((stop) => stop.StopUID && typeof stop.StopPosition?.PositionLat === 'number' && typeof stop.StopPosition.PositionLon === 'number')
-    .filter((stop) => distanceMeters(
-      anchor.PositionLat as number,
-      anchor.PositionLon as number,
-      stop.StopPosition?.PositionLat as number,
-      stop.StopPosition?.PositionLon as number,
-    ) <= 25)
-    .map((stop) => stop.StopUID as string))
-}
-
-function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const radius = 6_371_000
-  const toRadians = (degrees: number) => degrees * Math.PI / 180
-  const deltaLat = toRadians(lat2 - lat1)
-  const deltaLon = toRadians(lon2 - lon1)
-  const a = Math.sin(deltaLat / 2) ** 2
-    + Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(deltaLon / 2) ** 2
-  return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
