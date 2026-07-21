@@ -1,0 +1,1 @@
+Replace the two inline handlers in src/routes/map.ts with imported readDirectRoutes/readTransferPlans registrations, remove getDirectRoutes/getOneTransferRoutes from snapshot imports, and add the new module import. Removed before review.
