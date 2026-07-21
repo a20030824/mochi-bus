@@ -70,6 +70,7 @@ export type TDXUpstreamDataClientDependencies = {
 // Upstream data ownership lives here. This boundary owns request timeout, one-retry policy,
 // response parsing and data singleflight. The resolution façade still validates schemas,
 // records final success, emits logical telemetry and chooses memory/edge/stale data sources.
+// A parsed JSON success deliberately leaves the circuit unchanged until façade validation passes.
 // Global fetch is resolved at request time so Worker/test injection remains effective.
 export function createTDXUpstreamDataClient(dependencies: TDXUpstreamDataClientDependencies): {
   fetchUpstream: (request: TDXUpstreamRequest) => Promise<TDXUpstreamResult>
