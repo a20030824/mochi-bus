@@ -66,8 +66,8 @@ export type TDXResolutionCacheDependencies = {
 type TDXCacheEntry<T> = { data: T; cachedAt?: number }
 
 // Logical resolution ownership lives here. This boundary chooses memory, edge, upstream or stale data,
-// validates endpoint schemas, completes resolution telemetry and owns cache identity/writes. Token, HTTP
-// retry, bounded response parsing and circuit state remain injected or delegated to their dedicated clients.
+// validates endpoint schemas, completes resolution telemetry and owns cache identity/writes. It never
+// owns credential state or HTTP retry; token, bounded parsing and circuit transitions remain delegated.
 export function createTDXResolutionCache(dependencies: TDXResolutionCacheDependencies): {
   fetchTDXJson: <T>(
     env: TDXEnv,
