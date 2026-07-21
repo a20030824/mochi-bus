@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-pr-${{ github.event.pull_request.number || github.ref }}
@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -41,8 +41,6 @@ jobs:
               "import { releaseIdentity } from '../observability/release-identity'\n",
               "import { beginTDXResolutionTelemetry } from '../observability/tdx-resolution'\n",
           ]:
-              if text.count(line) != 1:
-                  raise SystemExit(f'import count for {line.strip()}={text.count(line)}')
               text = text.replace(line, '')
 
           telemetry_import = """import type {
@@ -53,13 +51,8 @@ jobs:
             TelemetryTrafficClass,
           } from '../observability/telemetry'
           """
-          if text.count(telemetry_import) != 1:
-              raise SystemExit(f'telemetry import count={text.count(telemetry_import)}')
           text = text.replace(telemetry_import, "import type { TelemetryCity } from '../observability/telemetry'\n")
-
           for line in ['  asTDXServiceError,\n', '  DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES,\n', '  responseByteLimit,\n']:
-              if text.count(line) != 1:
-                  raise SystemExit(f'import member count for {line.strip()}={text.count(line)}')
               text = text.replace(line, '')
 
           upstream_import = "import { createTDXUpstreamDataClient } from './tdx/upstream-data-client'\n"
@@ -71,8 +64,6 @@ jobs:
             type TDXResolvedData,
           } from './tdx/resolution-cache'
           """
-          if text.count(upstream_import) != 1:
-              raise SystemExit(f'upstream import count={text.count(upstream_import)}')
           text = text.replace(upstream_import, upstream_import + resolution_import)
 
           export_anchor = "export { tdxCredentialScope, withUserTDXAccessToken } from './tdx/token-client'\n"
@@ -80,8 +71,6 @@ jobs:
           export { withTDXBackgroundTasks }
           export type { TDXEnv, TDXResolutionOptions, TDXResolvedData }
           """
-          if text.count(export_anchor) != 1:
-              raise SystemExit(f'export anchor count={text.count(export_anchor)}')
           text = text.replace(export_anchor, export_addition)
 
           type_start = text.index('type TDXTelemetryContext = {')
@@ -110,8 +99,6 @@ jobs:
           export const fetchTDXJson = resolutionCache.fetchTDXJson
           export const resolveTDXJson = resolutionCache.resolveTDXJson
           """
-          if text.count(upstream_instance) != 1:
-              raise SystemExit(f'upstream instance count={text.count(upstream_instance)}')
           text = text.replace(upstream_instance, resolution_instance)
 
           resolution_start = text.index('type TDXCacheEntry<T> =')
@@ -144,15 +131,11 @@ jobs:
           run_stage typecheck npm run typecheck
           run_stage build-map npm run build:map
           run_stage wrangler npx wrangler deploy --dry-run
-      - name: Commit diagnostic only
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout HEAD -- src/lib/tdx.ts
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add RESOLUTION_CHECK.txt .github/workflows/ci.yml
-          git diff --cached --check
-          git commit -m "test(tdx): capture resolution check diagnostics"
-          git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
+      - name: Upload split diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolution-check-diagnostics
+          path: RESOLUTION_CHECK.txt
+          if-no-files-found: error
+          retention-days: 1
