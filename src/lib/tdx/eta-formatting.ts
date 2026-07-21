@@ -1,6 +1,7 @@
 import type { ResolvedBusQuery } from '../../domain/bus-query'
 import type { TDXWarning } from '../../domain/tdx-warning'
 
+// The legacy src/lib/tdx.ts façade re-exports this boundary so callers can migrate gradually.
 const STALE_AFTER_MS = 3 * 60 * 1000
 
 export type LocalizedName = {
