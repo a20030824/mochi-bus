@@ -46,12 +46,12 @@ function stopGroup(): StopGroup {
 }
 
 function harness(overrides: Partial<TDXCommuteRoutePresentationDependencies> = {}) {
-  const fetchTDXJson: TDXCommuteRoutePresentationDependencies['fetchTDXJson'] = vi.fn(async <T>(
+  const fetchTDXJson: TDXCommuteRoutePresentationDependencies['fetchTDXJson'] = async <T>(
     _env: TDXEnv,
     _url: URL,
     _ttlSeconds: number,
     _options?: TDXResolutionOptions<T>,
-  ) => [] as T)
+  ) => [] as T
   const getRouteStopGroups = vi.fn(async () => [stopGroup()])
   const getBusSchedule = vi.fn(async () => [] as ScheduleItem[])
   const getSnapshotSchedule = vi.fn(async () => null)
