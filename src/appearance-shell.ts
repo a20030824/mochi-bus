@@ -4,17 +4,15 @@ import {
   LEGACY_APPEARANCE_STORAGE_KEYS,
 } from './domain/appearance'
 import { appearanceStyles } from './ui/appearance-styles'
-import { interfaceAlignmentStyles } from './ui/interface-alignment-styles'
 
 const APPEARANCE_STYLE_ID = 'mochi-appearance-overrides'
-const INTERFACE_ALIGNMENT_STYLE_ID = 'mochi-interface-alignment'
 const APPEARANCE_SCRIPT_SRC = '/assets/appearance.js'
 
 export function applyAppearanceShell(response: Response): Response {
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
   if (!contentType.includes('text/html') || typeof HTMLRewriter === 'undefined') return response
 
-  const headMarkup = `<style id="${APPEARANCE_STYLE_ID}">${appearanceStyles}</style><style id="${INTERFACE_ALIGNMENT_STYLE_ID}">${interfaceAlignmentStyles}</style><script>${appearancePrepaintScript()}</script>`
+  const headMarkup = `<style id="${APPEARANCE_STYLE_ID}">${appearanceStyles}</style><script>${appearancePrepaintScript()}</script>`
   const bodyMarkup = `<script type="module" src="${APPEARANCE_SCRIPT_SRC}"></script>`
 
   return new HTMLRewriter()
