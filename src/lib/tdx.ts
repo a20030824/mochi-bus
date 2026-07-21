@@ -28,9 +28,27 @@ import {
   type ETAResult,
   type LocalizedName,
 } from './tdx/eta-formatting'
+import {
+  TDXServiceError,
+  asTDXServiceError,
+  classifyTDXWarning,
+  isRejectedUserTdxToken,
+  observeTDXResponseFailure,
+  observeTDXResponseSuccess,
+  resetTDXRateLimitTracking,
+  responseFailureClass,
+  tdxWarningFromError,
+  transportFailureClass,
+} from './tdx/error-classification'
 
 export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
 export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
+export {
+  TDXServiceError,
+  isRejectedUserTdxToken,
+  resetTDXRateLimitTracking,
+  tdxWarningFromError,
+}
 
 type TDXTelemetryContext = {
   trafficClass?: TelemetryTrafficClass
@@ -168,55 +186,8 @@ export class QueryResolutionError extends Error {
   }
 }
 
-export class TDXServiceError extends Error {
-  warning?: TDXWarning
-  failureKind?: TelemetryFailureClass
-
-  constructor(
-    message: string,
-    readonly status?: number,
-    options?: ErrorOptions & { failureKind?: TelemetryFailureClass },
-  ) {
-    super(message, options)
-    this.name = 'TDXServiceError'
-    this.failureKind = options?.failureKind
-  }
-
-  get rateLimited(): boolean {
-    return this.status === 429 || this.warning === 'tdx-rate-limit' || this.warning === 'tdx-quota'
-  }
-}
-
-export function isRejectedUserTdxToken(error: unknown, authorization?: string): boolean {
-  return Boolean(authorization)
-    && error instanceof TDXServiceError
-    && error.status === 401
-}
-
 export { tdxWarningMessages }
 export type { TDXWarning }
-
-// 額度用完與頻率超限 TDX 都只回 429,單看狀態碼分不出來;但頻率超限幾秒就恢復、
-// 額度用完會持續到月底。以「連續 429 撐了多久」區分該給使用者哪種說法:
-// 只要中間有任何一次成功就歸零,所以尖峰時偶發的頻率 429 不會被誤判成額度用完。
-// 只追蹤共用憑證的結果——使用者在 setup 頁測試或帶自己 TDX 憑證時撞到的 429
-// 是他個人帳號的事,不能拿來污染「共用額度可能已用完」這句對所有人顯示的訊息。
-let sharedRateLimitedSince: number | null = null
-const QUOTA_SUSPECT_AFTER_MS = 10 * 60 * 1000
-
-export function tdxWarningFromError(error: unknown): TDXWarning | undefined {
-  if (!(error instanceof TDXServiceError)) return undefined
-  if (error.warning) return error.warning
-  if (!error.rateLimited) return 'tdx-unavailable'
-  return sharedRateLimitedSince !== null && Date.now() - sharedRateLimitedSince >= QUOTA_SUSPECT_AFTER_MS
-    ? 'tdx-quota'
-    : 'tdx-rate-limit'
-}
-
-// 測試用:清掉跨測試殘留的 429 追蹤狀態。
-export function resetTDXRateLimitTracking(): void {
-  sharedRateLimitedSince = null
-}
 
 // TDX 的 429 body 會說明是頻率超限還是額度用盡,記進 log 供事後判讀;內容絕不回給使用者。
 // isShared 只有共用憑證的請求才是 true,決定這次結果要不要更新額度追蹤狀態。
@@ -250,9 +221,7 @@ async function tdxResponseError(
     }))
   }
   const warning = classifyTDXWarning(response.status, body.text)
-  if (isShared && (response.status === 429 || warning === 'tdx-rate-limit' || warning === 'tdx-quota')) {
-    sharedRateLimitedSince ??= Date.now()
-  }
+  observeTDXResponseFailure(response.status, warning, isShared)
   console.error(JSON.stringify({
     message: 'tdx_upstream_error',
     context,
@@ -263,22 +232,6 @@ async function tdxResponseError(
   })
   error.warning = warning
   return error
-}
-
-function classifyTDXWarning(status: number, body: string): TDXWarning | undefined {
-  const text = body.toLowerCase()
-  const quotaLike = /quota|quotas|monthly|usage|額度|配額|用量|用完|用盡/.test(text)
-    || (/exceed|exceeded|exceeds|超過|超出/.test(text) && /limit|limited|限制|上限/.test(text) && !/rate|frequency|頻率/.test(text))
-    // 額度用完時 TDX 是整個 App 停權,連 token 端點都回標準 OAuth 錯誤(400 unauthorized_client/
-    // invalid_client),不是文件假設的「先給 token、查詢時才擋 429」——這種換不到 token 也算額度用盡。
-    || /unauthorized_client|invalid_client|invalid client credentials/.test(text)
-  if (quotaLike) return 'tdx-quota'
-
-  if (status !== 429 && /rate.?limit|too many requests|frequency|頻率|請求過多/.test(text)) {
-    return 'tdx-rate-limit'
-  }
-
-  return undefined
 }
 
 type TokenCache = { value: string; expiresAt: number }
@@ -339,7 +292,7 @@ const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
 
 // 測試用：模擬 isolate 重建，避免模組層快取讓案例彼此污染。
 export function resetTDXTestState(): void {
-  sharedRateLimitedSince = null
+  resetTDXRateLimitTracking()
   tokenCache.clear()
   tdxCircuits.clear()
   tokenFlights.clear()
@@ -383,20 +336,6 @@ export async function getTDXToken(env: TDXEnv): Promise<{ token: string; isShare
     isShared: true,
     credentialKey: sharedKey,
   }
-}
-
-function responseFailureClass(status: number, warning?: TDXWarning): TelemetryFailureClass {
-  if (warning === 'tdx-quota') return 'quota'
-  if (status === 429 || warning === 'tdx-rate-limit') return 'rate_limited'
-  if (status === 401) return 'token_rejected'
-  if (status >= 400 && status <= 499) return 'upstream_4xx'
-  if (status >= 500 && status <= 599) return 'upstream_5xx'
-  return 'unknown'
-}
-
-function transportFailureClass(error: unknown): TelemetryFailureClass {
-  const name = error instanceof Error ? error.name : ''
-  return name === 'AbortError' || name === 'TimeoutError' ? 'timeout' : 'network_error'
 }
 
 async function accessTokenFingerprint(accessToken: string): Promise<string> {
@@ -600,7 +539,7 @@ async function fetchTDXToken(
     recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
     throw error
   }
-  if (isShared) sharedRateLimitedSince = null
+  observeTDXResponseSuccess(isShared)
   let data: { access_token?: string; expires_in?: number }
   try {
     const parsed = await readJsonResponse(response, TDX_TOKEN_MAX_RESPONSE_BYTES)
@@ -1309,7 +1248,7 @@ async function fetchTDXUpstream(
       recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
       return { ok: false, error, retryCount, initialFailureClass }
     }
-    if (isShared) sharedRateLimitedSince = null
+    observeTDXResponseSuccess(isShared)
 
     try {
       const parsed = await readJsonResponse(response, maxResponseBytes)
@@ -1570,14 +1509,6 @@ function shouldRetryResolution(
     && (error.failureKind === 'timeout'
       || error.failureKind === 'network_error'
       || error.failureKind === 'upstream_5xx')
-}
-
-function asTDXServiceError(error: unknown): TDXServiceError {
-  if (error instanceof TDXServiceError) return error
-  return new TDXServiceError('TDX resolution failed', undefined, {
-    cause: error,
-    failureKind: 'unknown',
-  })
 }
 
 function dedupeStops(stops: RouteStop[]): RouteStop[] {
