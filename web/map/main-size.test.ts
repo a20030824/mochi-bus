@@ -199,6 +199,7 @@ describe('map main architecture boundary', () => {
     expect(nearbyPlacesMapSource).toContain('Math.round(place.distanceMeters)')
     expect(nearbyPlacesMapSource).toContain('L.DomEvent.stopPropagation(event)')
     expect(nearbyPlacesMapSource).toContain('options.onOpenPlace(place)')
+    expect(mainSource).toContain('drawTripEndpoints()')
     for (const dependency of [
       'history.', 'document.', 'window.', 'mapApi.', 'camera.', 'trip.', 'routeDetail',
       'cityNetwork', 'beginNavRequest', 'isStaleNav', 'setStatus(', 'clearStatus(',
