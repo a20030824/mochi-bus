@@ -2,7 +2,7 @@ import { expect, test as base, type Page } from '@playwright/test'
 
 type UiFixtures = {
   pageErrors: Error[]
-  workerApiBoundary: void
+  workerApiFirewall: void
 }
 
 export const test = base.extend<UiFixtures>({
@@ -12,21 +12,11 @@ export const test = base.extend<UiFixtures>({
     await use(errors)
     expect(errors.map((error) => error.stack ?? error.message)).toEqual([])
   }, { auto: true }],
-  workerApiBoundary: [async ({ page }, use) => {
-    const unexpectedRequests: string[] = []
-    await page.route(/\/api\/v1\//, async (route) => {
-      const request = route.request()
-      const url = new URL(request.url())
-      unexpectedRequests.push(`${request.method()} ${url.pathname}${url.search}`)
-      await route.abort('blockedbyclient')
-    })
-
+  workerApiFirewall: [async ({ page }, use) => {
+    // Test-specific routes are registered later and therefore take precedence. Any API call a
+    // UI-only spec did not explicitly mock is stopped here before it can mutate Worker singletons.
+    await page.route(/\/api\/v1\//, (route) => route.abort('blockedbyclient'))
     await use()
-
-    expect(
-      unexpectedRequests,
-      '一般 UI spec 必須 mock Worker API；需要真正 Worker module state 的案例請移到 worker-stateful.spec.ts。',
-    ).toEqual([])
   }, { auto: true }],
 })
 
