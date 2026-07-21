@@ -1,27 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import { MochiApiError } from '../tdx/api-client'
 import {
-  drawerRetryDecision,
+  placeRetryDecision,
   routeRetryDecision,
   routeWarningRetryDecision,
-  shouldRevealDrawerFailure,
+  shouldRevealPlaceFailure,
 } from './retry-policy'
 
 describe('retry policy', () => {
-  it('uses a quiet 3 second first Drawer retry, then 30 and 60 seconds', () => {
+  it('uses a quiet 3 second first Place retry, then 30 and 60 seconds', () => {
     const error = new TypeError('offline')
-    expect(drawerRetryDecision(error, 1)).toEqual({ retry: true, delayMs: 3_000 })
-    expect(drawerRetryDecision(error, 2)).toEqual({ retry: true, delayMs: 30_000 })
-    expect(drawerRetryDecision(error, 3)).toEqual({ retry: true, delayMs: 60_000 })
-    expect(drawerRetryDecision(error, 8)).toEqual({ retry: true, delayMs: 60_000 })
-    expect(shouldRevealDrawerFailure(1)).toBe(false)
-    expect(shouldRevealDrawerFailure(2)).toBe(true)
+    expect(placeRetryDecision(error, 1)).toEqual({ retry: true, delayMs: 3_000 })
+    expect(placeRetryDecision(error, 2)).toEqual({ retry: true, delayMs: 30_000 })
+    expect(placeRetryDecision(error, 3)).toEqual({ retry: true, delayMs: 60_000 })
+    expect(placeRetryDecision(error, 8)).toEqual({ retry: true, delayMs: 60_000 })
+    expect(shouldRevealPlaceFailure(1)).toBe(false)
+    expect(shouldRevealPlaceFailure(2)).toBe(true)
   })
 
   it('uses Retry-After ahead of local fallback delays', () => {
     const error = new MochiApiError('busy', 429, undefined, 17_000)
     expect(routeRetryDecision(error)).toEqual({ retry: true, delayMs: 17_000 })
-    expect(drawerRetryDecision(error, 1)).toEqual({ retry: true, delayMs: 17_000 })
+    expect(placeRetryDecision(error, 1)).toEqual({ retry: true, delayMs: 17_000 })
   })
 
   it('uses 30 seconds for Route transient failures and five minutes for quota', () => {
@@ -34,7 +34,7 @@ describe('retry policy', () => {
   it('does not retry permanent client, invariant-like, or rejected-token failures', () => {
     expect(routeRetryDecision(new Error('malformed response'))).toEqual({ retry: false })
     expect(routeRetryDecision(new MochiApiError('bad request', 400))).toEqual({ retry: false })
-    expect(drawerRetryDecision(new MochiApiError('rejected', 401, 'tdx_access_token_rejected'), 1))
+    expect(placeRetryDecision(new MochiApiError('rejected', 401, 'tdx_access_token_rejected'), 1))
       .toEqual({ retry: false })
   })
 })
