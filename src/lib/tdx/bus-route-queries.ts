@@ -211,8 +211,9 @@ export function createTDXBusRouteQueries(dependencies: TDXBusRouteQueryDependenc
   }
 
   const getIntercityRouteCatalog = async (env: TDXEnv): Promise<RouteCatalogItem[]> => {
-    const url = formattedBusUrl('Route/InterCity')
+    const url = busUrl('Route/InterCity')
     url.searchParams.set('$select', 'RouteUID,RouteName,DepartureStopNameZh,DestinationStopNameZh')
+    url.searchParams.set('$format', 'JSON')
     const data = await dependencies.fetchTDXJson<RouteItem[]>(env, url, STATIC_CACHE_SECONDS, {
       operation: 'route_catalog',
       city: null,
@@ -229,8 +230,9 @@ export function createTDXBusRouteQueries(dependencies: TDXBusRouteQueryDependenc
   ): Promise<StopRouteSuggestion[]> => {
     const filter = `StopName/Zh_tw eq '${stopName.replaceAll("'", "''")}'`
     const filteredUrl = (path: string) => {
-      const url = formattedBusUrl(path)
+      const url = busUrl(path)
       url.searchParams.set('$filter', filter)
+      url.searchParams.set('$format', 'JSON')
       return url
     }
 
@@ -338,8 +340,12 @@ export function mergeEquivalentStopGroups(groups: StopGroup[]): StopGroup[] {
   return [...merged.values()]
 }
 
+function busUrl(path: string): URL {
+  return new URL(`${BUS_API_BASE}/${path}`)
+}
+
 function formattedBusUrl(path: string): URL {
-  const url = new URL(`${BUS_API_BASE}/${path}`)
+  const url = busUrl(path)
   url.searchParams.set('$format', 'JSON')
   return url
 }
