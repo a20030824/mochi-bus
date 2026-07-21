@@ -50,7 +50,9 @@ function setup(overrides: Partial<TDXResolutionCacheDependencies> = {}) {
   }
 }
 
-function stubCache(match = vi.fn(async () => undefined)) {
+function stubCache(
+  match: (request: Request) => Promise<Response | undefined> = vi.fn(async () => undefined),
+) {
   const put = vi.fn(async () => undefined)
   vi.stubGlobal('caches', { default: { match, put } })
   return { match, put }
@@ -150,12 +152,13 @@ describe('TDX resolution cache boundary', () => {
 
   it('lets a follower warm memory without closing circuit or writing edge', async () => {
     const cache = stubCache()
-    const state = setup({ fetchUpstream: vi.fn(async () => success([{ id: 'follower' }], false)) })
+    const fetchUpstream = vi.fn(async () => success([{ id: 'follower' }], false))
+    const state = setup({ fetchUpstream })
 
     await expect(state.resolver.fetchTDXJson(environment(), url, 30, { validate })).resolves.toEqual([{ id: 'follower' }])
     await expect(state.resolver.resolveTDXJson(environment(), url, 30, { validate })).resolves.toMatchObject({ resolution: 'memory' })
 
-    expect(state.fetchUpstream).toHaveBeenCalledOnce()
+    expect(fetchUpstream).toHaveBeenCalledOnce()
     expect(state.recordCircuitSuccess).not.toHaveBeenCalled()
     expect(state.recordCircuitFailure).not.toHaveBeenCalled()
     expect(cache.put).not.toHaveBeenCalled()
