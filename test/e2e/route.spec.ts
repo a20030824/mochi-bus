@@ -135,8 +135,6 @@ test.describe('Route progressive ETA', () => {
     await expect.poll(() => requests).toBe(2)
     await expect(selectedEta).toHaveText('1 分')
 
-    // Exact interval boundaries are covered by refresh-controller unit tests. Keep
-    // this browser test clear of request/DOM settlement microtask timing.
     await page.clock.fastForward(29_000)
     expect(requests).toBe(2)
     await page.clock.fastForward(1_000)
@@ -144,7 +142,7 @@ test.describe('Route progressive ETA', () => {
     await expect(selectedEta).toHaveText('即將進站')
   })
 
-  test('backs off rate-limited ETA responses for two minutes', async ({ page }) => {
+  test('backs off rate-limited ETA responses for thirty seconds', async ({ page }) => {
     let requests = 0
     await page.clock.install()
     await page.route('**/api/v1/route-eta*', (route) => {
@@ -157,9 +155,9 @@ test.describe('Route progressive ETA', () => {
     await expect(page.locator('.route-stop').nth(0).locator('.route-eta')).toHaveText('—')
     await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('即時忙線')
 
-    await page.clock.fastForward(119_999)
+    await page.clock.fastForward(29_000)
     expect(requests).toBe(1)
-    await page.clock.fastForward(1)
+    await page.clock.fastForward(1_000)
     await expect.poll(() => requests).toBe(2)
   })
 
@@ -175,9 +173,9 @@ test.describe('Route progressive ETA', () => {
     await expect.poll(() => requests).toBe(1)
     await expect(page.locator('.route-stop.selected .route-eta')).toHaveText('額度不可用')
 
-    await page.clock.fastForward(299_999)
+    await page.clock.fastForward(299_000)
     expect(requests).toBe(1)
-    await page.clock.fastForward(1)
+    await page.clock.fastForward(1_000)
     await expect.poll(() => requests).toBe(2)
   })
 
@@ -204,9 +202,9 @@ test.describe('Route progressive ETA', () => {
     await expect(firstEta).not.toHaveClass(/live/)
     await expect(selectedEta).toHaveText('即時未更新')
 
-    await page.clock.fastForward(119_999)
+    await page.clock.fastForward(29_000)
     expect(requests).toBe(2)
-    await page.clock.fastForward(1)
+    await page.clock.fastForward(1_000)
     await expect.poll(() => requests).toBe(3)
   })
 
