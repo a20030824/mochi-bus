@@ -46,6 +46,10 @@ import {
   withUserTDXAccessToken,
   type TDXCredentialEnv,
 } from './tdx/token-client'
+import {
+  createTDXCircuitBreaker,
+  dataCircuitKey,
+} from './tdx/circuit-breaker'
 
 export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
 export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
@@ -237,14 +241,6 @@ async function tdxResponseError(
   return error
 }
 
-type CircuitState = {
-  failures: number
-  lastFailureAt: number
-  openedUntil: number
-  halfOpen: boolean
-  warning: TDXWarning
-}
-
 // 共用憑證的 cache key 是 source + client_id + client_secret 的 SHA-256 指紋；
 // Map 裡不保留原始 secret，同一 client_id 更換 secret 也不會誤用舊 token。
 type TDXResponseSizeSource = 'content_length' | 'stream'
@@ -286,26 +282,19 @@ type TDXUpstreamOutcome =
       initialFailureClass?: TelemetryFailureClass
     }
 
-const tdxCircuits = new Map<string, CircuitState>()
 const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
 
 // 測試用：模擬 isolate 重建，避免模組層快取讓案例彼此污染。
 export function resetTDXTestState(): void {
   resetTDXRateLimitTracking()
   resetTDXTokenState()
-  tdxCircuits.clear()
+  circuitBreaker.reset()
   dataFlights.clear()
 }
 
 const ETA_CACHE_SECONDS = 12
 const STATIC_CACHE_SECONDS = 60 * 60
 const REQUEST_TIMEOUT_MS = 6000
-const MAX_CIRCUIT_ENTRIES = 128
-const CIRCUIT_FAILURE_THRESHOLD = 3
-const CIRCUIT_FAILURE_WINDOW_MS = 60 * 1000
-const TRANSIENT_CIRCUIT_OPEN_MS = 30 * 1000
-const QUOTA_CIRCUIT_OPEN_MS = 5 * 60 * 1000
-const MAX_RETRY_AFTER_MS = 5 * 60 * 1000
 const DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const TDX_ERROR_MAX_RESPONSE_BYTES = 32 * 1024
 const MAX_TDX_SINGLEFLIGHT_ENTRIES = 128
@@ -315,112 +304,21 @@ export function tdxRouteScope(city: string, routeUid?: string): string {
   return routeUid?.startsWith('THB') ? 'InterCity' : `City/${encodeURIComponent(city)}`
 }
 
-function retryAfterMilliseconds(value: string | null, now: number): number | undefined {
-  if (!value) return undefined
-  const seconds = Number(value.trim())
-  const milliseconds = Number.isFinite(seconds)
-    ? seconds * 1000
-    : Date.parse(value) - now
-  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return undefined
-  return Math.min(Math.max(milliseconds, 1000), MAX_RETRY_AFTER_MS)
-}
-
-function cacheCircuit(key: string, state: CircuitState): void {
-  tdxCircuits.delete(key)
-  tdxCircuits.set(key, state)
-  while (tdxCircuits.size > MAX_CIRCUIT_ENTRIES) {
-    const oldestKey = tdxCircuits.keys().next().value
-    if (oldestKey === undefined) break
-    tdxCircuits.delete(oldestKey)
-  }
-}
-
-function assertTDXCircuitClosed(key: string): boolean {
-  const state = tdxCircuits.get(key)
-  if (!state) return false
-
-  const now = Date.now()
-  if (state.openedUntil > now) {
-    const error = new TDXServiceError(
-      'TDX circuit breaker is open',
-      state.warning === 'tdx-unavailable' ? 503 : 429,
-      { failureKind: 'circuit_open' },
-    )
-    error.warning = state.warning
-    throw error
-  }
-
-  if (state.halfOpen) {
-    const error = new TDXServiceError(
-      'TDX circuit breaker probe is in progress',
-      state.warning === 'tdx-unavailable' ? 503 : 429,
-      { failureKind: 'circuit_open' },
-    )
-    error.warning = state.warning
-    throw error
-  }
-
-  if (state.openedUntil > 0) {
-    // 冷卻結束後放行一次 half-open probe；若 probe 再失敗會立刻重新熔斷。
-    cacheCircuit(key, {
-      ...state,
-      failures: CIRCUIT_FAILURE_THRESHOLD - 1,
-      openedUntil: 0,
-      halfOpen: true,
-    })
-    return true
-  }
-  if (now - state.lastFailureAt >= CIRCUIT_FAILURE_WINDOW_MS) tdxCircuits.delete(key)
-  return false
-}
-
-function recordTDXCircuitFailure(key: string, error: TDXServiceError, retryAfter: string | null = null): void {
-  const status = error.status
-  const transient = status === undefined || status === 408 || (status >= 500 && status <= 599)
-  if (!error.rateLimited && !transient) {
-    recordTDXCircuitSuccess(key)
-    return
-  }
-
-  const now = Date.now()
-  const previous = tdxCircuits.get(key)
-  const failures = previous?.halfOpen
-    ? CIRCUIT_FAILURE_THRESHOLD
-    : previous && now - previous.lastFailureAt < CIRCUIT_FAILURE_WINDOW_MS
-      ? previous.failures + 1
-      : 1
-  const warning = error.warning ?? (error.rateLimited ? 'tdx-rate-limit' : 'tdx-unavailable')
-  let openedUntil = 0
-  if (error.rateLimited) {
-    const openFor = warning === 'tdx-quota'
-      ? QUOTA_CIRCUIT_OPEN_MS
-      : retryAfterMilliseconds(retryAfter, now) ?? TRANSIENT_CIRCUIT_OPEN_MS
-    openedUntil = now + openFor
-  } else if (failures >= CIRCUIT_FAILURE_THRESHOLD) {
-    openedUntil = now + TRANSIENT_CIRCUIT_OPEN_MS
-  }
-
-  cacheCircuit(key, { failures, lastFailureAt: now, openedUntil, halfOpen: false, warning })
-  if (openedUntil > now && (!previous || previous.openedUntil <= now)) {
+const circuitBreaker = createTDXCircuitBreaker({
+  onOpened: ({ warning, openMs }) => {
     console.error(JSON.stringify({
       message: 'tdx_circuit_opened',
       warning,
-      openMs: openedUntil - now,
+      openMs,
     }))
-  }
-}
-
-function recordTDXCircuitSuccess(key: string): void {
-  tdxCircuits.delete(key)
-}
-
-const dataCircuitKey = (credentialKey: string) => `data/${credentialKey}`
+  },
+})
 
 const tokenClient = createTDXTokenClient({
   requestTimeoutMs: REQUEST_TIMEOUT_MS,
-  assertCircuitClosed: (key) => { assertTDXCircuitClosed(key) },
-  recordCircuitFailure: (key, error, retryAfter) => recordTDXCircuitFailure(key, error, retryAfter),
-  recordCircuitSuccess: recordTDXCircuitSuccess,
+  assertCircuitClosed: (key) => { circuitBreaker.assertClosed(key) },
+  recordCircuitFailure: (key, error, retryAfter) => circuitBreaker.recordFailure(key, error, retryAfter),
+  recordCircuitSuccess: circuitBreaker.recordSuccess,
   responseError: (context, response, isShared, observation) => (
     tdxResponseError(context, response, isShared, observation)
   ),
@@ -954,7 +852,7 @@ export async function resolveTDXJson<T>(
   const existingFlight = dataFlights.get(flightKey)
   if (!existingFlight) {
     try {
-      assertTDXCircuitClosed(circuitKey)
+      circuitBreaker.assertClosed(circuitKey)
     } catch (error) {
       return finishFailure(asTDXServiceError(error), false)
     }
@@ -986,12 +884,12 @@ export async function resolveTDXJson<T>(
     const serviceError = new TDXServiceError('TDX response has an invalid schema', 502, {
       failureKind: 'invalid_schema',
     })
-    if (leader) recordTDXCircuitFailure(circuitKey, serviceError)
+    if (leader) circuitBreaker.recordFailure(circuitKey, serviceError)
     return finishFailure(serviceError, true)
   }
 
   const data = upstream.data as T
-  if (leader) recordTDXCircuitSuccess(circuitKey)
+  if (leader) circuitBreaker.recordSuccess(circuitKey)
   const cachedAt = now()
   memoryCacheSet(memoryKey, { data, cachedAt }, ttlSeconds)
   const resolved = completeData(data, 'upstream', 0, upstream.status)
@@ -1071,7 +969,7 @@ async function fetchTDXUpstream(
         initialFailureClass = serviceError.failureKind
         continue
       }
-      recordTDXCircuitFailure(circuitKey, serviceError)
+      circuitBreaker.recordFailure(circuitKey, serviceError)
       return { ok: false, error: serviceError, retryCount, initialFailureClass }
     }
 
@@ -1085,7 +983,7 @@ async function fetchTDXUpstream(
         initialFailureClass = error.failureKind
         continue
       }
-      recordTDXCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
+      circuitBreaker.recordFailure(circuitKey, error, response.headers.get('Retry-After'))
       return { ok: false, error, retryCount, initialFailureClass }
     }
     observeTDXResponseSuccess(isShared)
@@ -1109,14 +1007,14 @@ async function fetchTDXUpstream(
             failureKind: 'invalid_json',
           })
       if (serviceError instanceof TDXPayloadTooLargeError) {
-        recordTDXCircuitSuccess(circuitKey)
+        circuitBreaker.recordSuccess(circuitKey)
         logTDXResponseTooLarge(serviceError, {
           operation,
           resource: tdxResponseResource(url),
           credentialScope: isShared ? 'shared' : 'byok',
         })
       } else {
-        recordTDXCircuitFailure(circuitKey, serviceError)
+        circuitBreaker.recordFailure(circuitKey, serviceError)
       }
       return { ok: false, error: serviceError, retryCount, initialFailureClass }
     }
