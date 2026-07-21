@@ -1,0 +1,243 @@
+import type {
+  TelemetryFailureClass,
+  TelemetryTdxOperation,
+} from '../../observability/telemetry'
+import {
+  TDXServiceError,
+  observeTDXResponseSuccess,
+  transportFailureClass,
+} from './error-classification'
+import { dataCircuitKey } from './circuit-breaker'
+import {
+  TDXPayloadTooLargeError,
+  logTDXResponseTooLarge,
+  readJsonResponse,
+  type TDXResponseObservation,
+} from './bounded-response'
+
+const DEFAULT_MAX_SINGLEFLIGHT_ENTRIES = 128
+
+export type TDXUpstreamOutcome =
+  | {
+      ok: true
+      data: unknown
+      status: number
+      receivedBytes: number
+      declaredBytes?: number
+      retryCount: number
+      initialFailureClass?: TelemetryFailureClass
+    }
+  | {
+      ok: false
+      error: TDXServiceError
+      retryCount: number
+      initialFailureClass?: TelemetryFailureClass
+    }
+
+export type TDXUpstreamRequest = {
+  url: URL
+  maxResponseBytes: number
+  operation?: TelemetryTdxOperation
+  token: string
+  isShared: boolean
+  credentialKey: string
+  ttlSeconds: number
+  validatesPayload: boolean
+}
+
+export type TDXUpstreamResult = {
+  outcome: TDXUpstreamOutcome
+  leader: boolean
+  circuitKey: string
+  resource: string
+}
+
+export type TDXUpstreamDataClientDependencies = {
+  requestTimeoutMs: number
+  assertCircuitClosed: (key: string) => void
+  recordCircuitFailure: (key: string, error: TDXServiceError, retryAfter?: string | null) => void
+  recordCircuitSuccess: (key: string) => void
+  responseError: (
+    context: string,
+    response: Response,
+    isShared: boolean,
+    observation: Pick<TDXResponseObservation, 'operation' | 'resource'>,
+  ) => Promise<TDXServiceError>
+  fetcher?: typeof fetch
+  maxSingleflightEntries?: number
+}
+
+// Upstream data ownership lives here. This boundary owns request timeout, one-retry policy,
+// response parsing and data singleflight. The resolution façade still validates schemas,
+// records final success, emits logical telemetry and chooses memory/edge/stale data sources.
+// A parsed JSON success deliberately leaves the circuit unchanged until façade validation passes.
+// Global fetch is resolved at request time so Worker/test injection remains effective.
+export function createTDXUpstreamDataClient(dependencies: TDXUpstreamDataClientDependencies): {
+  fetchUpstream: (request: TDXUpstreamRequest) => Promise<TDXUpstreamResult>
+  resetTDXUpstreamState: () => void
+} {
+  const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
+  const maxSingleflightEntries = dependencies.maxSingleflightEntries ?? DEFAULT_MAX_SINGLEFLIGHT_ENTRIES
+
+  const fetchUpstream = async (request: TDXUpstreamRequest): Promise<TDXUpstreamResult> => {
+    const circuitKey = dataCircuitKey(request.credentialKey)
+    const resource = tdxResponseResource(request.url)
+    const flightKey = dataFlightKey(request)
+    const existingFlight = dataFlights.get(flightKey)
+    if (!existingFlight) dependencies.assertCircuitClosed(circuitKey)
+
+    const { promise, leader } = joinSingleflight(
+      dataFlights,
+      flightKey,
+      maxSingleflightEntries,
+      () => fetchTDXUpstream(request, circuitKey, resource),
+    )
+    return {
+      outcome: await promise,
+      leader,
+      circuitKey,
+      resource,
+    }
+  }
+
+  const fetchTDXUpstream = async (
+    request: TDXUpstreamRequest,
+    circuitKey: string,
+    resource: string,
+  ): Promise<TDXUpstreamOutcome> => {
+    let retryCount = 0
+    let initialFailureClass: TelemetryFailureClass | undefined
+
+    while (true) {
+      let response: Response
+      try {
+        response = await (dependencies.fetcher ?? fetch)(request.url, {
+          headers: { Authorization: `Bearer ${request.token}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(dependencies.requestTimeoutMs),
+        })
+      } catch (error) {
+        const serviceError = new TDXServiceError('TDX request failed', undefined, {
+          cause: error,
+          failureKind: transportFailureClass(error),
+        })
+        if (shouldRetryResolution(serviceError, request.operation, retryCount)) {
+          retryCount += 1
+          initialFailureClass = serviceError.failureKind
+          continue
+        }
+        dependencies.recordCircuitFailure(circuitKey, serviceError)
+        return { ok: false, error: serviceError, retryCount, initialFailureClass }
+      }
+
+      if (!response.ok) {
+        const error = await dependencies.responseError('TDX request failed', response, request.isShared, {
+          operation: request.operation,
+          resource,
+        })
+        if (shouldRetryResolution(error, request.operation, retryCount)) {
+          retryCount += 1
+          initialFailureClass = error.failureKind
+          continue
+        }
+        dependencies.recordCircuitFailure(circuitKey, error, response.headers.get('Retry-After'))
+        return { ok: false, error, retryCount, initialFailureClass }
+      }
+      observeTDXResponseSuccess(request.isShared)
+
+      try {
+        const parsed = await readJsonResponse(response, request.maxResponseBytes)
+        return {
+          ok: true,
+          data: parsed.data,
+          status: response.status,
+          receivedBytes: parsed.receivedBytes,
+          declaredBytes: parsed.declaredBytes,
+          retryCount,
+          initialFailureClass,
+        }
+      } catch (error) {
+        const serviceError = error instanceof TDXPayloadTooLargeError
+          ? error
+          : new TDXServiceError('TDX response is invalid JSON', 502, {
+              cause: error,
+              failureKind: 'invalid_json',
+            })
+        if (serviceError instanceof TDXPayloadTooLargeError) {
+          dependencies.recordCircuitSuccess(circuitKey)
+          logTDXResponseTooLarge(serviceError, {
+            operation: request.operation,
+            resource,
+            credentialScope: request.isShared ? 'shared' : 'byok',
+          })
+        } else {
+          dependencies.recordCircuitFailure(circuitKey, serviceError)
+        }
+        return { ok: false, error: serviceError, retryCount, initialFailureClass }
+      }
+    }
+  }
+
+  return {
+    fetchUpstream,
+    resetTDXUpstreamState: () => dataFlights.clear(),
+  }
+}
+
+function dataFlightKey(request: TDXUpstreamRequest): string {
+  return [
+    request.credentialKey,
+    request.operation ?? 'default',
+    request.maxResponseBytes,
+    request.ttlSeconds,
+    request.validatesPayload ? 'validated' : 'unvalidated',
+    request.url.toString(),
+  ].join('\0')
+}
+
+function joinSingleflight<T>(
+  flights: Map<string, Promise<T>>,
+  key: string,
+  maxEntries: number,
+  create: () => Promise<T>,
+): { promise: Promise<T>; leader: boolean } {
+  const existing = flights.get(key)
+  if (existing) return { promise: existing, leader: false }
+
+  const promise = create()
+  if (flights.size < maxEntries) {
+    flights.set(key, promise)
+    void promise.finally(() => {
+      if (flights.get(key) === promise) flights.delete(key)
+    }).catch(() => undefined)
+  }
+  return { promise, leader: true }
+}
+
+function shouldRetryResolution(
+  error: TDXServiceError,
+  operation: TelemetryTdxOperation | undefined,
+  retryCount: number,
+): boolean {
+  return Boolean(operation)
+    && retryCount === 0
+    && (error.failureKind === 'timeout'
+      || error.failureKind === 'network_error'
+      || error.failureKind === 'upstream_5xx')
+}
+
+function tdxResponseResource(url: URL): string {
+  const segments = url.pathname.split('/').filter(Boolean)
+  const busIndex = segments.indexOf('Bus')
+  const resource = busIndex >= 0 ? segments[busIndex + 1] : undefined
+  return resource && [
+    'EstimatedTimeOfArrival',
+    'Route',
+    'Schedule',
+    'Shape',
+    'Stop',
+    'StopOfRoute',
+    'Vehicle',
+  ].includes(resource)
+    ? resource
+    : 'other'
+}
