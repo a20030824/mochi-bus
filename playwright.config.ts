@@ -1,7 +1,9 @@
 import { defineConfig, devices } from '@playwright/test'
 
-const isCI = Boolean(process.env.CI)
-const isWorkerStatefulRun = process.env.PLAYWRIGHT_WORKER_STATEFUL === '1'
+type RuntimeProcess = { env?: Record<string, string | undefined> }
+const runtimeEnv = (globalThis as typeof globalThis & { process?: RuntimeProcess }).process?.env
+const isCI = Boolean(runtimeEnv?.CI)
+const isWorkerStatefulRun = runtimeEnv?.PLAYWRIGHT_WORKER_STATEFUL === '1'
 const workerStatefulSpec = /worker-stateful\.spec\.ts/
 
 // 這裡是「起真的瀏覽器點畫面」的整合測試,跟 vitest 的 node/workers project
