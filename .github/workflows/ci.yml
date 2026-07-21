@@ -5,144 +5,91 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  diagnose-tdx-error-classification:
+  changes:
+    name: Detect browser changes
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    outputs:
+      browser: ${{ steps.filter.outputs.browser }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 0
-      - name: Capture exact integration counts
+      - name: Detect browser-relevant changes
+        id: filter
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
 
-          text = Path('src/lib/tdx.ts').read_text()
-          output = [f'lines={len(text.splitlines())}']
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "browser=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
 
-          eta_import = """import {
-            formatETALabel,
-            toETAResult,
-            type BusETAItem,
-            type ETAResult,
-            type LocalizedName,
-          } from './tdx/eta-formatting'
-          """
-          export_anchor = """export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
-          export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
-          """
-          service_block = """export class TDXServiceError extends Error {
-            warning?: TDXWarning
-            failureKind?: TelemetryFailureClass
+          changed_files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
+          printf '%s\n' "${changed_files}"
 
-            constructor(
-              message: string,
-              readonly status?: number,
-              options?: ErrorOptions & { failureKind?: TelemetryFailureClass },
-            ) {
-              super(message, options)
-              this.name = 'TDXServiceError'
-              this.failureKind = options?.failureKind
-            }
+          if grep -Eq '^(src/|web/|public/|test/e2e/|\.github/workflows/ci\.yml$|playwright\.config\.(ts|js|mjs|cjs)$|vite\.config\.(ts|js|mjs|cjs)$|wrangler\.(toml|jsonc?)$|package\.json$|package-lock\.json$)' <<< "${changed_files}"; then
+            echo "browser=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "browser=false" >> "${GITHUB_OUTPUT}"
+          fi
 
-            get rateLimited(): boolean {
-              return this.status === 429 || this.warning === 'tdx-rate-limit' || this.warning === 'tdx-quota'
-            }
-          }
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check
 
-          export function isRejectedUserTdxToken(error: unknown, authorization?: string): boolean {
-            return Boolean(authorization)
-              && error instanceof TDXServiceError
-              && error.status === 401
-          }
-
-          """
-          tracking_end_marker = """export function resetTDXRateLimitTracking(): void {
-            sharedRateLimitedSince = null
-          }
-
-          """
-          observe_block = """  if (isShared && (response.status === 429 || warning === 'tdx-rate-limit' || warning === 'tdx-quota')) {
-            sharedRateLimitedSince ??= Date.now()
-          }
-          """
-          failure_block = """function responseFailureClass(status: number, warning?: TDXWarning): TelemetryFailureClass {
-            if (warning === 'tdx-quota') return 'quota'
-            if (status === 429 || warning === 'tdx-rate-limit') return 'rate_limited'
-            if (status === 401) return 'token_rejected'
-            if (status >= 400 && status <= 499) return 'upstream_4xx'
-            if (status >= 500 && status <= 599) return 'upstream_5xx'
-            return 'unknown'
-          }
-
-          function transportFailureClass(error: unknown): TelemetryFailureClass {
-            const name = error instanceof Error ? error.name : ''
-            return name === 'AbortError' || name === 'TimeoutError' ? 'timeout' : 'network_error'
-          }
-
-          """
-          wrapper_block = """function asTDXServiceError(error: unknown): TDXServiceError {
-            if (error instanceof TDXServiceError) return error
-            return new TDXServiceError('TDX resolution failed', undefined, {
-              cause: error,
-              failureKind: 'unknown',
-            })
-          }
-
-          """
-
-          checks = {
-            'eta_import': text.count(eta_import),
-            'export_anchor': text.count(export_anchor),
-            'service_block': text.count(service_block),
-            'tracking_start': text.count('// 額度用完與頻率超限 TDX 都只回 429'),
-            'tracking_end_marker': text.count(tracking_end_marker),
-            'observe_block': text.count(observe_block),
-            'classify_start': text.count('function classifyTDXWarning(status: number, body: string): TDXWarning | undefined {'),
-            'classify_end_marker_total': text.count('  return undefined\n}\n\n'),
-            'plain_reset_line_initial': text.count('  sharedRateLimitedSince = null\n'),
-            'success_reset_line': text.count('  if (isShared) sharedRateLimitedSince = null\n'),
-            'failure_block': text.count(failure_block),
-            'wrapper_block': text.count(wrapper_block),
-          }
-          output.extend(f'{key}={value}' for key, value in checks.items())
-
-          try:
-            tracking_start = text.index('// 額度用完與頻率超限 TDX 都只回 429')
-            tracking_end = text.index(tracking_end_marker, tracking_start) + len(tracking_end_marker)
-            after_tracking = text[:tracking_start] + text[tracking_end:]
-            output.append(f'plain_reset_after_tracking={after_tracking.count("  sharedRateLimitedSince = null" + chr(10))}')
-          except Exception as error:
-            output.append(f'tracking_simulation_error={type(error).__name__}:{error}')
-
-          try:
-            classify_start = text.index('function classifyTDXWarning(status: number, body: string): TDXWarning | undefined {')
-            classify_end = text.index('  return undefined\n}\n\n', classify_start)
-            output.append(f'classify_end_offset={classify_end - classify_start}')
-          except Exception as error:
-            output.append(f'classify_simulation_error={type(error).__name__}:{error}')
-
-          Path('tdx-classification-diagnostic.txt').write_text('\n'.join(output) + '\n')
-          print('\n'.join(output))
-          PY
-      - name: Publish diagnostic and restore canonical CI
-        shell: bash
-        run: |
-          set -euo pipefail
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tdx-classification-diagnostic.txt .github/workflows/ci.yml
-          git commit -m "chore: capture TDX classification integration diagnostic"
-          git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
+  map-ui:
+    name: Map UI regression
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Test all desktop and touch interaction flows
+        run: >-
+          npx playwright test
+          --project=desktop-chromium
+          --project=mobile-touch
+          --reporter=line,html
+      - name: Upload Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-ui-playwright-report
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
