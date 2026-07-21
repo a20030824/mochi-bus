@@ -1,3 +1,4 @@
+import type { TDXWarning } from '../../src/domain/tdx-warning'
 import { MochiApiError, isTdxTokenRejectedError } from '../tdx/api-client'
 
 const DEFAULT_TRANSIENT_DELAY_MS = 30_000
@@ -9,7 +10,7 @@ export type RetryDecision =
   | { retry: true; delayMs: number }
 
 export function routeRetryDecision(error: unknown): RetryDecision {
-  if (isPermanentFailure(error)) return { retry: false }
+  if (!isRetryableFailure(error)) return { retry: false }
   if (isQuotaFailure(error)) return { retry: true, delayMs: QUOTA_DELAY_MS }
   return {
     retry: true,
@@ -17,8 +18,15 @@ export function routeRetryDecision(error: unknown): RetryDecision {
   }
 }
 
+export function routeWarningRetryDecision(warning: TDXWarning): RetryDecision {
+  return {
+    retry: true,
+    delayMs: warning === 'tdx-quota' ? QUOTA_DELAY_MS : DEFAULT_TRANSIENT_DELAY_MS,
+  }
+}
+
 export function drawerRetryDecision(error: unknown, consecutiveFailures: number): RetryDecision {
-  if (isPermanentFailure(error)) return { retry: false }
+  if (!isRetryableFailure(error)) return { retry: false }
   if (isQuotaFailure(error)) return { retry: true, delayMs: QUOTA_DELAY_MS }
   return {
     retry: true,
@@ -35,9 +43,11 @@ function drawerDelay(consecutiveFailures: number): number {
   return DRAWER_DELAYS_MS[index]
 }
 
-function isPermanentFailure(error: unknown): boolean {
-  if (isTdxTokenRejectedError(error)) return true
-  return error instanceof MochiApiError && error.status >= 400 && error.status < 500 && error.status !== 429
+function isRetryableFailure(error: unknown): boolean {
+  if (isTdxTokenRejectedError(error)) return false
+  if (error instanceof TypeError) return true
+  if (!(error instanceof MochiApiError)) return false
+  return error.status === 408 || error.status === 429 || error.status >= 500
 }
 
 function isQuotaFailure(error: unknown): boolean {
