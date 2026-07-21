@@ -286,9 +286,9 @@ const nearbyPlaces = createNearbyPlacesController({
   },
   onPlaces: ({ places }) => { lastNearbyPlaces = places; renderNearbyPlaces() },
   onAutoPreview: openNearbyPlace,
-  onError: ({ cityCode, origin, error }) => setStatus(nearbyPlacesView.renderError({
+  onError: ({ cityCode, origin, autoPreview, error }) => setStatus(nearbyPlacesView.renderError({
     cityCode, origin, error, backLabel: '附近站牌', onBack: renderNearbyPlaces,
-    onRetry: () => void nearbyPlaces.retry(),
+    onRetry: () => void findNearbyPlaces(origin[0], origin[1], autoPreview, 'replace'),
   }), true),
 })
 const placeRoutes = createPlaceRoutesController({
@@ -1454,7 +1454,7 @@ async function findNearbyPlaces(
 
 function renderNearbyPlaces() {
   if (!activeCity || !lastNearbyOrigin) return
-  nearbyPlaces.cancel()
+  nearbyPlaces.invalidate()
   cancelNavRequest()
   nearbyPlacesMap.renderPlaces(lastNearbyOrigin, lastNearbyPlaces)
   drawTripEndpoints()

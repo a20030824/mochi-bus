@@ -37,8 +37,7 @@ type NearbyPlacesControllerOptions = {
 
 export type NearbyPlacesController = {
   load(request: NearbyPlacesRequest): Promise<boolean>
-  retry(): Promise<boolean>
-  cancel(): void
+  invalidate(): void
 }
 
 export function createNearbyPlacesController(
@@ -50,7 +49,6 @@ export function createNearbyPlacesController(
   }
 
   let generation = 0
-  let lastRequest: NearbyPlacesRequest | undefined
 
   function isCurrent(requestGeneration: number, cityCode: string, requestId: number): boolean {
     return generation === requestGeneration
@@ -63,7 +61,6 @@ export function createNearbyPlacesController(
 
     generation += 1
     const requestGeneration = generation
-    lastRequest = request
     options.onStart(request)
     const { requestId, signal } = options.beginRequest()
 
@@ -96,8 +93,8 @@ export function createNearbyPlacesController(
 
   return {
     load,
-    retry: () => lastRequest ? load(lastRequest) : Promise.resolve(false),
-    cancel() {
+    // Shared navigation owns request abortion; this only suppresses this controller's callbacks.
+    invalidate() {
       generation += 1
     },
   }

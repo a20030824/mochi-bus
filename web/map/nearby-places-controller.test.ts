@@ -126,7 +126,7 @@ describe('Nearby places controller', () => {
     expect(harness.presentations[0].origin).toEqual([25, 121])
   })
 
-  it('suppresses results and failures after city changes, cancellation, or request invalidation', async () => {
+  it('suppresses results and failures after city changes or invalidation', async () => {
     const cityPending = deferred<NearbyPlace[]>()
     const cityChanged = createHarness({ loadNearby: () => cityPending.promise })
     const cityLoad = cityChanged.controller.load(request())
@@ -135,13 +135,13 @@ describe('Nearby places controller', () => {
     await expect(cityLoad).resolves.toBe(false)
     expect(cityChanged.presentations).toEqual([])
 
-    const cancelledPending = deferred<NearbyPlace[]>()
-    const cancelled = createHarness({ loadNearby: () => cancelledPending.promise })
-    const cancelledLoad = cancelled.controller.load(request())
-    cancelled.controller.cancel()
-    cancelledPending.reject(new Error('cancelled'))
-    await expect(cancelledLoad).resolves.toBe(false)
-    expect(cancelled.failures).toEqual([])
+    const invalidatedPending = deferred<NearbyPlace[]>()
+    const invalidated = createHarness({ loadNearby: () => invalidatedPending.promise })
+    const invalidatedLoad = invalidated.controller.load(request())
+    invalidated.controller.invalidate()
+    invalidatedPending.reject(new Error('invalidated'))
+    await expect(invalidatedLoad).resolves.toBe(false)
+    expect(invalidated.failures).toEqual([])
 
     const stalePending = deferred<NearbyPlace[]>()
     const stale = createHarness({ loadNearby: () => stalePending.promise })
@@ -152,23 +152,15 @@ describe('Nearby places controller', () => {
     expect(stale.presentations).toEqual([])
   })
 
-  it('reports active errors and retries the latest request', async () => {
+  it('reports active errors without retaining a retry request', async () => {
     const error = new Error('nearby failed')
-    let attempt = 0
-    const harness = createHarness({
-      loadNearby: async () => {
-        attempt += 1
-        if (attempt === 1) throw error
-        return [place(1)]
-      },
-    })
+    const harness = createHarness({ loadNearby: async () => { throw error } })
     const loadRequest = request({ origin: [24.5, 120.5], radiusMeters: 300 })
 
     await expect(harness.controller.load(loadRequest)).resolves.toBe(false)
     expect(harness.failures).toEqual([{ ...loadRequest, error }])
-    await expect(harness.controller.retry()).resolves.toBe(true)
-    expect(harness.starts).toEqual([loadRequest, loadRequest])
-    expect(harness.presentations[0].places).toEqual([place(1)])
+    expect(harness.starts).toEqual([loadRequest])
+    expect(harness.presentations).toEqual([])
   })
 
   it('does not start for a different or missing city and rejects invalid limits', async () => {
@@ -178,7 +170,6 @@ describe('Nearby places controller', () => {
     harness.setCityCode(undefined)
     await expect(harness.controller.load(request())).resolves.toBe(false)
     expect(harness.loadNearby).not.toHaveBeenCalled()
-    await expect(harness.controller.retry()).resolves.toBe(false)
 
     expect(() => createHarness({ placeLimit: 0 })).toThrow('positive integer')
   })
