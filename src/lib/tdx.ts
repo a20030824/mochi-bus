@@ -10,17 +10,7 @@ import {
 } from '../domain/route-eta-status'
 import { selectRouteStopGroup } from '../domain/route-stop-group-selection'
 import { getSnapshotSchedule, type TransitBindings } from '../infrastructure/transit/snapshot-repository'
-import { memoryCacheGet, memoryCacheSet } from './memory-cache'
-import { cacheMatchFailOpen, cachePutFailOpen, type BackgroundTaskScheduler } from './edge-cache'
-import { releaseIdentity } from '../observability/release-identity'
-import { beginTDXResolutionTelemetry } from '../observability/tdx-resolution'
-import type {
-  TelemetryCity,
-  TelemetryFailureClass,
-  TelemetrySink,
-  TelemetryTdxOperation,
-  TelemetryTrafficClass,
-} from '../observability/telemetry'
+import type { TelemetryCity } from '../observability/telemetry'
 import {
   formatETALabel,
   toETAResult,
@@ -30,7 +20,6 @@ import {
 } from './tdx/eta-formatting'
 import {
   TDXServiceError,
-  asTDXServiceError,
   classifyTDXWarning,
   isRejectedUserTdxToken,
   observeTDXResponseFailure,
@@ -48,7 +37,6 @@ import {
   createTDXCircuitBreaker,
 } from './tdx/circuit-breaker'
 import {
-  DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES,
   TDX_ERROR_MAX_RESPONSE_BYTES,
   TDXPayloadTooLargeError,
   logTDXResponseSize,
@@ -56,11 +44,17 @@ import {
   parsedContentLength,
   readJsonResponse,
   readTextResponse,
-  responseByteLimit,
   type TDXBoundedTextResponse,
   type TDXResponseObservation,
 } from './tdx/bounded-response'
 import { createTDXUpstreamDataClient } from './tdx/upstream-data-client'
+import {
+  createTDXResolutionCache,
+  withTDXBackgroundTasks,
+  type TDXEnv,
+  type TDXResolutionOptions,
+  type TDXResolvedData,
+} from './tdx/resolution-cache'
 
 export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
 export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
@@ -71,39 +65,8 @@ export {
   tdxWarningFromError,
 }
 export { tdxCredentialScope, withUserTDXAccessToken } from './tdx/token-client'
-
-type TDXTelemetryContext = {
-  trafficClass?: TelemetryTrafficClass
-  sampleProbability?: number
-  now?: () => number
-  random?: () => number
-  emitter?: TelemetrySink
-}
-
-export type TDXEnv = TDXCredentialEnv & {
-  TDX_BACKGROUND_TASKS?: BackgroundTaskScheduler
-  CF_VERSION_METADATA?: CloudflareBindings['CF_VERSION_METADATA']
-  TDX_TELEMETRY?: TDXTelemetryContext
-}
-
-export type TDXResolutionOptions<T> = {
-  operation?: TelemetryTdxOperation
-  city?: TelemetryCity | null
-  validate?: (value: unknown) => value is T
-  staleFallback?: (error: TDXServiceError) => Promise<{ data: T; dataAgeMilliseconds?: number } | undefined>
-  blockedFailureClass?: TelemetryFailureClass
-  maxResponseBytes?: number
-}
-
-export type TDXResolvedData<T> = {
-  data: T
-  resolution: 'memory' | 'edge' | 'upstream' | 'stale_replay'
-  degraded: boolean
-}
-
-export function withTDXBackgroundTasks<E extends TDXEnv>(env: E, schedule?: BackgroundTaskScheduler): E {
-  return schedule ? { ...env, TDX_BACKGROUND_TASKS: schedule } : env
-}
+export { withTDXBackgroundTasks }
+export type { TDXEnv, TDXResolutionOptions, TDXResolvedData }
 
 type StopOfRouteItem = {
   RouteUID?: string
@@ -308,6 +271,17 @@ const upstreamDataClient = createTDXUpstreamDataClient({
     tdxResponseError(context, response, isShared, observation)
   ),
 })
+
+
+const resolutionCache = createTDXResolutionCache({
+  getTDXToken,
+  fetchUpstream: upstreamDataClient.fetchUpstream,
+  recordCircuitFailure: (key, error) => circuitBreaker.recordFailure(key, error),
+  recordCircuitSuccess: circuitBreaker.recordSuccess,
+})
+
+export const fetchTDXJson = resolutionCache.fetchTDXJson
+export const resolveTDXJson = resolutionCache.resolveTDXJson
 
 export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<ResolvedBusQuery> {
   const groups = await getRouteStopGroups(env, query.city, query.routeName, query.routeUid)
@@ -676,207 +650,6 @@ async function getBusETA(env: TDXEnv, query: BusQuery): Promise<BusETAItem[]> {
   return fetchTDXJson<BusETAItem[]>(env, url, ETA_CACHE_SECONDS)
 }
 
-type TDXCacheEntry<T> = { data: T; cachedAt?: number }
-
-export async function fetchTDXJson<T>(
-  env: TDXEnv,
-  url: URL,
-  ttlSeconds: number,
-  options: TDXResolutionOptions<T> = {},
-): Promise<T> {
-  return (await resolveTDXJson(env, url, ttlSeconds, options)).data
-}
-
-export async function resolveTDXJson<T>(
-  env: TDXEnv,
-  url: URL,
-  ttlSeconds: number,
-  options: TDXResolutionOptions<T> = {},
-): Promise<TDXResolvedData<T>> {
-  const now = telemetryNow(env)
-  const maxResponseBytes = responseByteLimit(options.maxResponseBytes)
-  const credentialScope = env.TDX_USER_ACCESS_TOKEN ? 'byok' as const : 'shared' as const
-  const tracker = options.operation ? beginTDXResolutionTelemetry({
-    tdxOperation: options.operation,
-    credentialScope,
-    city: options.city ?? null,
-    trafficClass: env.TDX_TELEMETRY?.trafficClass ?? 'user',
-    releaseIdentity: releaseIdentity(env.CF_VERSION_METADATA),
-    sampleProbability: env.TDX_TELEMETRY?.sampleProbability,
-    now: env.TDX_TELEMETRY?.now,
-    random: env.TDX_TELEMETRY?.random,
-    emitter: env.TDX_TELEMETRY?.emitter,
-  }) : undefined
-  let retryCount = 0
-  let initialFailureClass: TelemetryFailureClass | undefined
-
-  const completeData = (
-    data: T,
-    resolution: TDXResolvedData<T>['resolution'],
-    dataAgeMilliseconds: number | undefined,
-    upstreamStatus?: number,
-  ): TDXResolvedData<T> => {
-    tracker?.complete({
-      resolution,
-      result: isEmptyPayload(data) ? 'empty' : resolution === 'stale_replay' ? 'degraded' : 'success',
-      failureClass: resolution === 'stale_replay' ? initialFailureClass ?? 'unknown' : 'none',
-      initialFailureClass,
-      retryCount,
-      dataAgeMilliseconds,
-      upstreamStatus,
-    })
-    return { data, resolution, degraded: resolution === 'stale_replay' }
-  }
-
-  const finishFailure = async (
-    error: TDXServiceError,
-    attemptedUpstream: boolean,
-  ): Promise<TDXResolvedData<T>> => {
-    const failureClass = error.failureKind ?? 'unknown'
-    if (options.staleFallback) {
-      try {
-        const stale = await options.staleFallback(error)
-        if (stale !== undefined && !isEmptyPayload(stale.data)) {
-          initialFailureClass ??= failureClass
-          return completeData(
-            stale.data,
-            'stale_replay',
-            stale.dataAgeMilliseconds,
-            attemptedUpstream ? error.status : undefined,
-          )
-        }
-      } catch {
-        // Stale fallback is fail-open for the original TDX failure; it never replaces the cause.
-      }
-    }
-    tracker?.complete({
-      resolution: failureClass === 'circuit_open' ? 'circuit_open' : attemptedUpstream ? 'upstream' : 'none',
-      result: 'error',
-      failureClass,
-      initialFailureClass,
-      retryCount,
-      dataAgeMilliseconds: null,
-      upstreamStatus: attemptedUpstream ? error.status : undefined,
-    })
-    throw error
-  }
-
-  const memoryKey = `tdx/${maxResponseBytes ?? 'unbounded'}/${url.toString()}`
-  const memoized = memoryCacheGet<TDXCacheEntry<T>>(memoryKey)
-  if (memoized !== undefined && validPayload(memoized.data, options.validate)) {
-    return completeData(
-      memoized.data,
-      'memory',
-      memoized.cachedAt === undefined ? undefined : Math.max(0, now() - memoized.cachedAt),
-    )
-  }
-
-  const edgeCache = (caches as CacheStorage & { default: Cache }).default
-  const cacheKey = new Request(`https://mochi-cache.invalid/tdx/${encodeURIComponent(url.toString())}`)
-  const cached = await cacheMatchFailOpen(edgeCache, cacheKey, 'tdx')
-  if (cached) {
-    try {
-      const parsed = await readJsonResponse(cached, maxResponseBytes)
-      if (validPayload(parsed.data, options.validate)) {
-        const cachedAt = parsedCacheTimestamp(cached.headers.get('X-Mochi-Cached-At'))
-        const typed = parsed.data as T
-        memoryCacheSet(memoryKey, { data: typed, cachedAt }, ttlSeconds)
-        return completeData(
-          typed,
-          'edge',
-          cachedAt === undefined ? undefined : Math.max(0, now() - cachedAt),
-        )
-      }
-      console.error(JSON.stringify({ message: 'edge_cache_payload_invalid', context: 'tdx_schema' }))
-    } catch (error) {
-      console.error(JSON.stringify({
-        message: 'edge_cache_payload_invalid',
-        context: 'tdx',
-        error: error instanceof Error ? error.message : String(error),
-      }))
-    }
-  }
-
-  if (options.blockedFailureClass) {
-    const error = new TDXServiceError('TDX resolution blocked by active cooldown', 429, {
-      failureKind: options.blockedFailureClass,
-    })
-    error.warning = options.blockedFailureClass === 'quota' ? 'tdx-quota' : 'tdx-rate-limit'
-    return finishFailure(error, false)
-  }
-
-  let tokenInfo: Awaited<ReturnType<typeof getTDXToken>>
-  try {
-    tokenInfo = await getTDXToken(env)
-  } catch (error) {
-    const serviceError = asTDXServiceError(error)
-    return finishFailure(
-      serviceError,
-      serviceError.failureKind !== 'circuit_open' && serviceError.failureKind !== 'unknown',
-    )
-  }
-  const { token, isShared, credentialKey } = tokenInfo
-  let upstreamResult: Awaited<ReturnType<typeof upstreamDataClient.fetchUpstream>>
-  try {
-    upstreamResult = await upstreamDataClient.fetchUpstream({
-      url,
-      maxResponseBytes,
-      operation: options.operation,
-      token,
-      isShared,
-      credentialKey,
-      ttlSeconds,
-      validatesPayload: Boolean(options.validate),
-    })
-  } catch (error) {
-    return finishFailure(asTDXServiceError(error), false)
-  }
-  const { outcome: upstream, leader, circuitKey, resource } = upstreamResult
-  retryCount = upstream.retryCount
-  initialFailureClass = upstream.initialFailureClass
-  if (!upstream.ok) return finishFailure(upstream.error, true)
-
-  if (leader) {
-    logTDXResponseSize({
-      operation: options.operation,
-      resource,
-      credentialScope,
-      maxBytes: maxResponseBytes,
-      receivedBytes: upstream.receivedBytes,
-      declaredBytes: upstream.declaredBytes,
-      sampled: tracker?.isSampled ?? false,
-    })
-  }
-
-  if (!validPayload(upstream.data, options.validate)) {
-    const serviceError = new TDXServiceError('TDX response has an invalid schema', 502, {
-      failureKind: 'invalid_schema',
-    })
-    if (leader) circuitBreaker.recordFailure(circuitKey, serviceError)
-    return finishFailure(serviceError, true)
-  }
-
-  const data = upstream.data as T
-  if (leader) circuitBreaker.recordSuccess(circuitKey)
-  const cachedAt = now()
-  memoryCacheSet(memoryKey, { data, cachedAt }, ttlSeconds)
-  const resolved = completeData(data, 'upstream', 0, upstream.status)
-  if (leader) {
-    await cachePutFailOpen(edgeCache, cacheKey, new Response(JSON.stringify(data), {
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': `public, max-age=${ttlSeconds}`,
-        'X-Mochi-Cached-At': String(cachedAt),
-      },
-    }), 'tdx', env.TDX_BACKGROUND_TASKS)
-  }
-  return resolved
-}
-
-function validPayload<T>(value: unknown, validate?: (value: unknown) => value is T): value is T {
-  return validate ? validate(value) : true
-}
-
 export function isTDXRecordArray<T extends object>(value: unknown): value is T[] {
   return isRecordArrayPayload(value)
 }
@@ -888,28 +661,6 @@ function isRecordArrayPayload<T extends object>(value: unknown): value is T[] {
 
 function telemetryCity(value: string): TelemetryCity | null {
   return supportedCityCodes.has(value) ? value as TelemetryCity : null
-}
-
-function isEmptyPayload(value: unknown): boolean {
-  return Array.isArray(value) && value.length === 0
-}
-
-function parsedCacheTimestamp(value: string | null): number | undefined {
-  if (!value) return undefined
-  const timestamp = Number(value)
-  return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : undefined
-}
-
-function telemetryNow(env: TDXEnv): () => number {
-  const configured = env.TDX_TELEMETRY?.now
-  return () => {
-    try {
-      const value = configured ? configured() : Date.now()
-      return Number.isFinite(value) ? value : Date.now()
-    } catch {
-      return Date.now()
-    }
-  }
 }
 
 function dedupeStops(stops: RouteStop[]): RouteStop[] {
