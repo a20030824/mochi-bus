@@ -21,9 +21,7 @@ import {
 import {
   getCityNetwork,
   getActiveSnapshotVersion,
-  getDirectRoutes,
   getJourneyLegStopRefs,
-  getOneTransferRoutes,
   getSnapshotRouteVariants,
   getSnapshotRouteCatalog,
   getSnapshotSchedule,
@@ -65,6 +63,7 @@ import {
   readStopPlace,
   searchPlaces,
 } from './map-place-lookups'
+import { readDirectRoutes, readTransferPlans } from './map-journey-plans'
 
 const map = new Hono<MapEnv>()
 
@@ -544,35 +543,9 @@ map.get('/api/v1/map/place/:placeId', readPlace)
 
 map.get('/api/v1/map/stop-place', readStopPlace)
 
-map.get('/api/v1/map/direct', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    const from = requiredQueryString(c.req.query('from'), '起點', 100)
-    const to = requiredQueryString(c.req.query('to'), '終點', 100)
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    const routes = await getDirectRoutes(c.env, city, from, to)
-    return c.json({ schemaVersion: 1, city, from, to, routes }, 200, {
-      'Cache-Control': 'public, max-age=86400',
-    })
-  } catch (error) {
-    return mapJsonError(c, error, '直達路線查詢失敗')
-  }
-})
+map.get('/api/v1/map/direct', readDirectRoutes)
 
-map.get('/api/v1/map/transfer', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    const from = requiredQueryString(c.req.query('from'), '出發位置', 100)
-    const to = requiredQueryString(c.req.query('to'), '目的地', 100)
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    const plans = await getOneTransferRoutes(c.env, city, from, to)
-    return c.json({ schemaVersion: 1, city, from, to, plans }, 200, {
-      'Cache-Control': 'public, max-age=86400',
-    })
-  } catch (error) {
-    return mapJsonError(c, error, '轉乘路線查詢失敗')
-  }
-})
+map.get('/api/v1/map/transfer', readTransferPlans)
 
 map.post('/api/v1/map/journey-eta', bodyLimit({
   maxSize: JOURNEY_ETA_BODY_LIMIT_BYTES,
