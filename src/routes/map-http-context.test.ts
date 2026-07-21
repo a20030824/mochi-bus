@@ -24,9 +24,9 @@ function requestWith(
 ): Promise<Response> {
   const app = new Hono<MapEnv>()
   app.get('/', handler)
-  return app.request('https://bus.example/', {
+  return Promise.resolve(app.request('https://bus.example/', {
     headers: authorization ? { Authorization: authorization } : undefined,
-  }, bindings)
+  }, bindings))
 }
 
 describe('Map HTTP context', () => {
