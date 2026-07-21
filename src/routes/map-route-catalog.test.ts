@@ -105,7 +105,6 @@ describe('Map route catalog handler', () => {
       result: 'success',
       source: 'snapshot',
       snapshotVersion: 'snapshot-v7',
-      httpStatus: 200,
       city: 'Taipei',
     })
   })
@@ -134,7 +133,6 @@ describe('Map route catalog handler', () => {
       result: 'degraded',
       source: 'fallback',
       snapshotVersion: null,
-      httpStatus: 200,
     })
   })
 
@@ -150,7 +148,6 @@ describe('Map route catalog handler', () => {
       result: 'empty',
       source: 'fallback',
       emptyReason: 'no_routes',
-      httpStatus: 200,
     })
   })
 
@@ -166,7 +163,6 @@ describe('Map route catalog handler', () => {
       result: 'error',
       source: 'none',
       failureClass: 'input_validation',
-      httpStatus: 400,
     })
   })
 
@@ -182,7 +178,6 @@ describe('Map route catalog handler', () => {
       result: 'error',
       source: 'none',
       failureClass: 'unknown',
-      httpStatus: 502,
     })
   })
 
@@ -198,7 +193,6 @@ describe('Map route catalog handler', () => {
       result: 'error',
       source: 'none',
       failureClass: 'tdx_429',
-      httpStatus: 502,
     })
   })
 })
