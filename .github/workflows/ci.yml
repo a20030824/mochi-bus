@@ -7,175 +7,138 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: ci-pr-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  integrate-tdx-upstream-data-client:
+  diagnose-upstream-data-client:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
           persist-credentials: true
           fetch-depth: 0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Integrate upstream data client boundary
+      - name: Simulate integration with stage trace
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+          python - <<'PY' > UPSTREAM_DIAGNOSTIC_2.txt 2>&1
           from pathlib import Path
+          import traceback
 
-          path = Path('src/lib/tdx.ts')
-          text = path.read_text()
-          before_lines = len(text.splitlines())
+          text = Path('src/lib/tdx.ts').read_text()
+          print('start', len(text.splitlines()))
+          try:
+              for line in [
+                  '  observeTDXResponseSuccess,\n',
+                  '  transportFailureClass,\n',
+                  '  dataCircuitKey,\n',
+              ]:
+                  print('import', repr(line), text.count(line))
+                  assert text.count(line) == 1
+                  text = text.replace(line, '')
+              print('stage imports')
 
-          for line in [
-              '  observeTDXResponseSuccess,\n',
-              '  transportFailureClass,\n',
-              '  dataCircuitKey,\n',
-          ]:
-              if text.count(line) != 1:
-                  raise SystemExit(f'import line count for {line.strip()}={text.count(line)}')
-              text = text.replace(line, '')
+              bounded_end = "} from './tdx/bounded-response'\n"
+              print('bounded_end', text.count(bounded_end))
+              assert text.count(bounded_end) == 1
+              text = text.replace(bounded_end, bounded_end + "import { createTDXUpstreamDataClient } from './tdx/upstream-data-client'\n")
+              print('stage upstream import')
 
-          bounded_import_end = "} from './tdx/bounded-response'\n"
-          upstream_import = "import { createTDXUpstreamDataClient } from './tdx/upstream-data-client'\n"
-          if text.count(bounded_import_end) != 1:
-              raise SystemExit(f'bounded import end count={text.count(bounded_import_end)}')
-          text = text.replace(bounded_import_end, bounded_import_end + upstream_import)
+              print('outcome', text.count('type TDXUpstreamOutcome ='), text.count('// 測試用：模擬 isolate 重建'))
+              start = text.index('type TDXUpstreamOutcome =')
+              end = text.index('// 測試用：模擬 isolate 重建', start)
+              text = text[:start] + text[end:]
+              print('stage outcome')
 
-          outcome_start = text.index('type TDXUpstreamOutcome =')
-          outcome_end = text.index('// 測試用：模擬 isolate 重建', outcome_start)
-          text = text[:outcome_start] + text[outcome_end:]
+              for old, new in [
+                  ('  dataFlights.clear()\n', '  upstreamDataClient.resetTDXUpstreamState()\n'),
+                  ('const MAX_TDX_SINGLEFLIGHT_ENTRIES = 128\n', ''),
+              ]:
+                  print('replace', repr(old), text.count(old))
+                  assert text.count(old) == 1
+                  text = text.replace(old, new)
+              print('stage reset/constants')
 
-          reset_line = '  dataFlights.clear()\n'
-          if text.count(reset_line) != 1:
-              raise SystemExit(f'data flight reset count={text.count(reset_line)}')
-          text = text.replace(reset_line, '  upstreamDataClient.resetTDXUpstreamState()\n')
+              anchor = 'const resetTDXTokenState = tokenClient.resetTDXTokenState\n'
+              print('token anchor', text.count(anchor))
+              assert text.count(anchor) == 1
+              text = text.replace(anchor, anchor + """
 
-          max_line = 'const MAX_TDX_SINGLEFLIGHT_ENTRIES = 128\n'
-          if text.count(max_line) != 1:
-              raise SystemExit(f'max singleflight constant count={text.count(max_line)}')
-          text = text.replace(max_line, '')
-
-          token_reset = 'const resetTDXTokenState = tokenClient.resetTDXTokenState\n'
-          upstream_instance = """
-
-          const upstreamDataClient = createTDXUpstreamDataClient({
-            requestTimeoutMs: REQUEST_TIMEOUT_MS,
-            assertCircuitClosed: (key) => { circuitBreaker.assertClosed(key) },
-            recordCircuitFailure: (key, error, retryAfter) => circuitBreaker.recordFailure(key, error, retryAfter),
-            recordCircuitSuccess: circuitBreaker.recordSuccess,
-            responseError: (context, response, isShared, observation) => (
-              tdxResponseError(context, response, isShared, observation)
-            ),
-          })
-          """
-          if text.count(token_reset) != 1:
-              raise SystemExit(f'token reset anchor count={text.count(token_reset)}')
-          text = text.replace(token_reset, token_reset + upstream_instance)
-
-          upstream_start = text.index('  const circuitKey = dataCircuitKey(credentialKey)')
-          upstream_end = text.index('  retryCount = upstream.retryCount', upstream_start)
-          upstream_replacement = """  let upstreamResult: Awaited<ReturnType<typeof upstreamDataClient.fetchUpstream>>
-            try {
-              upstreamResult = await upstreamDataClient.fetchUpstream({
-                url,
-                maxResponseBytes,
-                operation: options.operation,
-                token,
-                isShared,
-                credentialKey,
-                ttlSeconds,
-                validatesPayload: Boolean(options.validate),
+              const upstreamDataClient = createTDXUpstreamDataClient({
+                requestTimeoutMs: REQUEST_TIMEOUT_MS,
+                assertCircuitClosed: (key) => { circuitBreaker.assertClosed(key) },
+                recordCircuitFailure: (key, error, retryAfter) => circuitBreaker.recordFailure(key, error, retryAfter),
+                recordCircuitSuccess: circuitBreaker.recordSuccess,
+                responseError: (context, response, isShared, observation) => (
+                  tdxResponseError(context, response, isShared, observation)
+                ),
               })
-            } catch (error) {
-              return finishFailure(asTDXServiceError(error), false)
-            }
-            const { outcome: upstream, leader, circuitKey, resource } = upstreamResult
-          """
-          text = text[:upstream_start] + upstream_replacement + text[upstream_end:]
+              """)
+              print('stage instance')
 
-          helpers_start = text.index('function dataFlightKey(')
-          helpers_end = text.index('function validPayload', helpers_start)
-          text = text[:helpers_start] + text[helpers_end:]
+              print('upstream anchors', text.count('  const circuitKey = dataCircuitKey(credentialKey)'), text.count('  retryCount = upstream.retryCount'))
+              start = text.index('  const circuitKey = dataCircuitKey(credentialKey)')
+              end = text.index('  retryCount = upstream.retryCount', start)
+              text = text[:start] + """  let upstreamResult: Awaited<ReturnType<typeof upstreamDataClient.fetchUpstream>>
+                try {
+                  upstreamResult = await upstreamDataClient.fetchUpstream({
+                    url,
+                    maxResponseBytes,
+                    operation: options.operation,
+                    token,
+                    isShared,
+                    credentialKey,
+                    ttlSeconds,
+                    validatesPayload: Boolean(options.validate),
+                  })
+                } catch (error) {
+                  return finishFailure(asTDXServiceError(error), false)
+                }
+                const { outcome: upstream, leader, circuitKey, resource } = upstreamResult
+              """ + text[end:]
+              print('stage resolution call')
 
-          resource_line = '      resource: tdxResponseResource(url),\n'
-          if text.count(resource_line) != 1:
-              raise SystemExit(f'resolution resource line count={text.count(resource_line)}')
-          text = text.replace(resource_line, '      resource,\n')
+              print('helper anchors', text.count('function dataFlightKey('), text.count('function validPayload'))
+              start = text.index('function dataFlightKey(')
+              end = text.index('function validPayload', start)
+              text = text[:start] + text[end:]
+              print('stage helpers removed')
 
-          forbidden = [
-              'type TDXUpstreamOutcome',
-              'dataFlights',
-              'dataFlightKey(',
-              'joinSingleflight(',
-              'fetchTDXUpstream(',
-              'shouldRetryResolution(',
-              'tdxResponseResource(',
-              'observeTDXResponseSuccess',
-              'transportFailureClass',
-              'dataCircuitKey',
-              'MAX_TDX_SINGLEFLIGHT_ENTRIES',
-          ]
-          for token in forbidden:
-              if token in text:
-                  raise SystemExit(f'forbidden token remains: {token}')
+              resource_line = '      resource: tdxResponseResource(url),\n'
+              print('resource line', text.count(resource_line))
+              assert text.count(resource_line) == 1
+              text = text.replace(resource_line, '      resource,\n')
+              print('stage resource')
 
-          required = [
-              'async function tdxResponseError(',
-              'const upstreamDataClient = createTDXUpstreamDataClient({',
-              'upstreamDataClient.resetTDXUpstreamState()',
-              'const memoryKey =',
-              "'memory'",
-              "'edge'",
-              "'stale_replay'",
-              'if (!validPayload(upstream.data, options.validate))',
-              'if (leader) circuitBreaker.recordSuccess(circuitKey)',
-              'await cachePutFailOpen(',
-              'const parsed = await readJsonResponse(cached, maxResponseBytes)',
-          ]
-          for token in required:
-              if token not in text:
-                  raise SystemExit(f'required token missing: {token}')
+              forbidden = [
+                  'type TDXUpstreamOutcome', 'dataFlights', 'dataFlightKey(', 'joinSingleflight(',
+                  'fetchTDXUpstream(', 'shouldRetryResolution(', 'tdxResponseResource(',
+                  'observeTDXResponseSuccess', 'transportFailureClass', 'dataCircuitKey',
+                  'MAX_TDX_SINGLEFLIGHT_ENTRIES',
+              ]
+              for token in forbidden:
+                  print('forbidden', repr(token), text.count(token))
+              print('stage forbidden')
 
-          path.write_text(text)
-          after_lines = len(text.splitlines())
-          print(f'src/lib/tdx.ts: {before_lines} -> {after_lines} lines')
+              required = [
+                  'async function tdxResponseError(',
+                  'const upstreamDataClient = createTDXUpstreamDataClient({',
+                  'upstreamDataClient.resetTDXUpstreamState()',
+                  'const memoryKey =', "'memory'", "'edge'", "'stale_replay'",
+                  'if (!validPayload(upstream.data, options.validate))',
+                  'if (leader) circuitBreaker.recordSuccess(circuitKey)',
+                  'await cachePutFailOpen(',
+                  'const parsed = await readJsonResponse(cached, maxResponseBytes)',
+              ]
+              for token in required:
+                  print('required', repr(token), text.count(token))
+              print('done', len(text.splitlines()))
+          except BaseException as error:
+              print('ERROR', type(error).__name__, str(error))
+              traceback.print_exc()
           PY
-      - run: npm ci --silent
-      - name: Run focused contracts
-        run: >-
-          npx vitest run
-          src/lib/tdx/upstream-data-client.test.ts
-          src/lib/tdx/bounded-response.test.ts
-          src/lib/tdx/circuit-breaker.test.ts
-          src/lib/tdx/token-client.test.ts
-          src/lib/tdx/error-classification.test.ts
-          src/lib/tdx-resolution.test.ts
-          src/lib/tdx.test.ts
-          src/routes/map-place-arrivals-contract.test.ts
-          src/routes/map-journey-eta.test.ts
-          src/routes/map-vehicles-read.test.ts
-          src/routes/route-eta.test.ts
-      - run: npm run check
-      - run: git diff --check
-      - name: Commit clean extraction
-        shell: bash
-        run: |
-          set -euo pipefail
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          rm -f UPSTREAM_DIAGNOSTIC.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A src/lib/tdx.ts src/lib/tdx/upstream-data-client.ts src/lib/tdx/upstream-data-client.test.ts .github/workflows/ci.yml UPSTREAM_DIAGNOSTIC.txt
-          git diff --cached --check
-          git commit -m "refactor(tdx): extract upstream data client boundary"
+          git add UPSTREAM_DIAGNOSTIC_2.txt .github/workflows/ci.yml
+          git commit -m "chore: capture upstream integration stage trace"
           git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
