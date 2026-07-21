@@ -14,6 +14,7 @@ import {
   optionalQueryString,
   parseOptionalDirection,
 } from '../lib/api-input'
+import { logProductionError } from '../observability/production-log'
 import { mapJsonError, tdxEnv, type MapEnv } from './map-http-context'
 
 type RouteVariantSource = 'snapshot' | 'tdx'
@@ -71,7 +72,12 @@ export async function readRouteMap(c: Context<MapEnv>) {
     })
   } catch (error) {
     if (!(error instanceof QueryValidationError || error instanceof ApiInputError)) {
-      console.error('route_map_failed', error)
+      logProductionError({
+        event: 'route_map_failed',
+        operation: 'map_route',
+        city: c.req.query('city')?.trim(),
+        error,
+      })
     }
     return mapJsonError(c, error, '暫時無法取得路線地圖')
   }
