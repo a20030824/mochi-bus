@@ -10,7 +10,7 @@ describe('applyRouteShell', () => {
 
     const html = await response.text()
     expect(html).toContain('<main class="route-page"></main>')
-    expect(html).toContain('<style>.route-stop&gt;div{align-items:baseline}.route-stop.selected em{transform:translateY(1px)}</style>')
+    expect(html).toContain('<style>.route-stop>div{align-items:baseline}.route-stop.selected em{transform:translateY(1px)}</style>')
     expect(html).toContain('<script type="module" src="/assets/route.js"></script>')
   })
 
