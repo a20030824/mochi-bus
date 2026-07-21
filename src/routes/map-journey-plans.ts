@@ -8,7 +8,7 @@ import {
 import { requiredQueryString } from '../lib/api-input'
 import { mapJsonError, type MapEnv } from './map-http-context'
 
-// These handlers own only snapshot-backed journey planning contracts; realtime ETA stays in map.ts.
+// Registration order and realtime ETA stay in map.ts; these handlers own snapshot-backed request/response contracts.
 export async function readDirectRoutes(c: Context<MapEnv>) {
   try {
     const city = c.req.query('city')?.trim()
