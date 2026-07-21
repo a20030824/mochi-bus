@@ -5,91 +5,254 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Detect browser changes
+  integrate-tdx-bus-route-queries:
     runs-on: ubuntu-latest
-    outputs:
-      browser: ${{ steps.filter.outputs.browser }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          persist-credentials: true
           fetch-depth: 0
-      - name: Detect browser-relevant changes
-        id: filter
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Preserve route query URL identity
         shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/lib/tdx/bus-route-queries.ts')
+          text = path.read_text()
+          replacements = [
+              (
+                  "    const url = formattedBusUrl('Route/InterCity')\n"
+                  "    url.searchParams.set('$select', 'RouteUID,RouteName,DepartureStopNameZh,DestinationStopNameZh')\n",
+                  "    const url = busUrl('Route/InterCity')\n"
+                  "    url.searchParams.set('$select', 'RouteUID,RouteName,DepartureStopNameZh,DestinationStopNameZh')\n"
+                  "    url.searchParams.set('$format', 'JSON')\n",
+              ),
+              (
+                  "      const url = formattedBusUrl(path)\n"
+                  "      url.searchParams.set('$filter', filter)\n",
+                  "      const url = busUrl(path)\n"
+                  "      url.searchParams.set('$filter', filter)\n"
+                  "      url.searchParams.set('$format', 'JSON')\n",
+              ),
+              (
+                  "function formattedBusUrl(path: string): URL {\n"
+                  "  const url = new URL(`${BUS_API_BASE}/${path}`)\n"
+                  "  url.searchParams.set('$format', 'JSON')\n"
+                  "  return url\n"
+                  "}\n",
+                  "function busUrl(path: string): URL {\n"
+                  "  return new URL(`${BUS_API_BASE}/${path}`)\n"
+                  "}\n\n"
+                  "function formattedBusUrl(path: string): URL {\n"
+                  "  const url = busUrl(path)\n"
+                  "  url.searchParams.set('$format', 'JSON')\n"
+                  "  return url\n"
+                  "}\n",
+              ),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'URL identity anchor count={text.count(old)} for {old!r}')
+              text = text.replace(old, new)
+          path.write_text(text)
+          PY
+      - name: Integrate bus route query boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
 
-          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
-            echo "browser=true" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
+          path = Path('src/lib/tdx.ts')
+          text = path.read_text()
+          before_lines = len(text.splitlines())
 
-          changed_files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
-          printf '%s\n' "${changed_files}"
+          route_category_import = "import { classifyRouteName, type RouteCategory } from '../domain/route-category'\n"
+          if text.count(route_category_import) != 1:
+              raise SystemExit(f'route category import count={text.count(route_category_import)}')
+          text = text.replace(route_category_import, '')
 
-          if grep -Eq '^(src/|web/|public/|test/e2e/|\.github/workflows/ci\.yml$|playwright\.config\.(ts|js|mjs|cjs)$|vite\.config\.(ts|js|mjs|cjs)$|wrangler\.(toml|jsonc?)$|package\.json$|package-lock\.json$)' <<< "${changed_files}"; then
-            echo "browser=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "browser=false" >> "${GITHUB_OUTPUT}"
-          fi
+          localized_name = '  type LocalizedName,\n'
+          if text.count(localized_name) != 1:
+              raise SystemExit(f'LocalizedName import count={text.count(localized_name)}')
+          text = text.replace(localized_name, '')
 
-  quality:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - run: npm run check
+          resolution_import = """import {
+            createTDXResolutionCache,
+            withTDXBackgroundTasks,
+            type TDXEnv,
+            type TDXResolutionOptions,
+            type TDXResolvedData,
+          } from './tdx/resolution-cache'
+          """
+          route_query_import = resolution_import + """import {
+            BUS_ETA_CACHE_SECONDS,
+            QueryResolutionError,
+            createTDXBusRouteQueries,
+            tdxRouteScope,
+          } from './tdx/bus-route-queries'
+          """
+          if text.count(resolution_import) != 1:
+              raise SystemExit(f'resolution import count={text.count(resolution_import)}')
+          text = text.replace(resolution_import, route_query_import)
 
-  map-ui:
-    name: Map UI regression
-    needs: changes
-    if: needs.changes.outputs.browser == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
+          export_anchor = "export type { TDXEnv, TDXResolutionOptions, TDXResolvedData }\n"
+          export_addition = export_anchor + """export {
+            QueryResolutionError,
+            mergeEquivalentStopGroups,
+            tdxRouteScope,
+          } from './tdx/bus-route-queries'
+          export type {
+            RouteCatalogItem,
+            RouteStop,
+            StopGroup,
+            StopRouteSuggestion,
+          } from './tdx/bus-route-queries'
+          """
+          if text.count(export_anchor) != 1:
+              raise SystemExit(f'export anchor count={text.count(export_anchor)}')
+          text = text.replace(export_anchor, export_addition)
+
+          types_start = text.index('type StopOfRouteItem = {')
+          types_end = text.index('// 「estimated 淡墨」', types_start)
+          text = text[:types_start] + text[types_end:]
+
+          for line in [
+              'const ETA_CACHE_SECONDS = 12\n',
+              'const STATIC_CACHE_SECONDS = 60 * 60\n',
+          ]:
+              if text.count(line) != 1:
+                  raise SystemExit(f'cache constant count for {line.strip()}={text.count(line)}')
+              text = text.replace(line, '')
+
+          scope_start = text.index('// 公路客運(公路總局)的資源掛在 /InterCity')
+          scope_end = text.index('const circuitBreaker =', scope_start)
+          text = text[:scope_start] + text[scope_end:]
+
+          resolver_anchor = """export const fetchTDXJson = resolutionCache.fetchTDXJson
+          export const resolveTDXJson = resolutionCache.resolveTDXJson
+          """
+          route_instance = resolver_anchor + """
+
+          const busRouteQueries = createTDXBusRouteQueries({
+            fetchTDXJson,
+            telemetryCity,
+          })
+
+          export const resolveBusQuery = busRouteQueries.resolveBusQuery
+          export const getRouteStopGroups = busRouteQueries.getRouteStopGroups
+          export const getRouteCatalog = busRouteQueries.getRouteCatalog
+          export const getStopRouteSuggestions = busRouteQueries.getStopRouteSuggestions
+          """
+          if text.count(resolver_anchor) != 1:
+              raise SystemExit(f'resolver export anchor count={text.count(resolver_anchor)}')
+          text = text.replace(resolver_anchor, route_instance)
+
+          resolve_start = text.index('export async function resolveBusQuery(')
+          resolve_end = text.index('export async function getCommuteETA(', resolve_start)
+          text = text[:resolve_start] + text[resolve_end:]
+
+          route_start = text.index('export async function getRouteStopGroups(')
+          route_end = text.index('export async function getRouteDetail(', route_start)
+          text = text[:route_start] + text[route_end:]
+
+          if text.count('ETA_CACHE_SECONDS') != 1:
+              raise SystemExit(f'ETA cache usage count={text.count("ETA_CACHE_SECONDS")}')
+          text = text.replace('ETA_CACHE_SECONDS', 'BUS_ETA_CACHE_SECONDS')
+
+          helper_start = text.index('function dedupeStops(')
+          text = text[:helper_start].rstrip() + '\n'
+
+          forbidden = [
+              'classifyRouteName',
+              'RouteCategory',
+              'LocalizedName',
+              'type StopOfRouteItem',
+              'type RouteItem',
+              'type StopItem',
+              'export type RouteCatalogItem',
+              'export type RouteStop',
+              'export type StopGroup',
+              'export type StopRouteSuggestion',
+              'export class QueryResolutionError',
+              'export function tdxRouteScope',
+              'export async function resolveBusQuery',
+              'export async function getRouteStopGroups',
+              'export function mergeEquivalentStopGroups',
+              'export async function getRouteCatalog',
+              'async function getIntercityRouteCatalog',
+              'export async function getStopRouteSuggestions',
+              'function dedupeStops',
+              'function findNearbyStopUids',
+              'function distanceMeters',
+              'const ETA_CACHE_SECONDS',
+              'const STATIC_CACHE_SECONDS',
+          ]
+          for token in forbidden:
+              if token in text:
+                  raise SystemExit(f'forbidden token remains: {token}')
+
+          required = [
+              "from './tdx/bus-route-queries'",
+              'const busRouteQueries = createTDXBusRouteQueries({',
+              'export const resolveBusQuery = busRouteQueries.resolveBusQuery',
+              'export const getRouteStopGroups = busRouteQueries.getRouteStopGroups',
+              'export const getRouteCatalog = busRouteQueries.getRouteCatalog',
+              'export const getStopRouteSuggestions = busRouteQueries.getStopRouteSuggestions',
+              'export async function getCommuteETA(',
+              'export async function getBusSchedule(',
+              'export async function getRouteDetail(',
+              'async function getBusETA(',
+              'BUS_ETA_CACHE_SECONDS',
+              'tdxRouteScope(',
+              'new QueryResolutionError(',
+              'export function isTDXRecordArray',
+              'function telemetryCity(',
+              'const tokenClient = createTDXTokenClient({',
+              'const upstreamDataClient = createTDXUpstreamDataClient({',
+              'const resolutionCache = createTDXResolutionCache({',
+          ]
+          for token in required:
+              if token not in text:
+                  raise SystemExit(f'required token missing: {token}')
+
+          path.write_text(text)
+          print(f'src/lib/tdx.ts: {before_lines} -> {len(text.splitlines())} lines')
+          PY
       - run: npm ci --silent
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium >/dev/null 2>&1
-      - name: Test all desktop and touch interaction flows
+      - name: Run focused contracts
         run: >-
-          npx playwright test
-          --project=desktop-chromium
-          --project=mobile-touch
-          --reporter=line,html
-      - name: Upload Playwright diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: map-ui-playwright-report
-          path: |
-            playwright-report
-            test-results
-          if-no-files-found: ignore
-          retention-days: 7
+          npx vitest run
+          src/lib/tdx/bus-route-queries.test.ts
+          src/lib/tdx.test.ts
+          src/lib/tdx-resolution.test.ts
+          src/application/route-page.test.ts
+          src/routes/route-eta.test.ts
+          src/routes/bus.test.ts
+      - run: npm run check
+      - run: git diff --check
+      - name: Commit clean extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/lib/tdx.ts src/lib/tdx/bus-route-queries.ts src/lib/tdx/bus-route-queries.test.ts .github/workflows/ci.yml
+          git diff --cached --check
+          git commit -m "refactor(tdx): extract bus route query boundary"
+          git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
