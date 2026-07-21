@@ -19,7 +19,6 @@ import {
   STOP_ARRIVAL_MAX_RESPONSE_BYTES,
 } from '../infrastructure/tdx/stop-arrivals'
 import {
-  findNearbyStopPlaces,
   getCityNetwork,
   getActiveSnapshotVersion,
   getDirectRoutes,
@@ -28,21 +27,16 @@ import {
   getSnapshotRouteVariants,
   getSnapshotRouteCatalog,
   getSnapshotSchedule,
-  getStopPlace,
-  getStopPlaceByStopUid,
   getStopPlaceBundle,
   getStopPlaceRoutes,
-  searchStopPlaces,
 } from '../infrastructure/transit/snapshot-repository'
 import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'
 import {
   ApiInputError,
   JOURNEY_ETA_BODY_LIMIT_BYTES,
   optionalQueryString,
-  parseCoordinate,
   parseJourneyEtaInput,
   parseOptionalDirection,
-  parseRadius,
   readJsonBody,
   requiredQueryString,
 } from '../lib/api-input'
@@ -64,6 +58,13 @@ import {
   telemetryCity,
   type MapEnv,
 } from './map-http-context'
+import {
+  findNearbyPlaces,
+  readPlace,
+  readPlaceRoutes,
+  readStopPlace,
+  searchPlaces,
+} from './map-place-lookups'
 
 const map = new Hono<MapEnv>()
 
@@ -389,46 +390,11 @@ type VehicleItem = {
   UpdateTime?: string
 }
 
-map.get('/api/v1/map/search', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    const query = c.req.query('q')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    if (!query || query.length > 40) throw new QueryValidationError('請輸入站牌名稱')
-    const places = await searchStopPlaces(c.env, city, query)
-    return c.json({ schemaVersion: 1, city, query, places }, 200, {
-      'Cache-Control': 'public, max-age=3600',
-    })
-  } catch (error) {
-    return mapJsonError(c, error, '站牌搜尋失敗')
-  }
-})
+map.get('/api/v1/map/search', searchPlaces)
 
-map.get('/api/v1/map/nearby', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    const latitude = parseCoordinate(c.req.query('lat'), 'latitude')
-    const longitude = parseCoordinate(c.req.query('lon'), 'longitude')
-    const radius = parseRadius(c.req.query('radius'))
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    const places = await findNearbyStopPlaces(c.env, city, latitude, longitude, radius)
-    return c.json({ schemaVersion: 1, city, radius, places }, 200, { 'Cache-Control': 'public, max-age=300' })
-  } catch (error) {
-    return mapJsonError(c, error, '附近站牌查詢失敗')
-  }
-})
+map.get('/api/v1/map/nearby', findNearbyPlaces)
 
-map.get('/api/v1/map/place/:placeId/routes', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)
-    const routes = await getStopPlaceRoutes(c.env, city, placeId)
-    return c.json({ schemaVersion: 3, city, routes }, 200, { 'Cache-Control': 'public, max-age=86400' })
-  } catch (error) {
-    return mapJsonError(c, error, '站牌路線讀取失敗')
-  }
-})
+map.get('/api/v1/map/place/:placeId/routes', readPlaceRoutes)
 
 map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
   const tracker = beginMapOperation(c, 'map_place_arrivals', telemetryCity(c.req.query('city')?.trim()))
@@ -574,31 +540,9 @@ map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
   }
 })
 
-map.get('/api/v1/map/place/:placeId', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)
-    const place = await getStopPlace(c.env, city, placeId)
-    if (!place) return c.json({ error: '找不到這個站牌' }, 404)
-    return c.json({ schemaVersion: 1, city, place }, 200, { 'Cache-Control': 'public, max-age=86400' })
-  } catch (error) {
-    return mapJsonError(c, error, '站牌資料讀取失敗')
-  }
-})
+map.get('/api/v1/map/place/:placeId', readPlace)
 
-map.get('/api/v1/map/stop-place', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const stopUid = requiredQueryString(c.req.query('stopUid'), 'StopUID', 100)
-    const place = await getStopPlaceByStopUid(c.env, city, stopUid)
-    if (!place) return c.json({ error: '找不到這個站牌' }, 404)
-    return c.json({ schemaVersion: 1, city, stopUid, place }, 200, { 'Cache-Control': 'public, max-age=3600' })
-  } catch (error) {
-    return mapJsonError(c, error, '站牌資料讀取失敗')
-  }
-})
+map.get('/api/v1/map/stop-place', readStopPlace)
 
 map.get('/api/v1/map/direct', async (c) => {
   try {
