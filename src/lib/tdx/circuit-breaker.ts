@@ -36,6 +36,7 @@ export type TDXCircuitBreaker = {
 
 // Circuit ownership lives here. Token/data request loops still decide when failures and successes
 // should be recorded, while this boundary owns LRU state and every closed/open/half-open transition.
+// Resolve the clock for each transition so Worker stubs and fake timers remain observable after initialization.
 export function createTDXCircuitBreaker(options: TDXCircuitBreakerOptions = {}): TDXCircuitBreaker {
   const circuits = new Map<string, CircuitState>()
   const now = () => options.now ? options.now() : Date.now()
