@@ -30,12 +30,14 @@ import type {
   TelemetryOperation,
 } from '../observability/telemetry'
 
+export type MapBindings = TDXEnv & TransitBindings & Pick<CloudflareBindings, 'CF_VERSION_METADATA'>
+
 export type MapEnv = {
-  Bindings: TDXEnv & TransitBindings & Pick<CloudflareBindings, 'CF_VERSION_METADATA'>
+  Bindings: MapBindings
 }
 
 // Browser clients exchange credentials directly with TDX; the Worker receives only a short-lived token.
-export function tdxEnv(c: Context<MapEnv>): TDXEnv {
+export function tdxEnv(c: Context<MapEnv>): MapBindings {
   const env = withUserTDXAccessToken(c.env, parseTdxAccessToken(c.req.header('Authorization')))
   try {
     const executionCtx = c.executionCtx
