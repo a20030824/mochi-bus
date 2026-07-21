@@ -422,11 +422,11 @@ const routeDetail = createRouteDetailController({
   returnToTripResults,
   returnToRoutePicker,
   onStopSelect: (latitude, longitude) => void findNearbyPlaces(latitude, longitude, true),
-  writePickerLocation: (cityCode, routeName) => {
+  writePickerLocation: (cityCode, routeName, stopUid) => {
     history.replaceState(
       history.state,
       '',
-      `/map?city=${encodeURIComponent(cityCode)}&route=${encodeURIComponent(routeName)}`,
+      `/map?city=${encodeURIComponent(cityCode)}&route=${encodeURIComponent(routeName)}${stopUid ? `&stopUid=${encodeURIComponent(stopUid)}` : ''}`,
     )
   },
   writeVariantLocation: (cityCode, variant, stopUid) => {
@@ -1364,7 +1364,8 @@ function openRouteDetail(
   preferredVariant?: string | null,
   returnToTrip = false,
   color = stopFillAccent,
-  stopBackAction?: () => void, preferredTimetableStopUid?: string | null,
+  stopBackAction?: () => void,
+  preferredTimetableStopUid?: string | null,
 ): Promise<void> {
   if (!activeCity) return Promise.resolve()
   return routeDetail.open({
@@ -1373,11 +1374,10 @@ function openRouteDetail(
     preferredVariant,
     returnToTrip,
     color,
-    stopBackAction, preferredTimetableStopUid,
+    stopBackAction,
+    preferredTimetableStopUid,
   })
 }
-
-
 function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
   if (zoom >= 16) return { radius: 8, weight: 1.8 }
   if (zoom >= 13) return { radius: 5, weight: 1.4 }
