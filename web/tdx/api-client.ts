@@ -7,7 +7,12 @@ type ErrorPayload = {
 }
 
 export class MochiApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly retryAfterMs?: number,
+  ) {
     super(message)
     this.name = 'MochiApiError'
   }
@@ -81,8 +86,19 @@ function unwrapJsonResponse<T>(
       message,
       response.status,
       typeof data?.code === 'string' ? data.code : undefined,
+      retryAfterMilliseconds(response.headers.get('Retry-After'), Date.now()),
     )
   }
   if (!data) throw new Error(fallback)
   return data
+}
+
+function retryAfterMilliseconds(value: string | null, now: number): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value.trim())
+  const milliseconds = Number.isFinite(seconds)
+    ? seconds * 1000
+    : Date.parse(value) - now
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return undefined
+  return milliseconds
 }
