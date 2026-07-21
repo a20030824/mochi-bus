@@ -8,10 +8,10 @@ permissions:
   contents: write
 
 jobs:
-  integrate-map-route-catalog:
+  diagnose-map-route-catalog:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 125
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -21,117 +21,17 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Integrate route catalog handler
+      - run: npm ci --silent
+      - name: Capture focused failure
         shell: bash
         run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/routes/map.ts')
-          text = path.read_text()
-
-          def replace_once(old: str, new: str) -> None:
-              global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected one match, found {count}: {old[:80]!r}')
-              text = text.replace(old, new, 1)
-
-          replace_once(
-          """import {
-            getActiveSnapshotVersion,
-            getJourneyLegStopRefs,
-            getSnapshotRouteCatalog,
-            getSnapshotSchedule,
-            getStopPlaceBundle,
-            getStopPlaceRoutes,
-          } from '../infrastructure/transit/snapshot-repository'
-          """,
-          """import {
-            getJourneyLegStopRefs,
-            getSnapshotSchedule,
-            getStopPlaceBundle,
-            getStopPlaceRoutes,
-          } from '../infrastructure/transit/snapshot-repository'
-          """,
-          )
-          replace_once(
-              "import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'",
-              "import { fetchTDXJson, formatETALabel, getBusSchedule, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'",
-          )
-          replace_once(
-          """import {
-            journeyEtaOutcome,
-            mapRoutesOutcome,
-            placeArrivalsOutcome,
-            vehiclesOutcome,
-          } from '../observability/map-api-outcomes'
-          """,
-          """import {
-            journeyEtaOutcome,
-            placeArrivalsOutcome,
-            vehiclesOutcome,
-          } from '../observability/map-api-outcomes'
-          """,
-          )
-          replace_once(
-              "import { readCityNetwork } from './map-network-read'\n",
-              "import { readCityNetwork } from './map-network-read'\nimport { readRouteCatalog } from './map-route-catalog'\n",
-          )
-          replace_once(
-          """map.get('/api/v1/map/routes', async (c) => {
-            const tracker = beginMapOperation(c, 'map_routes', telemetryCity(c.req.query('city')?.trim()))
-            try {
-              const city = c.req.query('city')?.trim()
-              if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-              const snapshotRoutes = await getSnapshotRouteCatalog(c.env, city)
-              const routes = snapshotRoutes.length ? snapshotRoutes : await getRouteCatalog(tdxEnv(c), city)
-              const snapshotVersion = snapshotRoutes.length ? await getActiveSnapshotVersion(c.env, city) : null
-              const response = c.json({
-                schemaVersion: 2,
-                city,
-                source: snapshotRoutes.length ? 'snapshot' : 'tdx',
-                snapshotVersion,
-                routes,
-              }, 200, {
-                'Cache-Control': `public, max-age=${snapshotRoutes.length ? 86400 : 300}`,
-              })
-              tracker.complete({
-                ...mapRoutesOutcome({
-                  snapshotRouteCount: snapshotRoutes.length,
-                  routeCount: routes.length,
-                  snapshotVersion,
-                }),
-                httpStatus: 200,
-                city: telemetryCity(city),
-              })
-              return response
-            } catch (error) {
-              return completeMapError(c, tracker, error, '路線目錄讀取失敗')
-            }
-          })
-          """,
-          """map.get('/api/v1/map/routes', readRouteCatalog)
-          """,
-          )
-
-          path.write_text(text)
-          PY
-      - run: npm ci --silent
-      - name: Run focused contracts
-        run: >-
-          npx vitest run
-          src/routes/map-route-catalog.test.ts
-          src/routes/map-observability.test.ts
-          src/routes/map-http-context.test.ts
-          src/routes/map-route-reads.test.ts
-          src/routes/map-network-read.test.ts
-      - name: Run npm run check
-        run: npm run check
-      - name: Run git diff --check
-        run: git diff --check
-      - name: Commit clean extraction
+          set +e
+          npx vitest run src/routes/map-route-catalog.test.ts --reporter=verbose > route-catalog-test.log 2>&1
+          status=$?
+          cat route-catalog-test.log
+          printf '\nexit_status=%s\n' "$status" >> route-catalog-test.log
+          exit 0
+      - name: Publish diagnostic log and restore CI
         shell: bash
         run: |
           set -euo pipefail
@@ -139,6 +39,6 @@ jobs:
           git checkout origin/main -- .github/workflows/ci.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/routes/map.ts .github/workflows/ci.yml
-          git commit -m "Wire Map route catalog handler"
+          git add route-catalog-test.log .github/workflows/ci.yml
+          git commit -m "Capture route catalog test diagnostics"
           git push origin HEAD:agent/extract-map-route-catalog
