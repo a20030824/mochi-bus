@@ -26,12 +26,12 @@ jobs:
         shell: bash
         run: |
           set +e
-          npx vitest run src/routes/map-route-catalog.test.ts --reporter=verbose > route-catalog-test.log 2>&1
+          npx vitest run src/routes/map-route-catalog.test.ts --reporter=verbose > route-catalog-test.txt 2>&1
           status=$?
-          cat route-catalog-test.log
-          printf '\nexit_status=%s\n' "$status" >> route-catalog-test.log
+          cat route-catalog-test.txt
+          printf '\nexit_status=%s\n' "$status" >> route-catalog-test.txt
           exit 0
-      - name: Publish diagnostic log and restore CI
+      - name: Publish diagnostic text and restore CI
         shell: bash
         run: |
           set -euo pipefail
@@ -39,6 +39,6 @@ jobs:
           git checkout origin/main -- .github/workflows/ci.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add route-catalog-test.log .github/workflows/ci.yml
+          git add route-catalog-test.txt .github/workflows/ci.yml
           git commit -m "Capture route catalog test diagnostics"
           git push origin HEAD:agent/extract-map-route-catalog
