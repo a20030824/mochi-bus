@@ -5,255 +5,91 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  integrate-tdx-token-client:
+  changes:
+    name: Detect browser changes
+    runs-on: ubuntu-latest
+    outputs:
+      browser: ${{ steps.filter.outputs.browser }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Detect browser-relevant changes
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "browser=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
+          printf '%s\n' "${changed_files}"
+
+          if grep -Eq '^(src/|web/|public/|test/e2e/|\.github/workflows/ci\.yml$|playwright\.config\.(ts|js|mjs|cjs)$|vite\.config\.(ts|js|mjs|cjs)$|wrangler\.(toml|jsonc?)$|package\.json$|package-lock\.json$)' <<< "${changed_files}"; then
+            echo "browser=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "browser=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  quality:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
-          persist-credentials: true
-          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Integrate token client façade
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/lib/tdx.ts')
-          text = path.read_text()
-          before_lines = len(text.splitlines())
-
-          error_import = """import {
-            TDXServiceError,
-            asTDXServiceError,
-            classifyTDXWarning,
-            isRejectedUserTdxToken,
-            observeTDXResponseFailure,
-            observeTDXResponseSuccess,
-            resetTDXRateLimitTracking,
-            responseFailureClass,
-            tdxWarningFromError,
-            transportFailureClass,
-          } from './tdx/error-classification'
-          """
-          token_import = """import {
-            createTDXTokenClient,
-            tdxCredentialScope,
-            withUserTDXAccessToken,
-            type TDXCredentialEnv,
-          } from './tdx/token-client'
-          """
-          error_import_count = text.count(error_import)
-          if error_import_count != 1:
-              raise SystemExit(f'error import count={error_import_count}')
-          text = text.replace(error_import, error_import + token_import)
-
-          export_anchor = """export {
-            TDXServiceError,
-            isRejectedUserTdxToken,
-            resetTDXRateLimitTracking,
-            tdxWarningFromError,
-          }
-          """
-          export_block = export_anchor + "export { tdxCredentialScope, withUserTDXAccessToken } from './tdx/token-client'\n"
-          export_anchor_count = text.count(export_anchor)
-          if export_anchor_count != 1:
-              raise SystemExit(f'export anchor count={export_anchor_count}')
-          text = text.replace(export_anchor, export_block)
-
-          env_block = """export type TDXEnv = {
-            TDX_CLIENT_ID: string
-            TDX_CLIENT_SECRET: string
-            // 瀏覽器直接向 TDX 換取短效 token；Worker 永遠不接觸 Client Secret。
-            TDX_USER_ACCESS_TOKEN?: string
-            TDX_BACKGROUND_TASKS?: BackgroundTaskScheduler
-            CF_VERSION_METADATA?: CloudflareBindings['CF_VERSION_METADATA']
-            TDX_TELEMETRY?: TDXTelemetryContext
-          }
-          """
-          env_replacement = """export type TDXEnv = TDXCredentialEnv & {
-            TDX_BACKGROUND_TASKS?: BackgroundTaskScheduler
-            CF_VERSION_METADATA?: CloudflareBindings['CF_VERSION_METADATA']
-            TDX_TELEMETRY?: TDXTelemetryContext
-          }
-          """
-          env_count = text.count(env_block)
-          if env_count != 1:
-              raise SystemExit(f'env block count={env_count}')
-          text = text.replace(env_block, env_replacement)
-
-          type_prefix = """type TokenCache = { value: string; expiresAt: number }
-          type CredentialSource = 'shared'
-          """
-          type_prefix_count = text.count(type_prefix)
-          if type_prefix_count != 1:
-              raise SystemExit(f'token type prefix count={type_prefix_count}')
-          text = text.replace(type_prefix, '')
-
-          maps_block = """const tokenCache = new Map<string, TokenCache>()
-          const tdxCircuits = new Map<string, CircuitState>()
-          const tokenFlights = new Map<string, Promise<string>>()
-          const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
-          """
-          maps_replacement = """const tdxCircuits = new Map<string, CircuitState>()
-          const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
-          """
-          maps_count = text.count(maps_block)
-          if maps_count != 1:
-              raise SystemExit(f'token maps count={maps_count}')
-          text = text.replace(maps_block, maps_replacement)
-
-          reset_block = """export function resetTDXTestState(): void {
-            resetTDXRateLimitTracking()
-            tokenCache.clear()
-            tdxCircuits.clear()
-            tokenFlights.clear()
-            dataFlights.clear()
-          }
-          """
-          reset_replacement = """export function resetTDXTestState(): void {
-            resetTDXRateLimitTracking()
-            resetTDXTokenState()
-            tdxCircuits.clear()
-            dataFlights.clear()
-          }
-          """
-          reset_count = text.count(reset_block)
-          if reset_count != 1:
-              raise SystemExit(f'test reset block count={reset_count}')
-          text = text.replace(reset_block, reset_replacement)
-
-          constants_block = """const REQUEST_TIMEOUT_MS = 6000
-          const MAX_TOKEN_CACHE_ENTRIES = 128
-          const MAX_CIRCUIT_ENTRIES = 128
-          """
-          constants_replacement = """const REQUEST_TIMEOUT_MS = 6000
-          const MAX_CIRCUIT_ENTRIES = 128
-          """
-          constants_count = text.count(constants_block)
-          if constants_count != 1:
-              raise SystemExit(f'token cache constants count={constants_count}')
-          text = text.replace(constants_block, constants_replacement)
-
-          token_limit_line = 'const TDX_TOKEN_MAX_RESPONSE_BYTES = 16 * 1024\n'
-          token_limit_count = text.count(token_limit_line)
-          if token_limit_count != 1:
-              raise SystemExit(f'token response limit count={token_limit_count}')
-          text = text.replace(token_limit_line, '')
-
-          credential_start_marker = '// isShared 標記這次拿到的 token 來自共用憑證還是使用者瀏覽器提供的短效 token,'
-          credential_start_count = text.count(credential_start_marker)
-          retry_marker = 'function retryAfterMilliseconds(value: string | null, now: number): number | undefined {'
-          retry_count = text.count(retry_marker)
-          if credential_start_count != 1 or retry_count != 1:
-              raise SystemExit(f'credential markers={credential_start_count}/{retry_count}')
-          credential_start = text.index(credential_start_marker)
-          retry_start = text.index(retry_marker, credential_start)
-          text = text[:credential_start] + text[retry_start:]
-
-          token_start_marker = "const tokenCircuitKey = (credentialKey: string) => `token/${credentialKey}`"
-          resolve_marker = 'export async function resolveBusQuery(env: TDXEnv, query: BusQuery): Promise<ResolvedBusQuery> {'
-          token_start_count = text.count(token_start_marker)
-          resolve_count = text.count(resolve_marker)
-          if token_start_count != 1 or resolve_count != 1:
-              raise SystemExit(f'token client markers={token_start_count}/{resolve_count}')
-          token_start = text.index(token_start_marker)
-          resolve_start = text.index(resolve_marker, token_start)
-          token_setup = """const dataCircuitKey = (credentialKey: string) => `data/${credentialKey}`
-
-          const tokenClient = createTDXTokenClient({
-            requestTimeoutMs: REQUEST_TIMEOUT_MS,
-            assertCircuitClosed: (key) => { assertTDXCircuitClosed(key) },
-            recordCircuitFailure: (key, error, retryAfter) => recordTDXCircuitFailure(key, error, retryAfter),
-            recordCircuitSuccess: recordTDXCircuitSuccess,
-            responseError: (context, response, isShared, observation) => (
-              tdxResponseError(context, response, isShared, observation)
-            ),
-            readJsonResponse,
-            isPayloadTooLargeError: (error): error is TDXServiceError => error instanceof TDXPayloadTooLargeError,
-            logResponseTooLarge: (error, observation) => (
-              logTDXResponseTooLarge(error as TDXPayloadTooLargeError, observation)
-            ),
-            logResponseSize: logTDXResponseSize,
-          })
-
-          export const getTDXToken = tokenClient.getTDXToken
-          const resetTDXTokenState = tokenClient.resetTDXTokenState
-
-          """
-          text = text[:token_start] + token_setup + text[resolve_start:]
-
-          forbidden = [
-              'type TokenCache =',
-              "type CredentialSource = 'shared'",
-              'const tokenCache =',
-              'const tokenFlights =',
-              'MAX_TOKEN_CACHE_ENTRIES',
-              'TDX_TOKEN_MAX_RESPONSE_BYTES',
-              'function accessTokenFingerprint',
-              'function credentialFingerprint',
-              'function cachedToken',
-              'function cacheToken',
-              'function tokenFor',
-              'function fetchTDXToken',
-              'const tokenCircuitKey',
-              'export function withUserTDXAccessToken',
-              'export async function tdxCredentialScope',
-          ]
-          for token in forbidden:
-              if token in text:
-                  raise SystemExit(f'forbidden token remains: {token}')
-
-          required = [
-              "from './tdx/token-client'",
-              'const tokenClient = createTDXTokenClient({',
-              'export const getTDXToken = tokenClient.getTDXToken',
-              'const resetTDXTokenState = tokenClient.resetTDXTokenState',
-              'const dataCircuitKey =',
-              'const dataFlights =',
-          ]
-          for token in required:
-              if token not in text:
-                  raise SystemExit(f'required token missing: {token}')
-
-          path.write_text(text)
-          after_lines = len(text.splitlines())
-          print(f'src/lib/tdx.ts: {before_lines} -> {after_lines} lines')
-          PY
-      - run: npm ci --silent
-      - name: Run focused contracts
-        run: >-
-          npx vitest run
-          src/lib/tdx/token-client.test.ts
-          src/lib/tdx/error-classification.test.ts
-          src/lib/tdx.test.ts
-          src/routes/map-place-arrivals-contract.test.ts
-          src/routes/map-journey-eta.test.ts
-          src/routes/map-vehicles-read.test.ts
-          src/routes/route-eta.test.ts
+      - run: npm ci
       - run: npm run check
-      - run: git diff --check
-      - name: Commit clean extraction
-        shell: bash
-        run: |
-          set -euo pipefail
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/lib/tdx.ts src/lib/tdx/token-client.ts src/lib/tdx/token-client.test.ts .github/workflows/ci.yml
-          git diff --cached --check
-          git commit -m "refactor(tdx): extract token client boundary"
-          git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
+
+  map-ui:
+    name: Map UI regression
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --silent
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Test all desktop and touch interaction flows
+        run: >-
+          npx playwright test
+          --project=desktop-chromium
+          --project=mobile-touch
+          --reporter=line,html
+      - name: Upload Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-ui-playwright-report
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
