@@ -58,14 +58,26 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run check
+      - name: Run quality checks
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run check 2>&1 | tee quality-check.log
+      - name: Upload quality diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-check-log
+          path: quality-check.log
+          if-no-files-found: error
+          retention-days: 7
 
   map-ui:
     name: Map UI regression
     needs: changes
     if: needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -77,11 +89,24 @@ jobs:
       - run: npm ci --silent
       - name: Install Chromium
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
-      - name: Test all desktop and touch interaction flows
+      - name: Test desktop and touch interaction flows
+        env:
+          PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report/ui
         run: >-
           npx playwright test
           --project=desktop-chromium
           --project=mobile-touch
+          --output=test-results/ui
+          --reporter=line,html
+      - name: Test isolated Worker module state
+        env:
+          PLAYWRIGHT_WORKER_STATEFUL: '1'
+          PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report/stateful
+        run: >-
+          npx playwright test
+          --project=worker-stateful-chromium
+          --workers=1
+          --output=test-results/stateful
           --reporter=line,html
       - name: Upload Playwright diagnostics
         if: always()

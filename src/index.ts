@@ -6,6 +6,7 @@ import { applyRouteShell } from './route-shell'
 import bus from './routes/bus'
 import health from './routes/health'
 import map from './routes/map'
+import playwrightTestState from './routes/playwright-test-state'
 import routeEta from './routes/route-eta'
 import { cspViolationSummaries, httpsRedirectTarget, securityHeaders } from './security'
 
@@ -43,6 +44,7 @@ app.post('/api/v1/csp-report', bodyLimit({
   return c.body(null, 204, { 'Cache-Control': 'no-store' })
 })
 
+app.route('/', playwrightTestState)
 app.route('/', health)
 app.route('/', map)
 app.route('/', routeEta)

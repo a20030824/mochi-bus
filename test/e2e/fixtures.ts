@@ -2,6 +2,7 @@ import { expect, test as base, type Page } from '@playwright/test'
 
 type UiFixtures = {
   pageErrors: Error[]
+  workerApiFirewall: void
 }
 
 export const test = base.extend<UiFixtures>({
@@ -10,6 +11,12 @@ export const test = base.extend<UiFixtures>({
     page.on('pageerror', (error) => errors.push(error))
     await use(errors)
     expect(errors.map((error) => error.stack ?? error.message)).toEqual([])
+  }, { auto: true }],
+  workerApiFirewall: [async ({ page }, use) => {
+    // Test-specific routes are registered later and therefore take precedence. Any API call a
+    // UI-only spec did not explicitly mock is stopped here before it can mutate Worker singletons.
+    await page.route(/\/api\/v1\//, (route) => route.abort('blockedbyclient'))
+    await use()
   }, { auto: true }],
 })
 
@@ -26,9 +33,9 @@ export async function mockMapBootstrapCities(page: Page, cities: unknown[] | nul
     const patched = cities === null
       ? html.replace(/(<script id="map-bootstrap"[^>]*>)[\s\S]*?(<\/script>)/, '$1$2')
       : html.replace(
-        /(<script id="map-bootstrap"[^>]*>)[\s\S]*?(<\/script>)/,
-        `$1${JSON.stringify({ cities }).replace(/</g, '\\u003c')}$2`,
-      )
+          /(<script id="map-bootstrap"[^>]*>)[\s\S]*?(<\/script>)/,
+          `$1${JSON.stringify({ cities }).replace(/</g, '\\u003c')}$2`,
+        )
     const headers = { ...response.headers() }
     delete headers['content-length']
     await route.fulfill({ response, body: patched, headers })
