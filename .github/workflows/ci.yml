@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  integrate-tdx-resolution-cache:
+  diagnose-tdx-resolution-cache:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -25,10 +25,6 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Verify focused contract typing
-        run: |
-          grep -F "match: (request: Request) => Promise<Response | undefined>" src/lib/tdx/resolution-cache.test.ts
-          grep -F "const fetchUpstream = vi.fn(async () => success([{ id: 'follower' }], false))" src/lib/tdx/resolution-cache.test.ts
       - name: Integrate resolution cache boundary
         shell: bash
         run: |
@@ -38,7 +34,6 @@ jobs:
 
           path = Path('src/lib/tdx.ts')
           text = path.read_text()
-          before_lines = len(text.splitlines())
 
           for line in [
               "import { memoryCacheGet, memoryCacheSet } from './memory-cache'\n",
@@ -58,16 +53,11 @@ jobs:
             TelemetryTrafficClass,
           } from '../observability/telemetry'
           """
-          telemetry_replacement = "import type { TelemetryCity } from '../observability/telemetry'\n"
           if text.count(telemetry_import) != 1:
               raise SystemExit(f'telemetry import count={text.count(telemetry_import)}')
-          text = text.replace(telemetry_import, telemetry_replacement)
+          text = text.replace(telemetry_import, "import type { TelemetryCity } from '../observability/telemetry'\n")
 
-          for line in [
-              '  asTDXServiceError,\n',
-              '  DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES,\n',
-              '  responseByteLimit,\n',
-          ]:
+          for line in ['  asTDXServiceError,\n', '  DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES,\n', '  responseByteLimit,\n']:
               if text.count(line) != 1:
                   raise SystemExit(f'import member count for {line.strip()}={text.count(line)}')
               text = text.replace(line, '')
@@ -98,7 +88,7 @@ jobs:
           type_end = text.index('type StopOfRouteItem = {', type_start)
           text = text[:type_start] + text[type_end:]
 
-          upstream_instance_end = """const upstreamDataClient = createTDXUpstreamDataClient({
+          upstream_instance = """const upstreamDataClient = createTDXUpstreamDataClient({
             requestTimeoutMs: REQUEST_TIMEOUT_MS,
             assertCircuitClosed: (key) => { circuitBreaker.assertClosed(key) },
             recordCircuitFailure: (key, error, retryAfter) => circuitBreaker.recordFailure(key, error, retryAfter),
@@ -108,7 +98,7 @@ jobs:
             ),
           })
           """
-          resolution_instance = upstream_instance_end + """
+          resolution_instance = upstream_instance + """
 
           const resolutionCache = createTDXResolutionCache({
             getTDXToken,
@@ -120,9 +110,9 @@ jobs:
           export const fetchTDXJson = resolutionCache.fetchTDXJson
           export const resolveTDXJson = resolutionCache.resolveTDXJson
           """
-          if text.count(upstream_instance_end) != 1:
-              raise SystemExit(f'upstream instance count={text.count(upstream_instance_end)}')
-          text = text.replace(upstream_instance_end, resolution_instance)
+          if text.count(upstream_instance) != 1:
+              raise SystemExit(f'upstream instance count={text.count(upstream_instance)}')
+          text = text.replace(upstream_instance, resolution_instance)
 
           resolution_start = text.index('type TDXCacheEntry<T> =')
           resolution_end = text.index('export function isTDXRecordArray', resolution_start)
@@ -131,68 +121,38 @@ jobs:
           helper_start = text.index('function isEmptyPayload(')
           helper_end = text.index('function dedupeStops(', helper_start)
           text = text[:helper_start] + text[helper_end:]
-
-          forbidden = [
-              'memoryCacheGet', 'memoryCacheSet', 'cacheMatchFailOpen', 'cachePutFailOpen',
-              'releaseIdentity', 'beginTDXResolutionTelemetry', 'BackgroundTaskScheduler',
-              'TelemetryFailureClass', 'TelemetrySink', 'TelemetryTdxOperation', 'TelemetryTrafficClass',
-              'asTDXServiceError', 'DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES', 'responseByteLimit',
-              'type TDXTelemetryContext', 'type TDXCacheEntry',
-              'export async function fetchTDXJson', 'export async function resolveTDXJson',
-              'function validPayload', 'function isEmptyPayload', 'function parsedCacheTimestamp', 'function telemetryNow',
-          ]
-          for token in forbidden:
-              if token in text:
-                  raise SystemExit(f'forbidden token remains: {token}')
-
-          required = [
-              'async function tdxResponseError(',
-              'const tokenClient = createTDXTokenClient({',
-              'const upstreamDataClient = createTDXUpstreamDataClient({',
-              'const resolutionCache = createTDXResolutionCache({',
-              'export const fetchTDXJson = resolutionCache.fetchTDXJson',
-              'export const resolveTDXJson = resolutionCache.resolveTDXJson',
-              'export async function resolveBusQuery(',
-              'export async function getBusSchedule(',
-              'export async function getRouteStopGroups(',
-              'export async function getRouteCatalog(',
-              'function telemetryCity(',
-              'function dedupeStops(',
-          ]
-          for token in required:
-              if token not in text:
-                  raise SystemExit(f'required token missing: {token}')
-
           path.write_text(text)
-          after_lines = len(text.splitlines())
-          print(f'src/lib/tdx.ts: {before_lines} -> {after_lines} lines')
           PY
       - run: npm ci --silent
-      - name: Run focused contracts
-        run: >-
-          npx vitest run
-          src/lib/tdx/resolution-cache.test.ts
-          src/lib/tdx-resolution.test.ts
-          src/lib/tdx/upstream-data-client.test.ts
-          src/lib/tdx/bounded-response.test.ts
-          src/lib/tdx/circuit-breaker.test.ts
-          src/lib/tdx/token-client.test.ts
-          src/lib/tdx/error-classification.test.ts
-          src/lib/tdx.test.ts
-          src/routes/map-place-arrivals-contract.test.ts
-          src/routes/map-journey-eta.test.ts
-          src/routes/map-vehicles-read.test.ts
-          src/routes/route-eta.test.ts
-      - run: npm run check
-      - run: git diff --check
-      - name: Commit clean extraction
+      - name: Capture split check results
         shell: bash
         run: |
           set -euo pipefail
+          : > RESOLUTION_CHECK.txt
+          run_stage() {
+            local name="$1"
+            shift
+            printf '\n===== %s =====\n' "${name}" >> RESOLUTION_CHECK.txt
+            set +e
+            "$@" >> RESOLUTION_CHECK.txt 2>&1
+            local code=$?
+            set -e
+            printf '\nexit_code=%s\n' "${code}" >> RESOLUTION_CHECK.txt
+          }
+          run_stage cf-typegen npm run cf-typegen:check
+          run_stage test npm run test
+          run_stage typecheck npm run typecheck
+          run_stage build-map npm run build:map
+          run_stage wrangler npx wrangler deploy --dry-run
+      - name: Commit diagnostic only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout HEAD -- src/lib/tdx.ts
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/lib/tdx.ts src/lib/tdx/resolution-cache.ts src/lib/tdx/resolution-cache.test.ts .github/workflows/ci.yml
+          git add RESOLUTION_CHECK.txt .github/workflows/ci.yml
           git diff --cached --check
-          git commit -m "refactor(tdx): extract resolution cache boundary"
+          git commit -m "test(tdx): capture resolution check diagnostics"
           git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
