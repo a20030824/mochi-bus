@@ -17,9 +17,10 @@ describe('Playwright Worker state isolation boundary', () => {
   it('starts fresh Wrangler processes in CI and runs stateful tests separately', () => {
     expect(playwrightSource).toContain('reuseExistingServer: !isCI && !isWorkerStatefulRun')
     expect(playwrightSource).toContain('PLAYWRIGHT_TEST_MODE:1')
-    expect(ciSource.match(/npx playwright test/g)).toHaveLength(2)
+    expect(ciSource.match(/npx playwright test/g)).toHaveLength(3)
     expect(ciSource).toContain('--project=worker-stateful-chromium')
     expect(ciSource).toContain("PLAYWRIGHT_WORKER_STATEFUL: '1'")
+    expect(ciSource).toContain('--project=visual-chromium')
   })
 
   it('firewalls live Worker API calls from ordinary UI specs', () => {
