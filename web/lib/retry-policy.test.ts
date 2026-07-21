@@ -1,0 +1,35 @@
+import { describe, expect, it } from 'vitest'
+import { MochiApiError } from '../tdx/api-client'
+import {
+  drawerRetryDecision,
+  routeRetryDecision,
+  shouldRevealDrawerFailure,
+} from './retry-policy'
+
+describe('retry policy', () => {
+  it('uses a quiet 3 second first Drawer retry, then 30 and 60 seconds', () => {
+    const error = new Error('offline')
+    expect(drawerRetryDecision(error, 1)).toEqual({ retry: true, delayMs: 3_000 })
+    expect(drawerRetryDecision(error, 2)).toEqual({ retry: true, delayMs: 30_000 })
+    expect(drawerRetryDecision(error, 3)).toEqual({ retry: true, delayMs: 60_000 })
+    expect(drawerRetryDecision(error, 8)).toEqual({ retry: true, delayMs: 60_000 })
+    expect(shouldRevealDrawerFailure(1)).toBe(false)
+    expect(shouldRevealDrawerFailure(2)).toBe(true)
+  })
+
+  it('uses Retry-After ahead of local fallback delays', () => {
+    const error = new MochiApiError('busy', 429, undefined, 17_000)
+    expect(routeRetryDecision(error)).toEqual({ retry: true, delayMs: 17_000 })
+    expect(drawerRetryDecision(error, 1)).toEqual({ retry: true, delayMs: 17_000 })
+  })
+
+  it('uses 30 seconds for Route transient failures', () => {
+    expect(routeRetryDecision(new Error('offline'))).toEqual({ retry: true, delayMs: 30_000 })
+  })
+
+  it('does not retry permanent client or rejected-token failures', () => {
+    expect(routeRetryDecision(new MochiApiError('bad request', 400))).toEqual({ retry: false })
+    expect(drawerRetryDecision(new MochiApiError('rejected', 401, 'tdx_access_token_rejected'), 1))
+      .toEqual({ retry: false })
+  })
+})
