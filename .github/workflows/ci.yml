@@ -12,30 +12,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  integrate-tdx-circuit-breaker:
+  diagnose-tdx-circuit-breaker:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
           persist-credentials: true
           fetch-depth: 0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Integrate circuit breaker boundary
+      - name: Count exact anchors
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('src/lib/tdx.ts')
-          text = path.read_text()
-          before_lines = len(text.splitlines())
-
+          text = Path('src/lib/tdx.ts').read_text()
           token_import = """import {
             createTDXTokenClient,
             tdxCredentialScope,
@@ -43,15 +35,6 @@ jobs:
             type TDXCredentialEnv,
           } from './tdx/token-client'
           """
-          circuit_import = """import {
-            createTDXCircuitBreaker,
-            dataCircuitKey,
-          } from './tdx/circuit-breaker'
-          """
-          if text.count(token_import) != 1:
-              raise SystemExit(f'token import count={text.count(token_import)}')
-          text = text.replace(token_import, token_import + circuit_import)
-
           state_block = """type CircuitState = {
             failures: number
             lastFailureAt: number
@@ -61,124 +44,37 @@ jobs:
           }
 
           """
-          if text.count(state_block) != 1:
-              raise SystemExit(f'circuit state block count={text.count(state_block)}')
-          text = text.replace(state_block, '')
-
           map_block = """const tdxCircuits = new Map<string, CircuitState>()
           const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()
           """
-          if text.count(map_block) != 1:
-              raise SystemExit(f'circuit map block count={text.count(map_block)}')
-          text = text.replace(map_block, "const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()\n")
-
-          reset_line = '  tdxCircuits.clear()\n'
-          if text.count(reset_line) != 1:
-              raise SystemExit(f'circuit reset count={text.count(reset_line)}')
-          text = text.replace(reset_line, '  circuitBreaker.reset()\n')
-
-          for line in [
-              'const MAX_CIRCUIT_ENTRIES = 128\n',
-              'const CIRCUIT_FAILURE_THRESHOLD = 3\n',
-              'const CIRCUIT_FAILURE_WINDOW_MS = 60 * 1000\n',
-              'const TRANSIENT_CIRCUIT_OPEN_MS = 30 * 1000\n',
-              'const QUOTA_CIRCUIT_OPEN_MS = 5 * 60 * 1000\n',
-              'const MAX_RETRY_AFTER_MS = 5 * 60 * 1000\n',
-          ]:
-              if text.count(line) != 1:
-                  raise SystemExit(f'constant count for {line.strip()}={text.count(line)}')
-              text = text.replace(line, '')
-
-          circuit_start = text.index('function retryAfterMilliseconds(value: string | null, now: number): number | undefined {')
-          circuit_end_marker = "const dataCircuitKey = (credentialKey: string) => `data/${credentialKey}`\n\n"
-          circuit_end = text.index(circuit_end_marker, circuit_start) + len(circuit_end_marker)
-          text = text[:circuit_start] + text[circuit_end:]
-
-          token_client_anchor = 'const tokenClient = createTDXTokenClient({\n'
-          circuit_instance = """const circuitBreaker = createTDXCircuitBreaker({
-            onOpened: ({ warning, openMs }) => {
-              console.error(JSON.stringify({
-                message: 'tdx_circuit_opened',
-                warning,
-                openMs,
-              }))
-            },
-          })
-
-          """
-          if text.count(token_client_anchor) != 1:
-              raise SystemExit(f'token client anchor count={text.count(token_client_anchor)}')
-          text = text.replace(token_client_anchor, circuit_instance + token_client_anchor)
-
-          replacements = {
-              'assertTDXCircuitClosed(': 'circuitBreaker.assertClosed(',
-              'recordTDXCircuitFailure(': 'circuitBreaker.recordFailure(',
-              'recordTDXCircuitSuccess(': 'circuitBreaker.recordSuccess(',
+          anchors = {
+            'lines': len(text.splitlines()),
+            'token_import': text.count(token_import),
+            'state_block': text.count(state_block),
+            'map_block': text.count(map_block),
+            'reset_line': text.count('  tdxCircuits.clear()\n'),
+            'token_client_anchor': text.count('const tokenClient = createTDXTokenClient({\n'),
+            'retry_start': text.count('function retryAfterMilliseconds(value: string | null, now: number): number | undefined {'),
+            'circuit_end': text.count("const dataCircuitKey = (credentialKey: string) => `data/${credentialKey}`\n\n"),
+            'assert_usage': text.count('assertTDXCircuitClosed('),
+            'failure_usage': text.count('recordTDXCircuitFailure('),
+            'success_usage': text.count('recordTDXCircuitSuccess('),
           }
-          for old, new in replacements.items():
-              count = text.count(old)
-              if count < 1:
-                  raise SystemExit(f'usage count for {old}={count}')
-              text = text.replace(old, new)
-
-          forbidden = [
-              'type CircuitState',
-              'tdxCircuits',
-              'retryAfterMilliseconds',
-              'cacheCircuit(',
-              'assertTDXCircuitClosed',
-              'recordTDXCircuitFailure',
-              'recordTDXCircuitSuccess',
-              'MAX_CIRCUIT_ENTRIES',
-              'CIRCUIT_FAILURE_THRESHOLD',
-              'CIRCUIT_FAILURE_WINDOW_MS',
-              'TRANSIENT_CIRCUIT_OPEN_MS',
-              'QUOTA_CIRCUIT_OPEN_MS',
-              'MAX_RETRY_AFTER_MS',
+          constants = [
+            'MAX_CIRCUIT_ENTRIES',
+            'CIRCUIT_FAILURE_THRESHOLD',
+            'CIRCUIT_FAILURE_WINDOW_MS',
+            'TRANSIENT_CIRCUIT_OPEN_MS',
+            'QUOTA_CIRCUIT_OPEN_MS',
+            'MAX_RETRY_AFTER_MS',
           ]
-          for token in forbidden:
-              if token in text:
-                  raise SystemExit(f'forbidden token remains: {token}')
-
-          required = [
-              'const dataFlights = new Map<string, Promise<TDXUpstreamOutcome>>()',
-              'function dataFlightKey(',
-              'function joinSingleflight<T>(',
-              'async function fetchTDXUpstream(',
-              'circuitBreaker.assertClosed(circuitKey)',
-              'circuitBreaker.recordFailure(circuitKey',
-              'circuitBreaker.recordSuccess(circuitKey)',
-          ]
-          for token in required:
-              if token not in text:
-                  raise SystemExit(f'required token missing: {token}')
-
-          path.write_text(text)
-          after_lines = len(text.splitlines())
-          print(f'src/lib/tdx.ts: {before_lines} -> {after_lines} lines')
+          for constant in constants:
+            anchors[constant] = text.count(f'const {constant} =')
+          Path('circuit-diagnostic.txt').write_text('\n'.join(f'{key}={value}' for key, value in anchors.items()) + '\n')
           PY
-      - run: npm ci --silent
-      - name: Run focused contracts
-        run: >-
-          npx vitest run
-          src/lib/tdx/circuit-breaker.test.ts
-          src/lib/tdx/token-client.test.ts
-          src/lib/tdx/error-classification.test.ts
-          src/lib/tdx.test.ts
-          src/routes/map-place-arrivals-contract.test.ts
-          src/routes/map-journey-eta.test.ts
-          src/routes/map-vehicles-read.test.ts
-          src/routes/route-eta.test.ts
-      - run: npm run check
-      - run: git diff --check
-      - name: Commit clean extraction
-        shell: bash
-        run: |
-          set -euo pipefail
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/lib/tdx.ts src/lib/tdx/circuit-breaker.ts src/lib/tdx/circuit-breaker.test.ts .github/workflows/ci.yml
-          git diff --cached --check
-          git commit -m "refactor(tdx): extract circuit breaker boundary"
+          git add circuit-diagnostic.txt .github/workflows/ci.yml
+          git commit -m "chore: record circuit extraction diagnostics"
           git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
