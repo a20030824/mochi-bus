@@ -32,6 +32,7 @@ type VehicleItem = {
 
 // This handler owns the complete realtime vehicle contract: upstream degradation, identity
 // filtering, coordinate validation, cache policy, and map_vehicles completion telemetry.
+// A rejected personal TDX token remains terminal; ordinary upstream failures degrade to warnings.
 export async function readVehicles(c: Context<MapEnv>) {
   const tracker = beginMapOperation(c, 'map_vehicles', telemetryCity(c.req.query('city')?.trim()))
   try {
