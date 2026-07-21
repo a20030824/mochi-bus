@@ -17,9 +17,20 @@ describe('Playwright Worker state isolation boundary', () => {
   it('starts fresh Wrangler processes in CI and runs stateful tests separately', () => {
     expect(playwrightSource).toContain('reuseExistingServer: !isCI && !isWorkerStatefulRun')
     expect(playwrightSource).toContain('PLAYWRIGHT_TEST_MODE:1')
-    expect(ciSource.match(/npx playwright test/g)).toHaveLength(2)
+    expect(ciSource.match(/npx playwright test/g)).toHaveLength(3)
     expect(ciSource).toContain('--project=worker-stateful-chromium')
     expect(ciSource).toContain("PLAYWRIGHT_WORKER_STATEFUL: '1'")
+  })
+
+  it('compares committed Linux visual baselines without mutating them', () => {
+    expect(playwrightSource).toContain("name: 'visual-chromium'")
+    expect(ciSource).toContain('name: Visual regression')
+    expect(ciSource).toContain('name: Compare Linux visual snapshots')
+    expect(ciSource).toContain('--project=visual-chromium')
+    expect(ciSource).toContain('--workers=1')
+    expect(ciSource).not.toContain('--update-snapshots')
+    expect(ciSource).toContain('name: Upload visual diff diagnostics')
+    expect(ciSource).toContain('name: visual-playwright-report')
   })
 
   it('firewalls live Worker API calls from ordinary UI specs', () => {
