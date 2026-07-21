@@ -17,7 +17,6 @@ import {
   STOP_ARRIVAL_MAX_RESPONSE_BYTES,
 } from '../infrastructure/tdx/stop-arrivals'
 import {
-  getCityNetwork,
   getActiveSnapshotVersion,
   getJourneyLegStopRefs,
   getSnapshotRouteCatalog,
@@ -62,6 +61,7 @@ import {
 } from './map-place-lookups'
 import { readDirectRoutes, readTransferPlans } from './map-journey-plans'
 import { readRouteMap, readRouteTimetable } from './map-route-reads'
+import { readCityNetwork } from './map-network-read'
 
 const map = new Hono<MapEnv>()
 
@@ -216,30 +216,7 @@ map.get('/api/v1/map/route', readRouteMap)
 
 map.get('/api/v1/map/timetable', readRouteTimetable)
 
-map.get('/api/v1/map/network', async (c) => {
-  try {
-    const city = c.req.query('city')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    const network = await getCityNetwork(c.env, city)
-    if (!network) return c.json({ error: '這個縣市尚未建立全路網資料' }, 404)
-    // R2 的 network.json 原樣串流,不在 Worker 內 parse+stringify(雙北 35MB+ 會撞
-    // isolate 記憶體上限回 503)。前端只讀 routes/places,舊快照缺 schemaVersion/city 也無妨。
-    if (network.kind === 'stream') {
-      return new Response(network.body, {
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Cache-Control': 'public, max-age=86400',
-          'ETag': network.etag,
-        },
-      })
-    }
-    return c.json({ schemaVersion: 1, city, ...network.network }, 200, {
-      'Cache-Control': 'public, max-age=86400',
-    })
-  } catch (error) {
-    return mapJsonError(c, error, '全路網讀取失敗')
-  }
-})
+map.get('/api/v1/map/network', readCityNetwork)
 
 map.get('/api/v1/map/vehicles', async (c) => {
   const tracker = beginMapOperation(c, 'map_vehicles', telemetryCity(c.req.query('city')?.trim()))
