@@ -87,6 +87,8 @@ export type TDXCommuteRoutePresentationDependencies = {
 // This boundary owns commute/route presentation decisions only: realtime selection,
 // schedule fallback labels and route timeline ETA states. Token, HTTP, cache, circuit,
 // route catalog and schedule endpoint ownership remain behind injected dependencies.
+// Snapshot access must stay lazy at composition so unrelated callers and module mocks
+// are not forced to provide the snapshot export during façade initialization.
 export function createTDXCommuteRoutePresentation(
   dependencies: TDXCommuteRoutePresentationDependencies,
 ) {
