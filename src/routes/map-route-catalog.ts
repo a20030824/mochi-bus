@@ -15,8 +15,8 @@ import {
   type MapEnv,
 } from './map-http-context'
 
-// This handler owns the route-catalog fallback and telemetry contract. Snapshot persistence
-// and TDX transport behavior remain behind their existing infrastructure boundaries.
+// Own the route-catalog fallback, response, cache, and telemetry contract here;
+// snapshot persistence and TDX transport stay behind their infrastructure boundaries.
 export async function readRouteCatalog(c: Context<MapEnv>) {
   const tracker = beginMapOperation(c, 'map_routes', telemetryCity(c.req.query('city')?.trim()))
   try {
