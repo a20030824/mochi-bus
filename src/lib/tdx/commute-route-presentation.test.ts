@@ -94,8 +94,9 @@ describe('TDX commute and route presentation boundary', () => {
 
     expect(result).toMatchObject({
       routeName: '307', stopName: '共同站', stopUid: 'STOP-2',
-      minutes: 7, estimateSeconds: 420, label: '7 分', source: 'realtime', warning: undefined,
+      minutes: 7, estimateSeconds: 420, label: '7 分', source: 'realtime',
     })
+    expect(result).not.toHaveProperty('warning')
     expect(getSnapshotSchedule).not.toHaveBeenCalled()
     expect(getBusSchedule).not.toHaveBeenCalled()
     expect(fetchTDXJson).toHaveBeenCalledWith(
@@ -187,13 +188,14 @@ describe('TDX commute and route presentation boundary', () => {
     const getBusSchedule = vi.fn(async () => [] as ScheduleItem[])
     const { presentation } = harness({ getBusSchedule })
 
-    await expect(presentation.getCommuteETA(env, query)).resolves.toMatchObject({
+    const result = await presentation.getCommuteETA(env, query)
+    expect(result).toMatchObject({
       minutes: null,
       estimateSeconds: null,
       label: '暫無預估時間',
       source: 'none',
-      warning: undefined,
     })
+    expect(result).not.toHaveProperty('warning')
   })
 
   it('maps the route timeline to urgent, live, no-estimate and missing presentation states', async () => {
@@ -236,12 +238,10 @@ describe('TDX commute and route presentation boundary', () => {
     ])
     const { presentation } = harness({ getRouteStopGroups })
 
-    await expect(presentation.getRouteDetail(env, query)).rejects.toEqual(
-      new Error('找不到這個方向的完整站序'),
-    )
     await expect(presentation.getRouteDetail(env, query)).rejects.toMatchObject({
       name: 'QueryResolutionError',
       message: '找不到這個方向的完整站序',
+      candidates: [],
     })
   })
 })
