@@ -93,6 +93,7 @@ export function createNearbyPlacesController(
 
   return {
     load,
+    // Shared navigation owns request abortion; this only suppresses this controller's callbacks.
     invalidate() {
       generation += 1
     },
