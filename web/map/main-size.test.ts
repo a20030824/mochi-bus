@@ -7,10 +7,11 @@ import previewMapPrimitivesSource from './preview-map-primitives.ts?raw'
 import placeRoutesSource from './place-routes-controller.ts?raw'
 import placeRoutesViewSource from './place-routes-view.ts?raw'
 import nearbyPlacesSource from './nearby-places-controller.ts?raw'
+import nearbyPlacesMapSource from './nearby-places-map.ts?raw'
 import nearbyPlacesViewSource from './nearby-places-view.ts?raw'
 import routeDetailSurfaceSource from './route-detail-surface.ts?raw'
 
-const MAP_MAIN_LINE_LIMIT = 1797
+const MAP_MAIN_LINE_LIMIT = 1792
 
 const TRIP_TRANSITION_CALLS = [
   'trip.start(',
@@ -186,6 +187,25 @@ describe('map main architecture boundary', () => {
       'setDocumentTitle', 'historyRecord', 'readMapView', 'mapViewFromUrl',
       'openNearbyPlace', 'findNearbyPlaces', 'renderNearbyPlaces', './main',
     ]) expect(nearbyPlacesSource).not.toContain(dependency)
+  })
+
+  it('delegates Nearby Places Leaflet drawing to the Nearby places map surface', () => {
+    expect(mainSource).toContain('createNearbyPlacesMap')
+    expect(mainSource).toContain('nearbyPlacesMap.renderLoadingOrigin(origin)')
+    expect(mainSource).toContain('nearbyPlacesMap.renderPlaces(lastNearbyOrigin, lastNearbyPlaces)')
+    expect(mainSource).not.toContain("bindHoverTooltip(origin, '你點的位置')")
+    expect(mainSource).not.toContain('Math.round(place.distanceMeters)')
+    expect(nearbyPlacesMapSource).toContain("bindHoverTooltip(originMarker, '你點的位置')")
+    expect(nearbyPlacesMapSource).toContain('Math.round(place.distanceMeters)')
+    expect(nearbyPlacesMapSource).toContain('L.DomEvent.stopPropagation(event)')
+    expect(nearbyPlacesMapSource).toContain('options.onOpenPlace(place)')
+    expect(mainSource).toContain('drawTripEndpoints()')
+    for (const dependency of [
+      'history.', 'document.', 'window.', 'mapApi.', 'camera.', 'trip.', 'routeDetail',
+      'cityNetwork', 'beginNavRequest', 'isStaleNav', 'setStatus(', 'clearStatus(',
+      'setDocumentTitle', 'historyRecord', 'readMapView', 'mapViewFromUrl',
+      'findNearbyPlaces', 'renderNearbyPlaces', './main',
+    ]) expect(nearbyPlacesMapSource).not.toContain(dependency)
   })
 
   it('delegates Nearby Places Drawer presentation to the Nearby places view', () => {
