@@ -3,47 +3,29 @@ import { bodyLimit } from 'hono/body-limit'
 import { mapCities } from '../config/map-cities'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
-import { selectBestEta } from '../domain/map/eta'
 import {
   realtimeJourneyEstimate,
   scheduledJourneyEstimates,
   type JourneyEstimate,
 } from '../domain/map/journey-estimate'
-import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'
-import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
-import {
-  buildStopArrivalBatches,
-  isStopArrivalBatchPayload,
-  STOP_ARRIVAL_MAX_RESPONSE_BYTES,
-} from '../infrastructure/tdx/stop-arrivals'
+import type { ScheduleItem } from '../domain/schedule'
 import {
   getJourneyLegStopRefs,
   getSnapshotSchedule,
-  getStopPlaceBundle,
-  getStopPlaceRoutes,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'
+import { fetchTDXJson, getBusSchedule, isRejectedUserTdxToken, isTDXRecordArray, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXWarning } from '../lib/tdx'
 import {
   ApiInputError,
   JOURNEY_ETA_BODY_LIMIT_BYTES,
-  optionalQueryString,
   parseJourneyEtaInput,
-  parseOptionalDirection,
   readJsonBody,
-  requiredQueryString,
 } from '../lib/api-input'
-import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
-import { cacheMatchFailOpen, cachePutFailOpen } from '../lib/edge-cache'
-import {
-  journeyEtaOutcome,
-  placeArrivalsOutcome,
-} from '../observability/map-api-outcomes'
+import { journeyEtaOutcome } from '../observability/map-api-outcomes'
 import type { TelemetryCity } from '../observability/telemetry'
 import { renderMapPage } from '../map-page'
 import {
   beginMapOperation,
   completeMapError,
-  mapJsonError,
   tdxEnv,
   telemetryCity,
   type MapEnv,
@@ -60,11 +42,9 @@ import { readRouteMap, readRouteTimetable } from './map-route-reads'
 import { readCityNetwork } from './map-network-read'
 import { readRouteCatalog } from './map-route-catalog'
 import { readVehicles } from './map-vehicles-read'
+import { readPlaceArrivals } from './map-place-arrivals'
 
 const map = new Hono<MapEnv>()
-
-const REALTIME_COOLDOWN_SECONDS = 60
-const LAST_REALTIME_SECONDS = 120
 
 function strongerTDXWarning(current: TDXWarning | undefined, next: TDXWarning | undefined): TDXWarning | undefined {
   const priority: Record<TDXWarning, number> = {
@@ -76,73 +56,12 @@ function strongerTDXWarning(current: TDXWarning | undefined, next: TDXWarning | 
   return next
 }
 
-function arrivalCacheKey(kind: 'cooldown' | 'last', city: string, suffix = ''): Request {
-  return new Request(`https://mochi-cache.invalid/arrivals/${kind}/${encodeURIComponent(city)}/${encodeURIComponent(suffix)}`)
-}
-
 function routeEtaUrl(city: string, routeName: string, routeUid?: string): URL {
   const url = new URL(
     `https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
   )
   url.searchParams.set('$format', 'JSON')
   return url
-}
-
-function edgeCache(): Cache {
-  return (caches as CacheStorage & { default: Cache }).default
-}
-
-// 記憶體層在前、Cache API 在後:Cache API 在 workers.dev 上是 no-op、
-// 自訂網域上也只限同機房,單靠它冷卻旗標常常寫了就不見。
-async function hasRealtimeCooldown(env: TDXEnv, city: string, scope: string): Promise<boolean> {
-  if (memoryCacheGet<boolean>(`arrivals/cooldown/${city}/${scope}`)) return true
-  return Boolean(await cacheMatchFailOpen(edgeCache(), arrivalCacheKey('cooldown', city, scope), 'arrivals_cooldown'))
-}
-
-async function setRealtimeCooldown(env: TDXEnv, city: string, scope: string): Promise<void> {
-  memoryCacheSet(`arrivals/cooldown/${city}/${scope}`, true, REALTIME_COOLDOWN_SECONDS)
-  await cachePutFailOpen(edgeCache(), arrivalCacheKey('cooldown', city, scope), new Response('1', {
-    headers: { 'Cache-Control': `public, max-age=${REALTIME_COOLDOWN_SECONDS}` },
-  }), 'arrivals_cooldown', env.TDX_BACKGROUND_TASKS)
-}
-
-type LastRealtime = { items: BusETAItem[]; cachedAt?: number }
-
-async function readLastRealtime(env: TDXEnv, city: string, cacheKey: string): Promise<LastRealtime | undefined> {
-  const memoized = memoryCacheGet<LastRealtime>(`arrivals/last/${city}/${cacheKey}`)
-  if (memoized) return memoized
-  const response = await cacheMatchFailOpen(edgeCache(), arrivalCacheKey('last', city, cacheKey), 'arrivals_last')
-  if (!response) return undefined
-  try {
-    const items = await response.json<BusETAItem[]>()
-    if (!Array.isArray(items)) return undefined
-    const headerValue = response.headers.get('X-Mochi-Cached-At')
-    const header = headerValue === null ? Number.NaN : Number(headerValue)
-    return { items, ...(Number.isFinite(header) && header >= 0 ? { cachedAt: header } : {}) }
-  } catch (error) {
-    console.error(JSON.stringify({
-      message: 'edge_cache_payload_invalid',
-      context: 'arrivals_last',
-      error: error instanceof Error ? error.message : String(error),
-    }))
-    return undefined
-  }
-}
-
-async function writeLastRealtime(env: TDXEnv, city: string, cacheKey: string, items: BusETAItem[]): Promise<void> {
-  const cachedAt = Date.now()
-  memoryCacheSet(`arrivals/last/${city}/${cacheKey}`, { items, cachedAt }, LAST_REALTIME_SECONDS)
-  await cachePutFailOpen(edgeCache(), arrivalCacheKey('last', city, cacheKey), new Response(JSON.stringify(items), {
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': `public, max-age=${LAST_REALTIME_SECONDS}`,
-      'X-Mochi-Cached-At': String(cachedAt),
-    },
-  }), 'arrivals_last', env.TDX_BACKGROUND_TASKS)
-}
-
-function routeIdentity(routeName: string, routeUid?: string): string {
-  return routeUid ? `uid:${routeUid}` : `name:${routeName}`
 }
 
 map.get('/map', (c) => {
@@ -194,149 +113,7 @@ map.get('/api/v1/map/nearby', findNearbyPlaces)
 
 map.get('/api/v1/map/place/:placeId/routes', readPlaceRoutes)
 
-map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {
-  const tracker = beginMapOperation(c, 'map_place_arrivals', telemetryCity(c.req.query('city')?.trim()))
-  try {
-    const env = tdxEnv(c)
-    const scope = await tdxCredentialScope(env)
-    const city = c.req.query('city')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
-    const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)
-    const bundle = await getStopPlaceBundle(env, city, placeId)
-    const now = new Date()
-    const scheduledRoutes = bundle ? bundle.routes.map(({ schedules, ...route }) => ({
-      ...route,
-      ...scheduleFields(schedules, {
-        stopUid: route.stopUid,
-        direction: route.direction,
-        subRouteUid: route.subRouteUid,
-      }, now),
-    })) : await (async () => {
-      const routes = await getStopPlaceRoutes(env, city, placeId)
-      const routeNames = [...new Set(routes.map((route) => route.routeName))]
-      const schedulesByRoute = new Map((await Promise.all(routeNames.map(async (routeName) => [
-        routeName,
-        await getSnapshotSchedule(env, city, routeName) ?? [],
-      ] as const))))
-      return routes.map((route) => ({
-        ...route,
-        ...scheduleFields(schedulesByRoute.get(route.routeName) ?? [], {
-          stopUid: route.stopUid,
-          direction: route.direction,
-          subRouteUid: route.subRouteUid,
-        }, now),
-      }))
-    })()
-    const focusStopUid = optionalQueryString(c.req.query('focusStopUid'), 'StopUID', 100)
-    const focusSubRouteUid = optionalQueryString(c.req.query('focusSubRouteUid'), 'SubRouteUID', 100)
-    const focusDirection = parseOptionalDirection(c.req.query('focusDirection'), 'focusDirection')
-    const focused = focusStopUid ? scheduledRoutes.find((route) =>
-      route.stopUid === focusStopUid
-      && (focusDirection === undefined || route.direction === focusDirection)
-      && (!focusSubRouteUid || route.subRouteUid === focusSubRouteUid),
-    ) : undefined
-    const candidates = includeFocusedCandidate(selectRealtimeCandidates(scheduledRoutes), focused)
-    const batches = buildStopArrivalBatches(city, candidates.map((route) => ({
-      routeUid: route.routeUid,
-      routeName: route.routeName,
-      stopUid: route.stopUid,
-    })))
-    const etaItems: BusETAItem[] = []
-    const staleRouteIdentities = new Set<string>()
-    let rateLimited = await hasRealtimeCooldown(env, city, scope)
-    let warning: TDXWarning | undefined = rateLimited ? 'tdx-rate-limit' : undefined
-    let realtimeQueries = 0
-    for (const batch of batches) {
-      try {
-        const resolved = await resolveTDXJson<BusETAItem[]>(env, batch.url, 15, {
-          operation: 'place_arrivals',
-          city: telemetryCity(city),
-          maxResponseBytes: STOP_ARRIVAL_MAX_RESPONSE_BYTES,
-          validate: (value): value is BusETAItem[] => isStopArrivalBatchPayload(value, batch.stopUids),
-          blockedFailureClass: rateLimited ? 'rate_limited' : undefined,
-          staleFallback: async () => {
-            const stale = await readLastRealtime(env, city, batch.cacheKey)
-            return stale?.items.length ? {
-              data: stale.items,
-              dataAgeMilliseconds: stale.cachedAt === undefined ? undefined : Math.max(0, Date.now() - stale.cachedAt),
-            } : undefined
-          },
-        })
-        etaItems.push(...resolved.data)
-        if (resolved.resolution === 'stale_replay') {
-          batch.candidates.forEach((candidate) => {
-            staleRouteIdentities.add(routeIdentity(candidate.routeName, candidate.routeUid))
-          })
-        } else {
-          await writeLastRealtime(env, city, batch.cacheKey, resolved.data)
-          realtimeQueries += 1
-        }
-      } catch (error) {
-        if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) throw error
-        rateLimited ||= error instanceof TDXServiceError && error.rateLimited
-        warning = strongerTDXWarning(warning, tdxWarningFromError(error) ?? 'tdx-unavailable')
-        console.error(JSON.stringify({
-          message: 'place_arrival_realtime_failed',
-          city,
-          tdxScope: batch.scope,
-          stopUidCount: batch.stopUids.length,
-          error: error instanceof Error ? error.message : String(error),
-        }))
-        if (rateLimited) await setRealtimeCooldown(env, city, scope)
-      }
-    }
-    const arrivals = scheduledRoutes.map((route) => {
-      const realtime = selectBestEta(etaItems, route)
-      const realtimeSeconds = typeof realtime?.EstimateTime === 'number' ? Math.max(0, realtime.EstimateTime) : null
-      const estimateSeconds = realtimeSeconds ?? (route.scheduleMinutes === null ? null : route.scheduleMinutes * 60)
-      const source = realtimeSeconds !== null
-        ? staleRouteIdentities.has(routeIdentity(route.routeName, route.routeUid)) ? 'stale-realtime' as const : 'realtime' as const
-        : route.scheduleMinutes !== null ? 'schedule' as const
-          : 'none' as const
-      return {
-        ...route,
-        estimateSeconds,
-        etaLabel: source === 'realtime' || source === 'stale-realtime'
-          ? formatETALabel(Math.ceil((realtimeSeconds as number) / 60), realtime?.StopStatus ?? 0)
-          : source === 'schedule'
-            ? route.scheduleClock
-              ?? (route.scheduleHeadway
-                ? `${route.scheduleHeadway[0]}–${route.scheduleHeadway[1]} 分一班`
-                : route.scheduleDepartureBased
-                  ? `${Math.max(1, route.scheduleMinutes ?? 1)} 分後發車`
-                  : `約 ${Math.max(1, route.scheduleMinutes ?? 1)} 分`)
-            : '暫無資訊',
-        stopStatus: realtime?.StopStatus ?? 0,
-        source,
-      }
-    }).sort((a, b) =>
-      (a.estimateSeconds ?? Number.POSITIVE_INFINITY) - (b.estimateSeconds ?? Number.POSITIVE_INFINITY)
-      || a.routeName.localeCompare(b.routeName, 'zh-Hant', { numeric: true }),
-    )
-    const response = c.json({
-      schemaVersion: 1,
-      city,
-      routes: arrivals,
-      scheduleSource: bundle ? 'place-bundle' : 'route-objects',
-      snapshotVersion: bundle?.version ?? null,
-      warning,
-      realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
-    }, 200, { 'Cache-Control': warning || c.req.header('Authorization') ? 'no-store' : 'public, max-age=15' })
-    tracker.complete({
-      ...placeArrivalsOutcome({
-        bundleUsed: Boolean(bundle),
-        sources: arrivals.map((arrival) => arrival.source),
-        warning,
-        snapshotVersion: bundle?.version ?? null,
-      }),
-      httpStatus: 200,
-      city: telemetryCity(city),
-    })
-    return response
-  } catch (error) {
-    return completeMapError(c, tracker, error, '到站時間讀取失敗')
-  }
-})
+map.get('/api/v1/map/place/:placeId/arrivals', readPlaceArrivals)
 
 map.get('/api/v1/map/place/:placeId', readPlace)
 
@@ -448,16 +225,5 @@ map.post('/api/v1/map/journey-eta', bodyLimit({
     return completeMapError(c, tracker, error, 'ETA 排序資料讀取失敗', observedCity)
   }
 })
-
-// 把 domain 的估計攤成回應欄位;departureBased/headway 只有伺服器端組 label 會用。
-function scheduleFields(schedules: ScheduleItem[], query: ScheduleQuery, now: Date) {
-  const estimate = nextScheduledMinutes(schedules, query, now)
-  return {
-    scheduleMinutes: estimate?.minutes ?? null,
-    scheduleDepartureBased: estimate?.departureBased ?? false,
-    scheduleHeadway: estimate?.headwayMinutes ?? null,
-    scheduleClock: estimate ? scheduleClockLabel(estimate, now) : null,
-  }
-}
 
 export default map
