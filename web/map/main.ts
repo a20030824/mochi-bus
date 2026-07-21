@@ -422,14 +422,14 @@ const routeDetail = createRouteDetailController({
   returnToTripResults,
   returnToRoutePicker,
   onStopSelect: (latitude, longitude) => void findNearbyPlaces(latitude, longitude, true),
-  writePickerLocation: (cityCode, routeName) => {
+  writePickerLocation: (cityCode, routeName, stopUid) => {
     history.replaceState(
       history.state,
       '',
-      `/map?city=${encodeURIComponent(cityCode)}&route=${encodeURIComponent(routeName)}`,
+      `/map?city=${encodeURIComponent(cityCode)}&route=${encodeURIComponent(routeName)}${stopUid ? `&stopUid=${encodeURIComponent(stopUid)}` : ''}`,
     )
   },
-  writeVariantLocation: (cityCode, variant) => {
+  writeVariantLocation: (cityCode, variant, stopUid) => {
     const params = new URLSearchParams({
       city: cityCode,
       route: variant.routeName,
@@ -437,6 +437,7 @@ const routeDetail = createRouteDetailController({
       direction: String(variant.direction),
       variant: variant.variantKey,
     })
+    if (stopUid) params.set('stopUid', stopUid)
     const currentState = historyRecord()
     history.replaceState({
       ...currentState,
@@ -454,7 +455,6 @@ const routeDetail = createRouteDetailController({
   },
   stopTimetableSummary: () => routeTimetableSummary.stop(),
 })
-
 function browserStorage(): Storage | undefined {
   try {
     return window.localStorage
@@ -568,7 +568,7 @@ async function hydrateMapLocation() {
       activeCity = city
       if (routeName) {
         const returnToTrip = history.state?.mapParent === 'trip-results' && restoreTripResultsState()
-        await openRouteDetail(routeName, params.get('variant'), returnToTrip)
+        await openRouteDetail(routeName, params.get('variant'), returnToTrip, stopFillAccent, undefined, params.get('stopUid'))
       } else {
         if (params.get('trip') === 'results' && restoreTripResultsState(params)) {
           returnToTripResults()
@@ -1067,7 +1067,7 @@ function openCatalogueRoute(routeName: string) {
   void openRouteDetail(routeName)
 }
 
-function openChildRoute(routeName: string, preferredVariant?: string | null, color = routeColor(routeName)) {
+function openChildRoute(routeName: string, preferredVariant?: string | null, color = routeColor(routeName), preferredTimetableStopUid?: string | null) {
   if (!activeCity) return
   cancelLocationHydration()
   const currentState = historyRecord()
@@ -1077,8 +1077,8 @@ function openChildRoute(routeName: string, preferredVariant?: string | null, col
     ...historyRecord(),
     mapView: 'route',
     mapParent: parent,
-  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}`)
-  void openRouteDetail(routeName, preferredVariant, false, color, parent === 'catalogue' ? undefined : () => history.back())
+  }, '', `/map?city=${encodeURIComponent(activeCity.code)}&route=${encodeURIComponent(routeName)}${preferredVariant ? `&variant=${encodeURIComponent(preferredVariant)}` : ''}${preferredTimetableStopUid ? `&stopUid=${encodeURIComponent(preferredTimetableStopUid)}` : ''}`)
+  void openRouteDetail(routeName, preferredVariant, false, color, parent === 'catalogue' ? undefined : () => history.back(), preferredTimetableStopUid)
 }
 
 async function searchPlaces(query: string, signal?: AbortSignal): Promise<SearchPlace[]> {
@@ -1365,6 +1365,7 @@ function openRouteDetail(
   returnToTrip = false,
   color = stopFillAccent,
   stopBackAction?: () => void,
+  preferredTimetableStopUid?: string | null,
 ): Promise<void> {
   if (!activeCity) return Promise.resolve()
   return routeDetail.open({
@@ -1374,10 +1375,9 @@ function openRouteDetail(
     returnToTrip,
     color,
     stopBackAction,
+    preferredTimetableStopUid,
   })
 }
-
-
 function stopStyleForZoom(zoom: number): L.CircleMarkerOptions {
   if (zoom >= 16) return { radius: 8, weight: 1.8 }
   if (zoom >= 13) return { radius: 5, weight: 1.4 }
@@ -1506,7 +1506,7 @@ function renderTripPlanError(error: unknown, context: TripPlanContext) {
   })
 }
 
-function renderPlaceRoutePreview({ variant, color }: PlaceRoutePreview): void {
+function renderPlaceRoutePreview({ route, variant, color }: PlaceRoutePreview): void {
   const normalStyle = { color, weight: 5.5, opacity: .62, lineCap: 'round' as const, lineJoin: 'round' as const }
   const { line, target } = selectablePreviewLine(variant.shape, 'routePreviewPane', previewLayer, normalStyle)
   previewStopDots.add(variant.stops, color, previewLayer)
@@ -1518,7 +1518,7 @@ function renderPlaceRoutePreview({ variant, color }: PlaceRoutePreview): void {
   target.on('mouseout', () => line.setStyle(normalStyle))
   target.on('click', (event) => {
     L.DomEvent.stopPropagation(event)
-    openChildRoute(variant.routeName, variant.variantKey, color)
+    openChildRoute(variant.routeName, variant.variantKey, color, route.stopUid)
   })
 }
 

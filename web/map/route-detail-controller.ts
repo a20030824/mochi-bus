@@ -10,6 +10,7 @@ export type RouteDetailOpenRequest = Readonly<{
   cityCode: string
   routeName: string
   preferredVariant?: string | null
+  preferredTimetableStopUid?: string | null
   returnToTrip?: boolean
   color: string
   stopBackAction?: () => void
@@ -19,6 +20,7 @@ type RouteDetailSession = {
   request: RouteDetailOpenRequest
   variants?: RouteMapVariant[]
   selectedVariant?: RouteMapVariant
+  timetableStopUid?: string
   pickerUsed: boolean
 }
 
@@ -53,8 +55,8 @@ type RouteDetailControllerOptions = {
   returnToTripResults: () => void
   returnToRoutePicker: () => void
   onStopSelect: (latitude: number, longitude: number) => void
-  writePickerLocation: (cityCode: string, routeName: string) => void
-  writeVariantLocation: (cityCode: string, variant: RouteMapVariant) => void
+  writePickerLocation: (cityCode: string, routeName: string, stopUid?: string) => void
+  writeVariantLocation: (cityCode: string, variant: RouteMapVariant, stopUid?: string) => void
   setDocumentTitle: (title: string) => void
   setStatus: (text: string, error?: boolean) => void
   clearStatus: () => void
@@ -113,6 +115,7 @@ export function createRouteDetailController(
     stopEnhancements()
     const nextSession: RouteDetailSession = {
       request: { ...request, returnToTrip: request.returnToTrip ?? false },
+      timetableStopUid: request.preferredTimetableStopUid ?? undefined,
       pickerUsed: false,
     }
     session = nextSession
@@ -187,7 +190,11 @@ export function createRouteDetailController(
       onSelect: showVariant,
     })
     options.clearStatus()
-    options.writePickerLocation(currentSession.request.cityCode, currentSession.request.routeName)
+    options.writePickerLocation(
+      currentSession.request.cityCode,
+      currentSession.request.routeName,
+      currentSession.timetableStopUid,
+    )
   }
 
   function showVariant(variant: RouteMapVariant): void {
@@ -222,7 +229,11 @@ export function createRouteDetailController(
       onStopSelect: options.onStopSelect,
     })
     options.startTimetableSummary(currentSession.request.cityCode, variant, timetableSummary)
-    options.writeVariantLocation(currentSession.request.cityCode, variant)
+    options.writeVariantLocation(
+      currentSession.request.cityCode,
+      variant,
+      currentSession.timetableStopUid,
+    )
     options.setDocumentTitle(`${variant.routeName} 公車路線圖`)
     options.startVehicleRefresh(currentSession.request.cityCode, variant)
   }
@@ -232,13 +243,14 @@ export function createRouteDetailController(
     const variant = currentSession?.selectedVariant
     if (!currentSession || !variant || !isCurrent(currentSession)) return
 
+    const requestedStopUid = stopUid ?? currentSession.timetableStopUid
     stopEnhancements()
     view = 'timetable'
     const back = () => showVariant(variant)
     options.surface.showTimetableLoading(
       currentSession.request.cityCode,
       variant,
-      stopUid,
+      requestedStopUid,
       back,
     )
     options.setStatus(`${variant.routeName} · 正在讀取時刻`)
@@ -248,7 +260,7 @@ export function createRouteDetailController(
       const data = await options.loadTimetable(
         currentSession.request.cityCode,
         variant,
-        stopUid,
+        requestedStopUid,
         signal,
       )
       if (
@@ -259,6 +271,12 @@ export function createRouteDetailController(
         || view !== 'timetable'
       ) return
 
+      currentSession.timetableStopUid = data.timetable.selectedStop?.stopUid ?? requestedStopUid
+      options.writeVariantLocation(
+        currentSession.request.cityCode,
+        variant,
+        currentSession.timetableStopUid,
+      )
       const result = options.surface.showTimetable({
         cityCode: currentSession.request.cityCode,
         variant,
@@ -280,10 +298,10 @@ export function createRouteDetailController(
       options.surface.showTimetableError(
         currentSession.request.cityCode,
         variant,
-        stopUid,
+        requestedStopUid,
         message,
         back,
-        () => void openTimetable(stopUid),
+        () => void openTimetable(requestedStopUid),
       )
       options.setStatus(message, true)
     }
