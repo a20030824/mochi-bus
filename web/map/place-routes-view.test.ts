@@ -212,7 +212,7 @@ describe('Place routes view', () => {
     expect(eta?.classList.contains('urgent')).toBe(true)
     expect(findByClass(eta!, 'eta-freshness')?.textContent).toBe('稍早')
     findByClass(row!, 'place-route-button')?.click()
-    expect(harness.onOpenRoute).toHaveBeenCalledWith('307', '307:0', '#123456')
+    expect(harness.onOpenRoute).toHaveBeenCalledWith('307', '307:0', '#123456', 'STOP')
     expect(harness.createFavoriteControl).toHaveBeenCalledWith(place(), staleRoute)
 
     const warningRetry = harness.createDegradedNotice.mock.calls[0][1]
