@@ -1,0 +1,73 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90m/home/runner/work/mochi-bus/mochi-bus[39m
+
+ [31m❯[39m [30m[43m node [49m[39m src/lib/tdx/upstream-data-client.test.ts [2m([22m[2m11 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[32m 55[2mms[22m[39m
+     [32m✓[39m coalesces identical requests, marks one leader, and clears the flight afterward[32m 34[2mms[22m[39m
+     [32m✓[39m keeps cache, operation, byte-limit, and validation policies out of the same flight[32m 4[2mms[22m[39m
+[31m     [31m×[31m checks the data circuit before creating a new flight[39m[32m 2[2mms[22m[39m
+     [32m✓[39m retries one timeout for an observed operation and reports recovery metadata[32m 3[2mms[22m[39m
+     [32m✓[39m does not retry transport failures without an operation[32m 2[2mms[22m[39m
+[31m     [31m×[31m retries one upstream 5xx and records only the final failure[39m[32m 1[2mms[22m[39m
+[31m     [31m×[31m does not retry rate limits and passes Retry-After to the circuit[39m[32m 1[2mms[22m[39m
+     [32m✓[39m returns parsed byte metadata and a sanitized Bus resource[32m 1[2mms[22m[39m
+     [32m✓[39m wraps invalid JSON and records a data-circuit failure[32m 2[2mms[22m[39m
+     [32m✓[39m treats payload-size rejection as an available upstream and logs no identity[32m 2[2mms[22m[39m
+     [32m✓[39m resolves global fetch at request time[32m 1[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 3 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m [30m[43m node [49m[39m src/lib/tdx/upstream-data-client.test.ts[2m > [22mTDX upstream data client[2m > [22mchecks the data circuit before creating a new flight
+[31m[1mTypeError[22m: Cannot set property rateLimited of Error which has only a getter[39m
+[36m [2m❯[22m serviceError src/lib/tdx/upstream-data-client.test.ts:[2m32:9[22m[39m
+    [90m 30|[39m )[33m:[39m [33mTDXServiceError[39m {
+    [90m 31|[39m   const error = new TDXServiceError('upstream failed', status, { failu…
+    [90m 32|[39m   error[33m.[39mrateLimited [33m=[39m rateLimited
+    [90m   |[39m         [31m^[39m
+    [90m 33|[39m   [35mreturn[39m error
+    [90m 34|[39m }
+[90m [2m❯[22m src/lib/tdx/upstream-data-client.test.ts:[2m130:21[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m [30m[43m node [49m[39m src/lib/tdx/upstream-data-client.test.ts[2m > [22mTDX upstream data client[2m > [22mretries one upstream 5xx and records only the final failure
+[31m[1mTypeError[22m: Cannot set property rateLimited of Error which has only a getter[39m
+[36m [2m❯[22m serviceError src/lib/tdx/upstream-data-client.test.ts:[2m32:9[22m[39m
+    [90m 30|[39m )[33m:[39m [33mTDXServiceError[39m {
+    [90m 31|[39m   const error = new TDXServiceError('upstream failed', status, { failu…
+    [90m 32|[39m   error[33m.[39mrateLimited [33m=[39m rateLimited
+    [90m   |[39m         [31m^[39m
+    [90m 33|[39m   [35mreturn[39m error
+    [90m 34|[39m }
+[90m [2m❯[22m Object.<anonymous> src/lib/tdx/upstream-data-client.test.ts:[2m42:12[22m[39m
+[90m [2m❯[22m fetchTDXUpstream src/lib/tdx/upstream-data-client.ts:[2m132:42[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m [30m[43m node [49m[39m src/lib/tdx/upstream-data-client.test.ts[2m > [22mTDX upstream data client[2m > [22mdoes not retry rate limits and passes Retry-After to the circuit
+[31m[1mTypeError[22m: Cannot set property rateLimited of Error which has only a getter[39m
+[36m [2m❯[22m serviceError src/lib/tdx/upstream-data-client.test.ts:[2m32:9[22m[39m
+    [90m 30|[39m )[33m:[39m [33mTDXServiceError[39m {
+    [90m 31|[39m   const error = new TDXServiceError('upstream failed', status, { failu…
+    [90m 32|[39m   error[33m.[39mrateLimited [33m=[39m rateLimited
+    [90m   |[39m         [31m^[39m
+    [90m 33|[39m   [35mreturn[39m error
+    [90m 34|[39m }
+[90m [2m❯[22m Object.<anonymous> src/lib/tdx/upstream-data-client.test.ts:[2m41:41[22m[39m
+[90m [2m❯[22m fetchTDXUpstream src/lib/tdx/upstream-data-client.ts:[2m132:42[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m8 passed[39m[22m[90m (11)[39m
+[2m   Start at [22m 17:25:07
+[2m   Duration [22m 289ms[2m (transform 66ms, setup 0ms, import 88ms, tests 55ms, environment 0ms)[22m
+
+
+::error file=/home/runner/work/mochi-bus/mochi-bus/src/lib/tdx/upstream-data-client.test.ts,title=[node] src/lib/tdx/upstream-data-client.test.ts > TDX upstream data client > checks the data circuit before creating a new flight,line=32,column=9::TypeError: Cannot set property rateLimited of Error which has only a getter%0A ❯ serviceError src/lib/tdx/upstream-data-client.test.ts:32:9%0A ❯ src/lib/tdx/upstream-data-client.test.ts:130:21%0A%0A
+
+::error file=/home/runner/work/mochi-bus/mochi-bus/src/lib/tdx/upstream-data-client.test.ts,title=[node] src/lib/tdx/upstream-data-client.test.ts > TDX upstream data client > retries one upstream 5xx and records only the final failure,line=32,column=9::TypeError: Cannot set property rateLimited of Error which has only a getter%0A ❯ serviceError src/lib/tdx/upstream-data-client.test.ts:32:9%0A ❯ Object.<anonymous> src/lib/tdx/upstream-data-client.test.ts:42:12%0A ❯ fetchTDXUpstream src/lib/tdx/upstream-data-client.ts:132:42%0A%0A
+
+::error file=/home/runner/work/mochi-bus/mochi-bus/src/lib/tdx/upstream-data-client.test.ts,title=[node] src/lib/tdx/upstream-data-client.test.ts > TDX upstream data client > does not retry rate limits and passes Retry-After to the circuit,line=32,column=9::TypeError: Cannot set property rateLimited of Error which has only a getter%0A ❯ serviceError src/lib/tdx/upstream-data-client.test.ts:32:9%0A ❯ Object.<anonymous> src/lib/tdx/upstream-data-client.test.ts:41:41%0A ❯ fetchTDXUpstream src/lib/tdx/upstream-data-client.ts:132:42%0A%0A
+
+exit_code=1
