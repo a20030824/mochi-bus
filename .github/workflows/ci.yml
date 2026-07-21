@@ -170,9 +170,10 @@ jobs:
           route_end = text.index('export async function getRouteDetail(', route_start)
           text = text[:route_start] + text[route_end:]
 
-          if text.count('ETA_CACHE_SECONDS') != 1:
-              raise SystemExit(f'ETA cache usage count={text.count("ETA_CACHE_SECONDS")}')
-          text = text.replace('ETA_CACHE_SECONDS', 'BUS_ETA_CACHE_SECONDS')
+          eta_call = 'return fetchTDXJson<BusETAItem[]>(env, url, ETA_CACHE_SECONDS)'
+          if text.count(eta_call) != 1:
+              raise SystemExit(f'ETA cache call count={text.count(eta_call)}')
+          text = text.replace(eta_call, 'return fetchTDXJson<BusETAItem[]>(env, url, BUS_ETA_CACHE_SECONDS)')
 
           helper_start = text.index('function dedupeStops(')
           text = text[:helper_start].rstrip() + '\n'
