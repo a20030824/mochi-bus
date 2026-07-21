@@ -244,6 +244,14 @@ export function createRouteDetailController(
     if (!currentSession || !variant || !isCurrent(currentSession)) return
 
     const requestedStopUid = stopUid ?? currentSession.timetableStopUid
+    if (stopUid !== undefined) {
+      currentSession.timetableStopUid = stopUid
+      options.writeVariantLocation(
+        currentSession.request.cityCode,
+        variant,
+        stopUid,
+      )
+    }
     stopEnhancements()
     view = 'timetable'
     const back = () => showVariant(variant)
@@ -271,12 +279,15 @@ export function createRouteDetailController(
         || view !== 'timetable'
       ) return
 
-      currentSession.timetableStopUid = data.timetable.selectedStop?.stopUid ?? requestedStopUid
-      options.writeVariantLocation(
-        currentSession.request.cityCode,
-        variant,
-        currentSession.timetableStopUid,
-      )
+      const resolvedStopUid = data.timetable.selectedStop?.stopUid ?? requestedStopUid
+      if (resolvedStopUid !== currentSession.timetableStopUid) {
+        currentSession.timetableStopUid = resolvedStopUid
+        options.writeVariantLocation(
+          currentSession.request.cityCode,
+          variant,
+          resolvedStopUid,
+        )
+      }
       const result = options.surface.showTimetable({
         cityCode: currentSession.request.cityCode,
         variant,

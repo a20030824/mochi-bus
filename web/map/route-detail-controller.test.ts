@@ -237,6 +237,35 @@ describe('route detail controller', () => {
     expect(harness.options.writeVariantLocation).toHaveBeenLastCalledWith('Taipei', firstVariant, 'STOP-B')
   })
 
+  it('keeps a newly selected timetable stop in navigation state when loading fails', async () => {
+    const harness = createHarness()
+    await harness.controller.open({ ...request, preferredTimetableStopUid: 'STOP-A' })
+    await harness.controller.openTimetable()
+    harness.options.writeVariantLocation.mockClear()
+    harness.options.loadTimetable.mockRejectedValueOnce(new Error('時刻表暫時失敗'))
+
+    await harness.controller.openTimetable('STOP-B')
+
+    expect(harness.options.writeVariantLocation).toHaveBeenCalledTimes(1)
+    expect(harness.options.writeVariantLocation).toHaveBeenCalledWith('Taipei', firstVariant, 'STOP-B')
+    expect(harness.surface.showTimetableError).toHaveBeenLastCalledWith(
+      'Taipei',
+      firstVariant,
+      'STOP-B',
+      '時刻表暫時失敗',
+      expect.any(Function),
+      expect.any(Function),
+    )
+
+    await harness.controller.openTimetable()
+    expect(harness.options.loadTimetable).toHaveBeenLastCalledWith(
+      'Taipei',
+      firstVariant,
+      'STOP-B',
+      expect.any(AbortSignal),
+    )
+  })
+
   it('closes the session and clears route-owned surfaces', async () => {
     const harness = createHarness()
     await harness.controller.open(request)
