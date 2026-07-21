@@ -8,10 +8,10 @@ permissions:
   contents: write
 
 jobs:
-  integrate-map-place-arrivals:
+  diagnose-map-place-arrivals:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 127
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -21,145 +21,16 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Integrate Place Arrivals handler
+      - run: npm ci --silent
+      - name: Capture contract output
         shell: bash
         run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/routes/map.ts')
-          text = path.read_text()
-
-          def replace_once(old: str, new: str) -> None:
-              global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected one match, found {count}: {old[:100]!r}')
-              text = text.replace(old, new, 1)
-
-          def replace_between(start: str, end: str, replacement: str) -> None:
-              global text
-              if text.count(start) != 1 or text.count(end) != 1:
-                  raise SystemExit(f'non-unique boundary: {start!r} / {end!r}')
-              start_index = text.index(start)
-              end_index = text.index(end, start_index)
-              text = text[:start_index] + replacement + text[end_index:]
-
-          replace_once("import { selectBestEta } from '../domain/map/eta'\n", '')
-          replace_once("import { includeFocusedCandidate, selectRealtimeCandidates } from '../domain/map/arrival-ranking'\n", '')
-          replace_once(
-          """import { nextScheduledMinutes, scheduleClockLabel, type ScheduleItem, type ScheduleQuery } from '../domain/schedule'
-          import {
-            buildStopArrivalBatches,
-            isStopArrivalBatchPayload,
-            STOP_ARRIVAL_MAX_RESPONSE_BYTES,
-          } from '../infrastructure/tdx/stop-arrivals'
-          """,
-          """import type { ScheduleItem } from '../domain/schedule'
-          """,
-          )
-          replace_once(
-          """import {
-            getJourneyLegStopRefs,
-            getSnapshotSchedule,
-            getStopPlaceBundle,
-            getStopPlaceRoutes,
-          } from '../infrastructure/transit/snapshot-repository'
-          """,
-          """import {
-            getJourneyLegStopRefs,
-            getSnapshotSchedule,
-          } from '../infrastructure/transit/snapshot-repository'
-          """,
-          )
-          replace_once(
-              "import { fetchTDXJson, formatETALabel, getBusSchedule, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'",
-              "import { fetchTDXJson, getBusSchedule, isRejectedUserTdxToken, isTDXRecordArray, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXWarning } from '../lib/tdx'",
-          )
-          replace_once(
-          """import {
-            ApiInputError,
-            JOURNEY_ETA_BODY_LIMIT_BYTES,
-            optionalQueryString,
-            parseJourneyEtaInput,
-            parseOptionalDirection,
-            readJsonBody,
-            requiredQueryString,
-          } from '../lib/api-input'
-          import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
-          import { cacheMatchFailOpen, cachePutFailOpen } from '../lib/edge-cache'
-          import {
-            journeyEtaOutcome,
-            placeArrivalsOutcome,
-          } from '../observability/map-api-outcomes'
-          """,
-          """import {
-            ApiInputError,
-            JOURNEY_ETA_BODY_LIMIT_BYTES,
-            parseJourneyEtaInput,
-            readJsonBody,
-          } from '../lib/api-input'
-          import { journeyEtaOutcome } from '../observability/map-api-outcomes'
-          """,
-          )
-          replace_once(
-          """import {
-            beginMapOperation,
-            completeMapError,
-            mapJsonError,
-            tdxEnv,
-            telemetryCity,
-            type MapEnv,
-          } from './map-http-context'
-          """,
-          """import {
-            beginMapOperation,
-            completeMapError,
-            tdxEnv,
-            telemetryCity,
-            type MapEnv,
-          } from './map-http-context'
-          """,
-          )
-          replace_once(
-              "import { readVehicles } from './map-vehicles-read'\n",
-              "import { readVehicles } from './map-vehicles-read'\nimport { readPlaceArrivals } from './map-place-arrivals'\n",
-          )
-
-          replace_between(
-              'const REALTIME_COOLDOWN_SECONDS = 60\n',
-              "map.get('/map',",
-              '',
-          )
-          replace_between(
-              "map.get('/api/v1/map/place/:placeId/arrivals', async (c) => {\n",
-              "map.get('/api/v1/map/place/:placeId', readPlace)",
-              "map.get('/api/v1/map/place/:placeId/arrivals', readPlaceArrivals)\n\n",
-          )
-          replace_between(
-              "// 把 domain 的估計攤成回應欄位;departureBased/headway 只有伺服器端組 label 會用。\n",
-              'export default map',
-              '',
-          )
-
-          path.write_text(text)
-          PY
-      - run: npm ci --silent
-      - name: Run focused contracts
-        run: >-
-          npx vitest run
-          src/routes/map-place-arrivals-contract.test.ts
-          src/routes/map-place-arrivals.test.ts
-          src/routes/map-observability.test.ts
-          src/routes/map-http-context.test.ts
-          src/routes/map-vehicles-read.test.ts
-          src/infrastructure/tdx/stop-arrivals.test.ts
-      - name: Run npm run check
-        run: npm run check
-      - name: Run git diff --check
-        run: git diff --check
-      - name: Commit clean extraction
+          set +e
+          npx vitest run src/routes/map-place-arrivals-contract.test.ts > place-arrivals-diagnostic.txt 2>&1
+          code=$?
+          echo "exit_code=${code}" >> place-arrivals-diagnostic.txt
+          exit 0
+      - name: Publish diagnostic text and restore CI
         shell: bash
         run: |
           set -euo pipefail
@@ -167,6 +38,6 @@ jobs:
           git checkout origin/main -- .github/workflows/ci.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/routes/map.ts .github/workflows/ci.yml
-          git commit -m "Wire Map Place Arrivals handler"
+          git add place-arrivals-diagnostic.txt .github/workflows/ci.yml
+          git commit -m "Capture Place Arrivals test diagnostics"
           git push origin HEAD:agent/extract-map-place-arrivals
