@@ -12,198 +12,84 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  integrate-map-http-context:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/extract-map-http-context'
-    permissions:
-      contents: write
+  changes:
+    name: Detect browser changes
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    outputs:
+      browser: ${{ steps.filter.outputs.browser }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.head_ref }}
+          persist-credentials: false
           fetch-depth: 0
+      - name: Detect browser-relevant changes
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "browser=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
+          printf '%s\n' "${changed_files}"
+
+          if grep -Eq '^(src/|web/|public/|test/e2e/|\.github/workflows/ci\.yml$|playwright\.config\.(ts|js|mjs|cjs)$|vite\.config\.(ts|js|mjs|cjs)$|wrangler\.(toml|jsonc?)$|package\.json$|package-lock\.json$)' <<< "${changed_files}"; then
+            echo "browser=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "browser=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Extract Map HTTP context
-        run: |
-          python - <<'PY'
-          from pathlib import Path
+      - run: npm ci
+      - run: npm run check
 
-          path = Path('src/routes/map.ts')
-          source = path.read_text()
-
-          def replace_once(old: str, new: str, label: str) -> None:
-              global source
-              count = source.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label}: expected one match, found {count}')
-              source = source.replace(old, new, 1)
-
-          replace_once("import { Hono, type Context } from 'hono'", "import { Hono } from 'hono'", 'Hono import')
-          replace_once("import { TDX_ACCESS_TOKEN_REJECTED_CODE, TDX_ACCESS_TOKEN_REJECTED_MESSAGE } from '../domain/tdx-api-error'\n", '', 'TDX API error import')
-          replace_once('  type TransitBindings,\n', '', 'Transit bindings import')
-          replace_once(
-              "import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, withTDXBackgroundTasks, withUserTDXAccessToken, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'",
-              "import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'",
-              'TDX import',
-          )
-          replace_once('  apiInputErrorBody,\n', '', 'API error body import')
-          replace_once('  parseTdxAccessToken,\n', '', 'TDX token parser import')
-          replace_once("import { beginApiOperationTelemetry, type ApiOperationTracker } from '../observability/api-operation'\n", '', 'operation tracker import')
-          replace_once('  mapOperationErrorOutcome,\n', '', 'map error outcome import')
-          replace_once("import { releaseIdentity } from '../observability/release-identity'\n", '', 'release identity import')
-          replace_once(
-              "import type { TelemetryCity, TelemetryFailureClass, TelemetryOperation } from '../observability/telemetry'",
-              "import type { TelemetryCity } from '../observability/telemetry'",
-              'telemetry type import',
-          )
-          replace_once(
-              "import { renderMapPage } from '../map-page'\n",
-              """import { renderMapPage } from '../map-page'
-          import {
-            beginMapOperation,
-            completeMapError,
-            mapJsonError,
-            tdxEnv,
-            telemetryCity,
-            type MapEnv,
-          } from './map-http-context'
-          """,
-              'Map HTTP context import',
-          )
-          replace_once(
-              """type Env = {
-            Bindings: TDXEnv & TransitBindings & Pick<CloudflareBindings, 'CF_VERSION_METADATA'>
-          }
-          const map = new Hono<Env>()
-
-          // 瀏覽器直接向 TDX 換 token；Worker 只接收短效 token，永遠不接觸 Client Secret。
-          const tdxEnv = (c: Context<Env>) => {
-            const env = withUserTDXAccessToken(c.env, parseTdxAccessToken(c.req.header('Authorization')))
-            try {
-              const executionCtx = c.executionCtx
-              return withTDXBackgroundTasks(env, (promise) => executionCtx.waitUntil(promise))
-            } catch {
-              return env
-            }
-          }
-          """,
-              "const map = new Hono<MapEnv>()\n",
-              'Map environment block',
-          )
-          replace_once(
-              """function telemetryCity(value: string | undefined): TelemetryCity | null {
-            return value && supportedCityCodes.has(value) ? value as TelemetryCity : null
-          }
-
-          function beginMapOperation(
-            c: Context<Env>,
-            operation: TelemetryOperation,
-            city: TelemetryCity | null,
-          ): ApiOperationTracker {
-            return beginApiOperationTelemetry({
-              operation,
-              city,
-              trafficClass: 'user',
-              releaseIdentity: releaseIdentity(c.env?.CF_VERSION_METADATA),
-            })
-          }
-
-          function mapFailureClass(error: unknown, authorization?: string): TelemetryFailureClass {
-            if (error instanceof QueryValidationError || error instanceof ApiInputError) return 'input_validation'
-            if (isRejectedUserTdxToken(error, authorization)) return 'tdx_401'
-            if (!(error instanceof TDXServiceError)) return 'unknown'
-            if (error.status === 401) return 'tdx_401'
-            if (error.warning === 'tdx-quota') return 'tdx_quota'
-            if (error.status === 429 || error.warning === 'tdx-rate-limit') return 'tdx_429'
-            if (error.status !== undefined && error.status >= 500) return 'tdx_5xx'
-            const causeName = error.cause instanceof Error ? error.cause.name : ''
-            if (causeName === 'AbortError' || causeName === 'TimeoutError') return 'tdx_timeout'
-            return error.status === undefined ? 'network' : 'unknown'
-          }
-
-          function completeMapError(
-            c: Context<Env>,
-            tracker: ApiOperationTracker,
-            error: unknown,
-            fallback: string,
-            city?: TelemetryCity | null,
-          ) {
-            const response = mapJsonError(c, error, fallback)
-            tracker.complete({
-              ...mapOperationErrorOutcome(mapFailureClass(error, c.req.header('Authorization'))),
-              httpStatus: response.status,
-              ...(city === undefined ? {} : { city }),
-            })
-            return response
-          }
-
-          """,
-              '',
-              'Map telemetry and error block',
-          )
-          replace_once(
-              """function mapJsonError(c: Context<Env>, error: unknown, fallback: string) {
-            if (error instanceof ApiInputError) {
-              return c.json(apiInputErrorBody(error), error.status, { 'Cache-Control': 'no-store' })
-            }
-            if (isRejectedUserTdxToken(error, c.req.header('Authorization'))) {
-              return c.json({
-                code: TDX_ACCESS_TOKEN_REJECTED_CODE,
-                error: TDX_ACCESS_TOKEN_REJECTED_MESSAGE,
-              }, 401, { 'Cache-Control': 'no-store' })
-            }
-            const isQueryError = error instanceof QueryValidationError
-            return c.json({ error: isQueryError ? error.message : fallback }, isQueryError ? 400 : 502, {
-              'Cache-Control': 'no-store',
-            })
-          }
-
-          """,
-              '',
-              'Map JSON error block',
-          )
-
-          path.write_text(source)
-          PY
-          git diff -- src/routes/map.ts
+  map-ui:
+    name: Map UI regression
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
       - run: npm ci --silent
-      - name: Run focused tests
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Test all desktop and touch interaction flows
         run: >-
-          npx vitest run
-          src/routes/map-http-context.test.ts
-          src/api-protection.test.ts
-          src/routes/map-observability.test.ts
-          src/routes/map-place-arrivals.test.ts
-      - name: Run complete check
-        shell: bash
-        run: |
-          set +e
-          npm run check > complete-check.log 2>&1
-          status=$?
-          cat complete-check.log
-          echo "${status}" > complete-check.status
-          exit 0
-      - name: Upload complete check diagnostics
+          npx playwright test
+          --project=desktop-chromium
+          --project=mobile-touch
+          --reporter=line,html
+      - name: Upload Playwright diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: map-http-context-complete-check
-          path: complete-check.log
-          if-no-files-found: error
-          retention-days: 1
-      - name: Enforce complete check
-        run: test "$(cat complete-check.status)" = "0"
-      - run: git diff --check
-      - name: Commit clean extraction
-        run: |
-          rm -f .github/map-http-context.patch
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "refactor(map): extract HTTP context"
-          git push origin HEAD:${{ github.head_ref }}
+          name: map-ui-playwright-report
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
