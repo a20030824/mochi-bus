@@ -2,6 +2,7 @@ import { expect, test as base, type Page } from '@playwright/test'
 
 type UiFixtures = {
   pageErrors: Error[]
+  workerApiBoundary: void
 }
 
 export const test = base.extend<UiFixtures>({
@@ -10,6 +11,22 @@ export const test = base.extend<UiFixtures>({
     page.on('pageerror', (error) => errors.push(error))
     await use(errors)
     expect(errors.map((error) => error.stack ?? error.message)).toEqual([])
+  }, { auto: true }],
+  workerApiBoundary: [async ({ page }, use) => {
+    const unexpectedRequests: string[] = []
+    await page.route(/\/api\/v1\//, async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      unexpectedRequests.push(`${request.method()} ${url.pathname}${url.search}`)
+      await route.abort('blockedbyclient')
+    })
+
+    await use()
+
+    expect(
+      unexpectedRequests,
+      '一般 UI spec 必須 mock Worker API；需要真正 Worker module state 的案例請移到 worker-stateful.spec.ts。',
+    ).toEqual([])
   }, { auto: true }],
 })
 
@@ -26,9 +43,9 @@ export async function mockMapBootstrapCities(page: Page, cities: unknown[] | nul
     const patched = cities === null
       ? html.replace(/(<script id="map-bootstrap"[^>]*>)[\s\S]*?(<\/script>)/, '$1$2')
       : html.replace(
-        /(<script id="map-bootstrap"[^>]*>)[\s\S]*?(<\/script>)/,
-        `$1${JSON.stringify({ cities }).replace(/</g, '\\u003c')}$2`,
-      )
+          /(<script id="map-bootstrap"[^>]*>)[\s\S]*?(<\/script>)/,
+          `$1${JSON.stringify({ cities }).replace(/</g, '\\u003c')}$2`,
+        )
     const headers = { ...response.headers() }
     delete headers['content-length']
     await route.fulfill({ response, body: patched, headers })
