@@ -1,0 +1,122 @@
+name: Diagnose TDX route query integration v2
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+      - name: Trace integration
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import traceback
+          out = Path('ROUTE_QUERY_V2.txt')
+          stage = 'start'
+          try:
+              text = Path('src/lib/tdx.ts').read_text()
+              stage = 'remove-imports'
+              for value in [
+                  "import { classifyRouteName, type RouteCategory } from '../domain/route-category'\n",
+                  '  type LocalizedName,\n',
+              ]:
+                  if text.count(value) != 1:
+                      raise RuntimeError(f'import removal count={text.count(value)} for {value!r}')
+                  text = text.replace(value, '')
+
+              stage = 'insert-import'
+              anchor = "} from './tdx/resolution-cache'\n"
+              if text.count(anchor) != 1:
+                  raise RuntimeError(f'import anchor count={text.count(anchor)}')
+              text = text.replace(anchor, anchor + "import { BUS_ETA_CACHE_SECONDS, QueryResolutionError, createTDXBusRouteQueries, tdxRouteScope } from './tdx/bus-route-queries'\n")
+
+              stage = 'insert-export'
+              anchor = "export type { TDXEnv, TDXResolutionOptions, TDXResolvedData }\n"
+              if text.count(anchor) != 1:
+                  raise RuntimeError(f'export anchor count={text.count(anchor)}')
+              text = text.replace(anchor, anchor + "export { QueryResolutionError, mergeEquivalentStopGroups, tdxRouteScope } from './tdx/bus-route-queries'\nexport type { RouteCatalogItem, RouteStop, StopGroup, StopRouteSuggestion } from './tdx/bus-route-queries'\n")
+
+              stage = 'remove-types'
+              start = text.index('type StopOfRouteItem = {')
+              end = text.index('// 「estimated 淡墨」', start)
+              text = text[:start] + text[end:]
+
+              stage = 'remove-constants'
+              for value in ['const ETA_CACHE_SECONDS = 12\n', 'const STATIC_CACHE_SECONDS = 60 * 60\n']:
+                  if text.count(value) != 1:
+                      raise RuntimeError(f'constant count={text.count(value)} for {value!r}')
+                  text = text.replace(value, '')
+
+              stage = 'remove-scope'
+              start = text.index('// 公路客運(公路總局)的資源掛在 /InterCity')
+              end = text.index('const circuitBreaker =', start)
+              text = text[:start] + text[end:]
+
+              stage = 'insert-instance'
+              anchor = 'export const resolveTDXJson = resolutionCache.resolveTDXJson\n'
+              if text.count(anchor) != 1:
+                  raise RuntimeError(f'resolver anchor count={text.count(anchor)}')
+              text = text.replace(anchor, anchor + "\nconst busRouteQueries = createTDXBusRouteQueries({ fetchTDXJson, telemetryCity })\nexport const resolveBusQuery = busRouteQueries.resolveBusQuery\nexport const getRouteStopGroups = busRouteQueries.getRouteStopGroups\nexport const getRouteCatalog = busRouteQueries.getRouteCatalog\nexport const getStopRouteSuggestions = busRouteQueries.getStopRouteSuggestions\n")
+
+              stage = 'remove-resolve'
+              start = text.index('export async function resolveBusQuery(')
+              end = text.index('export async function getCommuteETA(', start)
+              text = text[:start] + text[end:]
+
+              stage = 'remove-route-ops'
+              start = text.index('export async function getRouteStopGroups(')
+              end = text.index('export async function getRouteDetail(', start)
+              text = text[:start] + text[end:]
+
+              stage = 'replace-eta'
+              value = 'return fetchTDXJson<BusETAItem[]>(env, url, ETA_CACHE_SECONDS)'
+              if text.count(value) != 1:
+                  raise RuntimeError(f'ETA call count={text.count(value)}')
+              text = text.replace(value, 'return fetchTDXJson<BusETAItem[]>(env, url, BUS_ETA_CACHE_SECONDS)')
+
+              stage = 'remove-helpers'
+              start = text.index('function dedupeStops(')
+              text = text[:start].rstrip() + '\n'
+
+              stage = 'guards'
+              forbidden = [
+                  'classifyRouteName','RouteCategory','LocalizedName','type StopOfRouteItem','type RouteItem',
+                  'type StopItem','export type RouteCatalogItem','export type RouteStop','export type StopGroup',
+                  'export type StopRouteSuggestion','export class QueryResolutionError','export function tdxRouteScope',
+                  'export async function resolveBusQuery','export async function getRouteStopGroups',
+                  'export function mergeEquivalentStopGroups','export async function getRouteCatalog',
+                  'async function getIntercityRouteCatalog','export async function getStopRouteSuggestions',
+                  'function dedupeStops','function findNearbyStopUids','function distanceMeters',
+                  'const ETA_CACHE_SECONDS','const STATIC_CACHE_SECONDS',
+              ]
+              remaining = [token for token in forbidden if token in text]
+              required = [
+                  "from './tdx/bus-route-queries'",'const busRouteQueries = createTDXBusRouteQueries',
+                  'export const resolveBusQuery = busRouteQueries.resolveBusQuery',
+                  'export async function getCommuteETA(','export async function getBusSchedule(',
+                  'export async function getRouteDetail(','async function getBusETA(',
+                  'BUS_ETA_CACHE_SECONDS','tdxRouteScope(','new QueryResolutionError(',
+                  'export function isTDXRecordArray','function telemetryCity(',
+              ]
+              missing = [token for token in required if token not in text]
+              if remaining or missing:
+                  raise RuntimeError(f'remaining={remaining}; missing={missing}')
+              out.write_text(f'success\nlines={len(text.splitlines())}\n')
+          except Exception as error:
+              out.write_text(f'stage={stage}\nerror={type(error).__name__}: {error}\n\n{traceback.format_exc()}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: route-query-v2-diagnostic
+          path: ROUTE_QUERY_V2.txt
+          if-no-files-found: error
+          retention-days: 1
