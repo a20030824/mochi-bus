@@ -30,6 +30,7 @@ type RouteVariantSelector = {
   subRouteUid?: string
 }
 
+// Route map and timetable share one snapshot-first variant source decision.
 async function loadRouteVariants(
   c: Context<MapEnv>,
   city: string,
