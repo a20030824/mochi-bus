@@ -33,22 +33,24 @@ jobs:
           from pathlib import Path
           path = Path('src/lib/tdx/resolution-cache.test.ts')
           text = path.read_text()
-          old = """  return {
-            resolver: createTDXResolutionCache(dependencies),
-            getTDXToken,
-            fetchUpstream,
-            recordCircuitFailure,
-            recordCircuitSuccess,
-          }
-          """
-          new = """  return {
-            resolver: createTDXResolutionCache(dependencies),
-            getTDXToken: dependencies.getTDXToken,
-            fetchUpstream: dependencies.fetchUpstream,
-            recordCircuitFailure: dependencies.recordCircuitFailure,
-            recordCircuitSuccess: dependencies.recordCircuitSuccess,
-          }
-          """
+          old = (
+              "  return {\n"
+              "    resolver: createTDXResolutionCache(dependencies),\n"
+              "    getTDXToken,\n"
+              "    fetchUpstream,\n"
+              "    recordCircuitFailure,\n"
+              "    recordCircuitSuccess,\n"
+              "  }\n"
+          )
+          new = (
+              "  return {\n"
+              "    resolver: createTDXResolutionCache(dependencies),\n"
+              "    getTDXToken: dependencies.getTDXToken,\n"
+              "    fetchUpstream: dependencies.fetchUpstream,\n"
+              "    recordCircuitFailure: dependencies.recordCircuitFailure,\n"
+              "    recordCircuitSuccess: dependencies.recordCircuitSuccess,\n"
+              "  }\n"
+          )
           if text.count(old) != 1:
               raise SystemExit(f'test helper count={text.count(old)}')
           path.write_text(text.replace(old, new))
@@ -157,28 +159,13 @@ jobs:
           text = text[:helper_start] + text[helper_end:]
 
           forbidden = [
-              'memoryCacheGet',
-              'memoryCacheSet',
-              'cacheMatchFailOpen',
-              'cachePutFailOpen',
-              'releaseIdentity',
-              'beginTDXResolutionTelemetry',
-              'BackgroundTaskScheduler',
-              'TelemetryFailureClass',
-              'TelemetrySink',
-              'TelemetryTdxOperation',
-              'TelemetryTrafficClass',
-              'asTDXServiceError',
-              'DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES',
-              'responseByteLimit',
-              'type TDXTelemetryContext',
-              'type TDXCacheEntry',
-              'export async function fetchTDXJson',
-              'export async function resolveTDXJson',
-              'function validPayload',
-              'function isEmptyPayload',
-              'function parsedCacheTimestamp',
-              'function telemetryNow',
+              'memoryCacheGet', 'memoryCacheSet', 'cacheMatchFailOpen', 'cachePutFailOpen',
+              'releaseIdentity', 'beginTDXResolutionTelemetry', 'BackgroundTaskScheduler',
+              'TelemetryFailureClass', 'TelemetrySink', 'TelemetryTdxOperation', 'TelemetryTrafficClass',
+              'asTDXServiceError', 'DEFAULT_TDX_JSON_MAX_RESPONSE_BYTES', 'responseByteLimit',
+              'type TDXTelemetryContext', 'type TDXCacheEntry',
+              'export async function fetchTDXJson', 'export async function resolveTDXJson',
+              'function validPayload', 'function isEmptyPayload', 'function parsedCacheTimestamp', 'function telemetryNow',
           ]
           for token in forbidden:
               if token in text:
