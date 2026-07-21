@@ -1,8 +1,5 @@
-import { supportedCityCodes } from '../config'
-import type { ScheduleItem } from '../domain/schedule'
 import { tdxWarningMessages, type TDXWarning } from '../domain/tdx-warning'
 import { getSnapshotSchedule } from '../infrastructure/transit/snapshot-repository'
-import type { TelemetryCity } from '../observability/telemetry'
 import {
   TDXServiceError,
   classifyTDXWarning,
@@ -40,8 +37,9 @@ import {
   type TDXResolutionOptions,
   type TDXResolvedData,
 } from './tdx/resolution-cache'
-import { createTDXBusRouteQueries, tdxRouteScope } from './tdx/bus-route-queries'
+import { createTDXBusRouteQueries } from './tdx/bus-route-queries'
 import { createTDXCommuteRoutePresentation } from './tdx/commute-route-presentation'
+import { createTDXScheduleEndpoint, tdxTelemetryCity } from './tdx/schedule-endpoint'
 
 export { formatETALabel, formatStopStatus, toETAResult } from './tdx/eta-formatting'
 export type { BusETAItem, ETAResult } from './tdx/eta-formatting'
@@ -70,6 +68,7 @@ export type {
   RouteDetailWithEtaStates,
   RouteEtaTone,
 } from './tdx/commute-route-presentation'
+export { isTDXRecordArray } from './tdx/schedule-endpoint'
 
 export { tdxWarningMessages }
 export type { TDXWarning }
@@ -157,7 +156,6 @@ const tokenClient = createTDXTokenClient({
 export const getTDXToken = tokenClient.getTDXToken
 const resetTDXTokenState = tokenClient.resetTDXTokenState
 
-
 const upstreamDataClient = createTDXUpstreamDataClient({
   requestTimeoutMs: REQUEST_TIMEOUT_MS,
   assertCircuitClosed: (key) => { circuitBreaker.assertClosed(key) },
@@ -167,7 +165,6 @@ const upstreamDataClient = createTDXUpstreamDataClient({
     tdxResponseError(context, response, isShared, observation)
   ),
 })
-
 
 const resolutionCache = createTDXResolutionCache({
   getTDXToken,
@@ -179,10 +176,9 @@ const resolutionCache = createTDXResolutionCache({
 export const fetchTDXJson = resolutionCache.fetchTDXJson
 export const resolveTDXJson = resolutionCache.resolveTDXJson
 
-
 const busRouteQueries = createTDXBusRouteQueries({
   fetchTDXJson,
-  telemetryCity,
+  telemetryCity: tdxTelemetryCity,
 })
 
 export const resolveBusQuery = busRouteQueries.resolveBusQuery
@@ -190,6 +186,8 @@ export const getRouteStopGroups = busRouteQueries.getRouteStopGroups
 export const getRouteCatalog = busRouteQueries.getRouteCatalog
 export const getStopRouteSuggestions = busRouteQueries.getStopRouteSuggestions
 
+const scheduleEndpoint = createTDXScheduleEndpoint({ fetchTDXJson })
+export const getBusSchedule = scheduleEndpoint.getBusSchedule
 
 const commuteRoutePresentation = createTDXCommuteRoutePresentation({
   fetchTDXJson,
@@ -203,28 +201,3 @@ const commuteRoutePresentation = createTDXCommuteRoutePresentation({
 
 export const getCommuteETA = commuteRoutePresentation.getCommuteETA
 export const getRouteDetail = commuteRoutePresentation.getRouteDetail
-
-export async function getBusSchedule(env: TDXEnv, city: string, routeName: string, routeUid?: string): Promise<ScheduleItem[]> {
-  const url = new URL(
-    `https://tdx.transportdata.tw/api/basic/v2/Bus/Schedule/${tdxRouteScope(city, routeUid)}/${encodeURIComponent(routeName)}`,
-  )
-  url.searchParams.set('$format', 'JSON')
-  return fetchTDXJson<ScheduleItem[]>(env, url, 6 * 60 * 60, {
-    operation: 'tdx_schedule',
-    city: telemetryCity(city),
-    validate: isRecordArrayPayload,
-  })
-}
-
-export function isTDXRecordArray<T extends object>(value: unknown): value is T[] {
-  return isRecordArrayPayload(value)
-}
-
-function isRecordArrayPayload<T extends object>(value: unknown): value is T[] {
-  return Array.isArray(value)
-    && value.every((item) => item !== null && typeof item === 'object' && !Array.isArray(item))
-}
-
-function telemetryCity(value: string): TelemetryCity | null {
-  return supportedCityCodes.has(value) ? value as TelemetryCity : null
-}
