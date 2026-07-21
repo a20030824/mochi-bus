@@ -29,7 +29,7 @@ function harness(result: ScheduleItem[] = []) {
       ttlSeconds,
       options: options as TDXResolutionOptions<unknown> | undefined,
     })
-    return result as T
+    return result as unknown as T
   }
 
   return {
@@ -42,10 +42,10 @@ describe('TDX schedule endpoint boundary', () => {
   it('builds the encoded City schedule URL and preserves the six-hour policy', async () => {
     const { calls, endpoint } = harness()
 
-    await endpoint.getBusSchedule(env, 'New Taipei', '藍 15')
+    await endpoint.getBusSchedule(env, 'NewTaipei', '藍 15')
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].url.pathname).toBe('/api/basic/v2/Bus/Schedule/City/New%20Taipei/%E8%97%8D%2015')
+    expect(calls[0].url.pathname).toBe('/api/basic/v2/Bus/Schedule/City/NewTaipei/%E8%97%8D%2015')
     expect(calls[0].url.search).toBe('?$format=JSON')
     expect(calls[0].ttlSeconds).toBe(6 * 60 * 60)
     expect(calls[0].options).toMatchObject({
