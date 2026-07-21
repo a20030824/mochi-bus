@@ -42,6 +42,7 @@ export class TDXPayloadTooLargeError extends TDXServiceError {
 
 // Bounded response ownership lives here. Request loops still decide how parse/size failures affect
 // retries and circuits; this boundary only reads, measures, truncates and emits identity-safe size logs.
+// Native JSON parse failures deliberately pass through unchanged for token/data clients to classify.
 export function normalizedResponseByteLimit(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.floor(value)
