@@ -178,7 +178,25 @@ jobs:
           src/api-protection.test.ts
           src/routes/map-observability.test.ts
           src/routes/map-place-arrivals.test.ts
-      - run: npm run check
+      - name: Run complete check
+        shell: bash
+        run: |
+          set +e
+          npm run check > complete-check.log 2>&1
+          status=$?
+          cat complete-check.log
+          echo "${status}" > complete-check.status
+          exit 0
+      - name: Upload complete check diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-http-context-complete-check
+          path: complete-check.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Enforce complete check
+        run: test "$(cat complete-check.status)" = "0"
       - run: git diff --check
       - name: Commit clean extraction
         run: |
