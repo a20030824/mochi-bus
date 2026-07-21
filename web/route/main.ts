@@ -1,13 +1,11 @@
 import type { RoutePageIdentity, RoutePageIdentityStop } from '../../src/domain/route-page-identity'
 import type { RouteEtaResponse, RouteEtaStop } from '../../src/domain/route-page-detail'
 import { ROUTE_UNKNOWN_ETA_LABEL } from '../../src/domain/route-timeline-fallback'
+import { routeRetryDecision, routeWarningRetryDecision } from '../lib/retry-policy'
 import { isTdxTokenRejectedError, requestMochiJson } from '../tdx/api-client'
 import { parseRouteEtaResponse, RouteContractError } from './contract'
 import { readRoutePageIdentity, RouteIdentityError } from './identity'
 import { createVisibleRefreshController, type VisibleRefreshResult } from './refresh-controller'
-
-const ROUTE_DEGRADED_REFRESH_MS = 2 * 60_000
-const ROUTE_QUOTA_REFRESH_MS = 5 * 60_000
 
 const routePage = document.querySelector<HTMLElement>('.route-page')
 if (routePage) initializeRoutePage(routePage)
@@ -67,17 +65,15 @@ async function refreshRouteEta(
           : error instanceof RouteIdentityError ? 'identity' : 'transient',
     }))
     if (tokenRejected || invariantFailure) return 'stop'
-    return { nextDelayMs: ROUTE_DEGRADED_REFRESH_MS }
+    const decision = routeRetryDecision(error)
+    return decision.retry ? { nextDelayMs: decision.delayMs } : 'stop'
   }
 }
 
 function refreshResultFor(response: RouteEtaResponse): VisibleRefreshResult {
   if (response.eta.kind !== 'unavailable') return
-  return {
-    nextDelayMs: response.eta.warning === 'tdx-quota'
-      ? ROUTE_QUOTA_REFRESH_MS
-      : ROUTE_DEGRADED_REFRESH_MS,
-  }
+  const decision = routeWarningRetryDecision(response.eta.warning)
+  return decision.retry ? { nextDelayMs: decision.delayMs } : 'stop'
 }
 
 function prepareSelectedEta(page: HTMLElement): void {
