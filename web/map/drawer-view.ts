@@ -30,6 +30,7 @@ export type DrawerRenderer = {
 export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
   let disposeCurrentView: (() => void) | undefined
   let currentViewKey: string | undefined
+  let currentScrollRegion: HTMLDivElement | undefined
 
   const dispose = () => {
     disposeCurrentView?.()
@@ -37,6 +38,11 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
   }
 
   const render = (view: DrawerView): DrawerViewSession => {
+    const restoredScrollTop = drawerScrollTopForTransition(
+      currentViewKey,
+      view.key,
+      currentScrollRegion?.scrollTop ?? 0,
+    )
     dispose()
 
     const abortController = new AbortController()
@@ -53,6 +59,7 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
 
     if (view.mode === 'compact') {
       drawer.dataset.scrollable = 'false'
+      currentScrollRegion = undefined
       appendNodes(drawer, view.content)
       if (animateContent) animateNodes(view.content)
     } else {
@@ -62,6 +69,8 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
       scrollRegion = document.createElement('div')
       scrollRegion.className = 'drawer-scroll-region'
       appendNodes(scrollRegion, view.content)
+      scrollRegion.scrollTop = restoredScrollTop
+      currentScrollRegion = scrollRegion
       if (animateContent) scrollRegion.classList.add('drawer-content-enter')
 
       const fade = document.createElement('div')
@@ -99,6 +108,14 @@ export function createDrawerRenderer(drawer: HTMLElement): DrawerRenderer {
 
 export function shouldAnimateDrawerTransition(previousKey: string | undefined, nextKey: string): boolean {
   return previousKey !== undefined && previousKey !== nextKey
+}
+
+export function drawerScrollTopForTransition(
+  previousKey: string | undefined,
+  nextKey: string,
+  previousScrollTop: number,
+): number {
+  return previousKey === nextKey ? Math.max(0, previousScrollTop) : 0
 }
 
 function animateNodes(nodes: readonly Node[]) {
