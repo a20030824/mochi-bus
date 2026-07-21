@@ -132,13 +132,17 @@ jobs:
           classify_end = text.index(classify_end_marker, classify_start) + len(classify_end_marker)
           text = text[:classify_start] + text[classify_end:]
 
-          if text.count('  sharedRateLimitedSince = null\n') != 1:
-              raise SystemExit(f'test reset count={text.count("  sharedRateLimitedSince = null\\n")}')
-          text = text.replace('  sharedRateLimitedSince = null\n', '  resetTDXRateLimitTracking()\n')
+          test_reset_line = '  sharedRateLimitedSince = null\n'
+          test_reset_count = text.count(test_reset_line)
+          if test_reset_count != 1:
+              raise SystemExit(f'test reset count={test_reset_count}')
+          text = text.replace(test_reset_line, '  resetTDXRateLimitTracking()\n')
 
-          if text.count('  if (isShared) sharedRateLimitedSince = null\n') != 2:
-              raise SystemExit(f'success reset count={text.count("  if (isShared) sharedRateLimitedSince = null\\n")}')
-          text = text.replace('  if (isShared) sharedRateLimitedSince = null\n', '  observeTDXResponseSuccess(isShared)\n')
+          success_reset_line = '  if (isShared) sharedRateLimitedSince = null\n'
+          success_reset_count = text.count(success_reset_line)
+          if success_reset_count != 2:
+              raise SystemExit(f'success reset count={success_reset_count}')
+          text = text.replace(success_reset_line, '  observeTDXResponseSuccess(isShared)\n')
 
           failure_block = """function responseFailureClass(status: number, warning?: TDXWarning): TelemetryFailureClass {
             if (warning === 'tdx-quota') return 'quota'
