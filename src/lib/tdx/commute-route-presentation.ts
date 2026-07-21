@@ -12,6 +12,7 @@ import {
 } from '../../domain/schedule'
 import type { TDXWarning } from '../../domain/tdx-warning'
 import type { TransitBindings } from '../../infrastructure/transit/snapshot-repository'
+import { logProductionError } from '../../observability/production-log'
 import {
   isRejectedUserTdxToken,
   tdxWarningFromError,
@@ -113,12 +114,12 @@ export function createTDXCommuteRoutePresentation(
     } catch (error) {
       if (isRejectedUserTdxToken(error, env.TDX_USER_ACCESS_TOKEN)) throw error
       warning = tdxWarningFromError(error)
-      console.error(JSON.stringify({
-        message: 'commute_eta_realtime_failed',
+      logProductionError({
+        event: 'commute_eta_realtime_failed',
+        operation: 'bus_eta',
         city: query.city,
-        routeName: query.routeName,
-        error: error instanceof Error ? error.message : String(error),
-      }))
+        error,
+      })
     }
 
     const item = selectBestEta(items, {
@@ -175,7 +176,12 @@ export function createTDXCommuteRoutePresentation(
     } catch (error) {
       if (isRejectedUserTdxToken(error, env.TDX_USER_ACCESS_TOKEN)) throw error
       warning ??= tdxWarningFromError(error)
-      console.error('eta_schedule_fallback_failed', error)
+      logProductionError({
+        event: 'eta_schedule_fallback_failed',
+        operation: 'bus_eta',
+        city: query.city,
+        error,
+      })
       return warning ? { ...result, warning } : result
     }
   }
