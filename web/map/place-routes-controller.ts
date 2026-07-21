@@ -7,6 +7,10 @@ import type {
 
 const DEFAULT_PREVIEW_LIMIT = 8
 
+type RetryDecision =
+  | { retry: false }
+  | { retry: true; delayMs: number }
+
 export type PlaceRouteEntry = {
   route: PlaceRoute
   color: string
@@ -55,6 +59,10 @@ type PlaceRoutesControllerOptions = {
   renderPreview: (preview: PlaceRoutePreview) => void
   onComplete: (presentation: PlaceRoutesPresentation) => void
   onError: (failure: PlaceRouteFailure) => void
+  retryDecision?: (error: unknown, consecutiveFailures: number) => RetryDecision
+  shouldRevealFailure?: (consecutiveFailures: number) => boolean
+  scheduleRetry?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
+  cancelRetry?: (timer: ReturnType<typeof setTimeout>) => void
   previewLimit?: number
 }
 
@@ -71,7 +79,17 @@ export function createPlaceRoutesController(
     throw new Error('Place route preview limit must be a positive integer')
   }
 
+  const scheduleRetry = options.scheduleRetry ?? ((callback, delayMs) => setTimeout(callback, delayMs))
+  const cancelRetry = options.cancelRetry ?? clearTimeout
   let generation = 0
+  let consecutiveFailures = 0
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+  function clearRetry(): void {
+    if (retryTimer === undefined) return
+    cancelRetry(retryTimer)
+    retryTimer = undefined
+  }
 
   function isCurrent(
     requestGeneration: number,
@@ -83,59 +101,102 @@ export function createPlaceRoutesController(
       && !options.isStaleRequest(requestId)
   }
 
+  function scheduleNextAttempt(
+    place: NearbyPlace,
+    cityCode: string,
+    requestGeneration: number,
+    delayMs: number,
+  ): void {
+    clearRetry()
+    retryTimer = scheduleRetry(() => {
+      retryTimer = undefined
+      if (generation !== requestGeneration || options.currentCityCode() !== cityCode) return
+      void attempt(place, cityCode, requestGeneration)
+    }, delayMs)
+  }
+
+  async function attempt(
+    place: NearbyPlace,
+    cityCode: string,
+    requestGeneration: number,
+  ): Promise<boolean> {
+    const { requestId, signal } = options.beginRequest()
+    let routesPresented = false
+
+    try {
+      const arrivals = await options.loadRoutes(cityCode, place.placeId, signal)
+      if (!isCurrent(requestGeneration, cityCode, requestId)) return false
+
+      consecutiveFailures = 0
+      clearRetry()
+      const routes = rankPlaceRoutes(arrivals.routes, options.favoriteRouteUids())
+        .map((route): PlaceRouteEntry => ({
+          route,
+          color: options.routeColor(route.routeName),
+        }))
+      const presentation: PlaceRoutesPresentation = {
+        cityCode,
+        place,
+        routes,
+        warning: arrivals.warning,
+      }
+      options.onRoutes(presentation)
+      routesPresented = true
+
+      const previews = await Promise.all(routes.slice(0, previewLimit).map(async (entry) => {
+        const variant = await options.loadVariant(
+          cityCode,
+          entry.route.routeName,
+          entry.route.variantKey,
+        )
+        return variant ? { ...entry, variant } : undefined
+      }))
+      if (!isCurrent(requestGeneration, cityCode, requestId)) return false
+
+      for (const preview of previews) {
+        if (preview) options.renderPreview(preview)
+      }
+      options.onComplete(presentation)
+      return true
+    } catch (error) {
+      if (!isCurrent(requestGeneration, cityCode, requestId)) return false
+
+      if (routesPresented || !options.retryDecision) {
+        options.onError({ cityCode, place, error })
+        return false
+      }
+
+      consecutiveFailures += 1
+      const decision = options.retryDecision(error, consecutiveFailures)
+      const reveal = !decision.retry
+        || (options.shouldRevealFailure?.(consecutiveFailures) ?? true)
+      if (reveal) options.onError({ cityCode, place, error })
+      if (decision.retry) {
+        scheduleNextAttempt(place, cityCode, requestGeneration, decision.delayMs)
+      }
+      return false
+    }
+  }
+
   return {
     async open(place) {
       const cityCode = options.currentCityCode()
       if (!cityCode) return false
 
       generation += 1
+      clearRetry()
+      consecutiveFailures = 0
       const requestGeneration = generation
       options.invalidateOtherPreviews()
       options.clearPreview()
       options.onStart({ cityCode, place })
-      const { requestId, signal } = options.beginRequest()
-
-      try {
-        const arrivals = await options.loadRoutes(cityCode, place.placeId, signal)
-        if (!isCurrent(requestGeneration, cityCode, requestId)) return false
-
-        const routes = rankPlaceRoutes(arrivals.routes, options.favoriteRouteUids())
-          .map((route): PlaceRouteEntry => ({
-            route,
-            color: options.routeColor(route.routeName),
-          }))
-        const presentation: PlaceRoutesPresentation = {
-          cityCode,
-          place,
-          routes,
-          warning: arrivals.warning,
-        }
-        options.onRoutes(presentation)
-
-        const previews = await Promise.all(routes.slice(0, previewLimit).map(async (entry) => {
-          const variant = await options.loadVariant(
-            cityCode,
-            entry.route.routeName,
-            entry.route.variantKey,
-          )
-          return variant ? { ...entry, variant } : undefined
-        }))
-        if (!isCurrent(requestGeneration, cityCode, requestId)) return false
-
-        for (const preview of previews) {
-          if (preview) options.renderPreview(preview)
-        }
-        options.onComplete(presentation)
-        return true
-      } catch (error) {
-        if (!isCurrent(requestGeneration, cityCode, requestId)) return false
-        options.onError({ cityCode, place, error })
-        return false
-      }
+      return attempt(place, cityCode, requestGeneration)
     },
 
     cancel() {
       generation += 1
+      consecutiveFailures = 0
+      clearRetry()
     },
   }
 }
