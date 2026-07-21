@@ -17,14 +17,12 @@ import {
   STOP_ARRIVAL_MAX_RESPONSE_BYTES,
 } from '../infrastructure/tdx/stop-arrivals'
 import {
-  getActiveSnapshotVersion,
   getJourneyLegStopRefs,
-  getSnapshotRouteCatalog,
   getSnapshotSchedule,
   getStopPlaceBundle,
   getStopPlaceRoutes,
 } from '../infrastructure/transit/snapshot-repository'
-import { fetchTDXJson, formatETALabel, getBusSchedule, getRouteCatalog, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'
+import { fetchTDXJson, formatETALabel, getBusSchedule, isRejectedUserTdxToken, isTDXRecordArray, resolveTDXJson, TDXServiceError, tdxCredentialScope, tdxRouteScope, tdxWarningFromError, type BusETAItem, type TDXEnv, type TDXWarning } from '../lib/tdx'
 import {
   ApiInputError,
   JOURNEY_ETA_BODY_LIMIT_BYTES,
@@ -38,7 +36,6 @@ import { memoryCacheGet, memoryCacheSet } from '../lib/memory-cache'
 import { cacheMatchFailOpen, cachePutFailOpen } from '../lib/edge-cache'
 import {
   journeyEtaOutcome,
-  mapRoutesOutcome,
   placeArrivalsOutcome,
   vehiclesOutcome,
 } from '../observability/map-api-outcomes'
@@ -62,6 +59,7 @@ import {
 import { readDirectRoutes, readTransferPlans } from './map-journey-plans'
 import { readRouteMap, readRouteTimetable } from './map-route-reads'
 import { readCityNetwork } from './map-network-read'
+import { readRouteCatalog } from './map-route-catalog'
 
 const map = new Hono<MapEnv>()
 
@@ -180,37 +178,7 @@ map.get('/api/v1/map/locate', (c) => {
   return c.json({ latitude, longitude }, 200, { 'Cache-Control': 'no-store' })
 })
 
-map.get('/api/v1/map/routes', async (c) => {
-  const tracker = beginMapOperation(c, 'map_routes', telemetryCity(c.req.query('city')?.trim()))
-  try {
-    const city = c.req.query('city')?.trim()
-    if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
-    const snapshotRoutes = await getSnapshotRouteCatalog(c.env, city)
-    const routes = snapshotRoutes.length ? snapshotRoutes : await getRouteCatalog(tdxEnv(c), city)
-    const snapshotVersion = snapshotRoutes.length ? await getActiveSnapshotVersion(c.env, city) : null
-    const response = c.json({
-      schemaVersion: 2,
-      city,
-      source: snapshotRoutes.length ? 'snapshot' : 'tdx',
-      snapshotVersion,
-      routes,
-    }, 200, {
-      'Cache-Control': `public, max-age=${snapshotRoutes.length ? 86400 : 300}`,
-    })
-    tracker.complete({
-      ...mapRoutesOutcome({
-        snapshotRouteCount: snapshotRoutes.length,
-        routeCount: routes.length,
-        snapshotVersion,
-      }),
-      httpStatus: 200,
-      city: telemetryCity(city),
-    })
-    return response
-  } catch (error) {
-    return completeMapError(c, tracker, error, '路線目錄讀取失敗')
-  }
-})
+map.get('/api/v1/map/routes', readRouteCatalog)
 
 map.get('/api/v1/map/route', readRouteMap)
 
