@@ -157,8 +157,8 @@ describe('TDX bus route/query boundary', () => {
   it('maps, deduplicates and numerically sorts the city route catalog with telemetry policy', async () => {
     const { calls, queries } = harness(() => [
       { RouteUID: 'R10', RouteName: { Zh_tw: '10' }, DepartureStopNameZh: '甲', DestinationStopNameZh: '乙' },
-      { RouteUID: 'R2', RouteName: { Zh_tw: '2' }, DepartureStopNameZh: '丙', DestinationStopNameZh: '丁' },
       { RouteUID: 'R2', RouteName: { Zh_tw: '重複' } },
+      { RouteUID: 'R2', RouteName: { Zh_tw: '2' }, DepartureStopNameZh: '丙', DestinationStopNameZh: '丁' },
       { RouteUID: 'MISSING' },
     ])
 
