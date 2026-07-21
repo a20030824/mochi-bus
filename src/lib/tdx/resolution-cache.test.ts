@@ -15,7 +15,7 @@ function environment(events: TelemetryEnvelope[] = []): TDXEnv {
     TDX_TELEMETRY: {
       now: () => 120_000,
       random: () => 0,
-      emitter: (event) => events.push(event),
+      emitter: (event: TelemetryEnvelope) => events.push(event),
     },
   } as unknown as TDXEnv
 }
