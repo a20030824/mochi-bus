@@ -1,0 +1,48 @@
+name: Inspect Phase 4 audit failures
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download failed job logs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for entry in architecture:88752343373 stress:88752343330; do
+            name="${entry%%:*}"
+            job="${entry##*:}"
+            curl --fail --location --silent --show-error \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/jobs/${job}/logs" \
+              --output "${name}.zip"
+            unzip -p "${name}.zip" > "${name}.log"
+          done
+      - name: Extract failure context
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in architecture stress; do
+            {
+              echo "===== ${name} ====="
+              grep -n -B 8 -A 20 -E 'FAIL|AssertionError|expected|received|Error:|Test Files|Tests |Unhandled|Unknown option|CACError' "${name}.log" || true
+            } >> phase4-audit-failures.txt
+          done
+          cat phase4-audit-failures.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase4-audit-failure-details
+          path: phase4-audit-failures.txt
+          if-no-files-found: error
+          retention-days: 3
