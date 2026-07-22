@@ -4,8 +4,10 @@ import {
   discoverAssetGraph,
   runPostDeploySmoke,
   safeReleaseSmokeDiagnostic,
+  selectRepresentativeRoute,
   validateArrivalsContract,
   validateReleaseIdentity,
+  validateRouteContract,
   validateRoutesContract,
 } from './post-deploy.mjs'
 
@@ -78,17 +80,60 @@ describe('post-deploy asset graph', () => {
 })
 
 describe('representative public API contracts', () => {
+  const taipeiRoutes = validateRoutesContract({
+    schemaVersion: 2,
+    city: 'Taipei',
+    source: 'snapshot',
+    snapshotVersion: 'v1',
+    routes: [
+      { routeUid: 'TPE-FIRST', routeName: '0東' },
+      { routeUid: 'TPE19108', routeName: '307' },
+    ],
+  }, 'Taipei')
+
   it('requires snapshot-backed route catalogues and a non-empty version', () => {
-    expect(validateRoutesContract({
-      schemaVersion: 2,
-      city: 'Taipei',
-      source: 'snapshot',
-      snapshotVersion: 'v1',
-      routes: [{ routeUid: 'TPE307', routeName: '307' }],
-    }, 'Taipei')).toMatchObject({ snapshotVersion: 'v1' })
+    expect(taipeiRoutes).toMatchObject({ snapshotVersion: 'v1' })
     expect(() => validateRoutesContract({
       schemaVersion: 2, city: 'Taipei', source: 'tdx', snapshotVersion: null, routes: [],
     }, 'Taipei')).toThrowError(expect.objectContaining({ code: 'routes_contract_invalid' }))
+  })
+
+  it('selects the fixed product-default route instead of whichever catalogue row sorts first', () => {
+    expect(selectRepresentativeRoute(taipeiRoutes, {
+      routeName: '307', routeUid: 'TPE19108',
+    })).toEqual({ routeName: '307', routeUid: 'TPE19108' })
+    expect(() => selectRepresentativeRoute(taipeiRoutes, {
+      routeName: 'missing', routeUid: 'TPE-MISSING',
+    })).toThrowError(expect.objectContaining({ code: 'route_sample_missing' }))
+  })
+
+  it('requires the route detail to preserve the exact snapshot identity and usable stop sequence', () => {
+    const route = { routeName: '307', routeUid: 'TPE19108' }
+    const variant = {
+      variantKey: 'TPE19108-0:0:0',
+      routeName: '307',
+      routeUid: 'TPE19108',
+      stops: {
+        features: [
+          { properties: { stopUid: 'TPE100' } },
+          { properties: { stopUid: 'TPE213044' } },
+        ],
+      },
+    }
+    expect(validateRouteContract({
+      schemaVersion: 1,
+      city: 'Taipei',
+      routeName: '307',
+      source: 'snapshot',
+      variants: [variant],
+    }, 'Taipei', route)).toBe(variant)
+    expect(() => validateRouteContract({
+      schemaVersion: 1,
+      city: 'Taipei',
+      routeName: '307',
+      source: 'snapshot',
+      variants: [{ ...variant, routeUid: 'TPE-OTHER' }],
+    }, 'Taipei', route)).toThrowError(expect.objectContaining({ code: 'route_contract_invalid' }))
   })
 
   it('accepts healthy or degraded arrivals only when fallback fields remain structurally usable', () => {
@@ -197,5 +242,7 @@ describe('true post-deploy smoke orchestration', () => {
     expect(JSON.stringify(diagnostic)).not.toMatch(/secret|token|https|stack|message/i)
     expect(safeReleaseSmokeDiagnostic(new ReleaseSmokeError('page_http_failed'), expectedSha).failureClass)
       .toBe('page_http_failed')
+    expect(safeReleaseSmokeDiagnostic(new ReleaseSmokeError('route_http_failed'), expectedSha).failureClass)
+      .toBe('route_http_failed')
   })
 })
