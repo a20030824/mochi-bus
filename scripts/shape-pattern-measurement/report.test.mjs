@@ -1,67 +1,190 @@
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { buildCandidatePartitions } from './build-candidates.mjs'
-import { createMeasurementReport, writeMeasurementReport } from './report.mjs'
-import { parseJsonLines } from './report-schema.mjs'
-import { omitNondeterministic, stableStringify } from './util.mjs'
+import { tmpdir } from 'node:os'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { REPORT_FILES } from './constants.mjs'
+import {
+  createMeasurementReport, publishMeasurementReport, readPublishedReport,
+  validatePublishedDirectory,
+} from './report.mjs'
+import { atomicWrite } from './util.mjs'
 
-const fixture = JSON.parse(await readFile(new URL('./fixtures/sanitized-raw-bundle.json', import.meta.url), 'utf8'))
+const roots = []
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+const result = {
+  matches: [{ patternId: 'p1', shapeId: 's1', basis: 'exact-identity', costMeters: null, metrics: null }],
+  unresolved: [], rejectedShapes: [], unusedShapeIds: [],
+}
+const candidateBundle = {
+  partitions: [{
+    partitionId: 'a'.repeat(24), key: 'city\u0000Taipei\u0000R1\u00000',
+    sourceScope: 'city', city: 'Taipei', routeUid: 'R1', direction: 0,
+    patterns: [{ patternId: 'p1', routeUid: 'R1', subRouteUid: 'SR1', direction: 0, stops: [
+      { stopUid: 'A', coordinate: [121, 25] }, { stopUid: 'B', coordinate: [121.01, 25.01] },
+    ] }],
+    shapes: [{ shapeId: 's1', routeUid: 'R1', subRouteUid: 'SR1', direction: 0, coordinates: [[121, 25], [121.01, 25.01]] }],
+    stats: {
+      patternCount: 1, shapeCount: 1, minSideCount: 1, completeIdentityCount: 2,
+      duplicateIdentityCount: 0, contradictoryIdentityCount: 0, candidateMultiplicity: 1,
+    },
+  }],
+  rejected: [], rejectionCounts: {},
+}
 const rawManifest = {
-  schemaVersion: 1,
-  fetchedAt: fixture.fetchedAt,
-  cities: ['Taipei'],
-  includeIntercity: true,
+  schemaVersion: 2,
+  fetchedAt: '2026-07-22T00:00:00.000Z', cities: ['Taipei'], includeIntercity: false,
   endpoints: [
-    { category: 'stop-of-route', city: 'Taipei', scope: 'city', contentHash: 'a'.repeat(64) },
-    { category: 'shape', city: 'Taipei', scope: 'city', contentHash: 'b'.repeat(64) },
-    { category: 'stop-of-route-intercity', city: null, scope: 'intercity', contentHash: 'c'.repeat(64) },
-    { category: 'shape-intercity', city: null, scope: 'intercity', contentHash: 'd'.repeat(64) },
+    { endpointId: 'city-Taipei-shape', scope: 'city', city: 'Taipei', category: 'shape', fileName: 'city-Taipei-shape.json', contentHash: '4'.repeat(64), itemCount: 1, maxUpdateTime: null },
+    { endpointId: 'city-Taipei-stop-of-route', scope: 'city', city: 'Taipei', category: 'stop-of-route', fileName: 'city-Taipei-stop-of-route.json', contentHash: '5'.repeat(64), itemCount: 1, maxUpdateTime: null },
   ],
+  bundleContentHash: '6'.repeat(64),
 }
 
-describe('measurement report generation', () => {
-  it('writes all required files and stable JSONL records', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'measurement-report-'))
-    const options = {
-      cities: ['Taipei'], includeIntercity: true, instrumented: false,
-      expectedMatcherSha256: null, warmup: 0, iterations: 1, topOutliers: 3,
-      generatedDir: join(root, 'generated'),
+async function tempRoot() {
+  const root = await mkdtemp(join(tmpdir(), 'shape-measure-report-'))
+  roots.push(root)
+  return root
+}
+
+function fakeLoader({ delayMs = 0, collectorError = null } = {}) {
+  return async ({ instrumented, onMeasurement }) => {
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs))
+    return {
+      sourceSha256: '2'.repeat(64), sourceGitBlobSha1: '3'.repeat(40),
+      loaderTimings: { sourceVerificationTimeMs: delayMs, transpileTimeMs: 0, importTimeMs: 0 },
+      invoke: () => {
+        if (instrumented) emitPair(onMeasurement)
+        return structuredClone(result)
+      },
+      takeCollectorError: () => instrumented ? collectorError : null,
+      dispose: vi.fn(async () => undefined),
     }
-    try {
-      const report = await createMeasurementReport({
-        candidateBundle: buildCandidatePartitions(fixture), rawManifest, options,
-        repositoryMainSha: '1'.repeat(40),
-      })
-      await writeMeasurementReport(report, join(root, 'reports'))
-      expect((await readdir(join(root, 'reports'))).sort()).toEqual([
-        'metadata.json', 'outcomes.json', 'outliers.json', 'pairs.jsonl', 'partitions.jsonl', 'summary.json',
-      ])
-      expect(parseJsonLines(await readFile(join(root, 'reports', 'partitions.jsonl'), 'utf8'))).toEqual(report.partitions)
-      expect(report.pairs.length).toBeGreaterThan(0)
-      expect(report.metadata.matcherSourceSha256).toMatch(/^[a-f0-9]{64}$/)
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
+  }
+}
+
+function emitPair(observe) {
+  observe('shape-classified', {
+    shapeId: 's1', direction: 0, rawCoordinateCount: 2, normalizedCoordinateCount: 2,
+    segmentCount: 1, closureClassification: 'not-direction-2', closureGapDistanceMeters: null, accepted: true,
+  })
+  observe('pair-start', {
+    patternId: 'p1', shapeId: 's1', stopCount: 2, rawCoordinateCount: 2,
+    normalizedCoordinateCount: 2, segmentCount: 1,
+    closureClassification: 'not-direction-2', closureGapDistanceMeters: null,
+  })
+  for (const orientation of ['forward', 'reverse']) {
+    observe('projection-start', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', stopCount: 2, segmentCount: 1, candidateCount: 2 })
+    observe('projection-layer', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', layer: 0, frontierWidth: 1, retainedNodes: 1, parentNodeCount: 0, pathKeyChars: 4 })
+    observe('projection-end', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', status: 'success', elapsedMs: 0 })
+    observe('orientation-end', { patternId: 'p1', shapeId: 's1', orientation, status: 'success', elapsedMs: 0 })
+  }
+  observe('pair-end', { patternId: 'p1', shapeId: 's1', status: 'compatible', compatible: true, elapsedMs: 0 })
+}
+
+async function makeReport({ instrumented = false, loader = fakeLoader() } = {}) {
+  const root = await tempRoot()
+  const generatedRunDir = join(root, 'generated-run')
+  await mkdir(generatedRunDir)
+  return createMeasurementReport({
+    candidateBundle,
+    rawManifest,
+    options: {
+      instrumented, expectedMatcherSha256: instrumented ? '2'.repeat(64) : null,
+      generatedRunDir, warmup: 0, iterations: 1, topOutliers: 3,
+    },
+    repositoryMainSha: '1'.repeat(40),
+  }, { loadMatcherModule: loader })
+}
+
+describe('load once, measure matcher only', () => {
+  it('keeps loader delay outside matcher latency and emits no phantom uninstrumented pair rows', async () => {
+    const report = await makeReport({ loader: fakeLoader({ delayMs: 50 }) })
+    expect(report.metadata.loaderTimings.plain.sourceVerificationTimeMs).toBe(50)
+    expect(report.partitions[0].matcherLatencyMs).toBeLessThan(50)
+    expect(report.pairs).toEqual([])
+    expect(report.metadata.pairMetricsAvailable).toBe(false)
+    expect(report.summary.pairLatencyMs).toEqual({
+      count: 0, min: null, median: null, p75: null, p90: null, p95: null, p99: null, max: null,
+    })
   })
 
-  it('keeps non-timing report content deterministic', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'measurement-determinism-'))
-    const options = {
-      cities: ['Taipei'], includeIntercity: true, instrumented: false,
-      expectedMatcherSha256: null, warmup: 0, iterations: 1, topOutliers: 3,
-      generatedDir: join(root, 'generated'),
-    }
-    try {
-      const first = await createMeasurementReport({ candidateBundle: buildCandidatePartitions(fixture), rawManifest, options, repositoryMainSha: '1'.repeat(40) })
-      const second = await createMeasurementReport({ candidateBundle: buildCandidatePartitions(fixture), rawManifest, options, repositoryMainSha: '1'.repeat(40) })
-      expect(first.metadata.deterministicContentHash).toBe(second.metadata.deterministicContentHash)
-      expect(stableStringify(omitNondeterministic(first.partitions))).toBe(stableStringify(omitNondeterministic(second.partitions)))
-      expect(stableStringify(omitNondeterministic(first.pairs))).toBe(stableStringify(omitNondeterministic(second.pairs)))
-      expect(first.outcomes).toEqual(second.outcomes)
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
+  it('uses the same loaded function for warmup and formal iterations', async () => {
+    const invoke = vi.fn(() => structuredClone(result))
+    const loader = async () => ({
+      sourceSha256: '2'.repeat(64), sourceGitBlobSha1: '3'.repeat(40),
+      loaderTimings: { sourceVerificationTimeMs: 0, transpileTimeMs: 0, importTimeMs: 0 },
+      invoke, takeCollectorError: () => null, dispose: vi.fn(async () => undefined),
+    })
+    const root = await tempRoot()
+    await createMeasurementReport({
+      candidateBundle, rawManifest,
+      options: { instrumented: false, generatedRunDir: root, warmup: 2, iterations: 3, topOutliers: 2 },
+      repositoryMainSha: '1'.repeat(40),
+    }, { loadMatcherModule: loader })
+    expect(invoke).toHaveBeenCalledTimes(5)
+  })
+
+  it('compares semantics, then fails clearly when the collector callback failed', async () => {
+    await expect(makeReport({
+      instrumented: true,
+      loader: fakeLoader({ collectorError: new Error('collector secret payload') }),
+    })).rejects.toMatchObject({ code: 'MEASUREMENT_COLLECTOR_ERROR' })
+  })
+})
+
+describe('transactional report publication', () => {
+  it('publishes six files plus a completion marker as one immutable run directory', async () => {
+    const report = await makeReport()
+    const root = await tempRoot()
+    const runDir = await publishMeasurementReport(report, root)
+    expect((await readdir(runDir)).sort()).toEqual([...REPORT_FILES, 'completion.json'].sort())
+    await expect(readPublishedReport(runDir)).resolves.toEqual(report)
+    await expect(publishMeasurementReport(report, root)).rejects.toThrow(/already exists/)
+  })
+
+  it('keeps instrumented and uninstrumented runs distinct', async () => {
+    const root = await tempRoot()
+    const plain = await makeReport()
+    const instrumented = await makeReport({ instrumented: true })
+    const plainDir = await publishMeasurementReport(plain, root)
+    const instrumentedDir = await publishMeasurementReport(instrumented, root)
+    expect(plainDir).not.toBe(instrumentedDir)
+    expect((await readdir(root)).sort()).toEqual([plain.metadata.runId, instrumented.metadata.runId].sort())
+  })
+
+  it('removes a temporary directory after a mid-write or validation failure', async () => {
+    const report = await makeReport()
+    const firstRoot = await tempRoot()
+    let writes = 0
+    await expect(publishMeasurementReport(report, firstRoot, {
+      atomicWriter: async (file, content) => {
+        writes += 1
+        if (writes === 3) throw new Error('mid-write')
+        await atomicWrite(file, content)
+      },
+    })).rejects.toThrow(/mid-write/)
+    expect(await readdir(firstRoot)).toEqual([])
+
+    const secondRoot = await tempRoot()
+    await expect(publishMeasurementReport(report, secondRoot, {
+      validateDirectory: async () => { throw new Error('validation failure') },
+    })).rejects.toThrow(/validation failure/)
+    expect(await readdir(secondRoot)).toEqual([])
+  })
+
+  it('rejects stale or corrupted runs instead of mixing them with new output', async () => {
+    const report = await makeReport()
+    const root = await tempRoot()
+    const stale = join(root, 'stale-run')
+    await mkdir(stale)
+    for (const file of REPORT_FILES) await writeFile(join(stale, file), '{}\n')
+    await expect(validatePublishedDirectory(stale)).rejects.toThrow()
+
+    const runDir = await publishMeasurementReport(report, root)
+    await rm(join(runDir, 'completion.json'))
+    await expect(readPublishedReport(runDir)).rejects.toThrow()
   })
 })
