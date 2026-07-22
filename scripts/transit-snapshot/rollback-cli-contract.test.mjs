@@ -31,6 +31,11 @@ describe('snapshot rollback CLI contract', () => {
     })
   })
 
+  it('pins post-switch smoke to an exact route variant', () => {
+    expect(rollbackSource).toContain('&routeUid=${encodeURIComponent(evidence.sample.routeUid)}')
+    expect(rollbackSource).toContain('&patternId=${encodeURIComponent(evidence.sample.patternId)}')
+  })
+
   it('does not print raw errors, stacks, responses, or command stderr', () => {
     expect(rollbackSource).not.toMatch(/console\.(?:error|log)\([^\n]*(?:error\.message|error\.stack|result\.stderr|response\.body)/)
     expect(rollbackSource).not.toContain('console.error(error)')
