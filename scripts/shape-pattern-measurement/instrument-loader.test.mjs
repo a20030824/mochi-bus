@@ -4,9 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MATCHER_SOURCE, SUPPORTED_MATCHER_GIT_BLOB_SHA1 } from './constants.mjs'
-import {
-  executeMatcher, instrumentSource, loadMatcherModule,
-} from './instrument-loader.mjs'
+import { executeMatcher, instrumentSource, loadMatcherModule } from './instrument-loader.mjs'
 import { gitBlobSha1 } from './util.mjs'
 
 const roots = []
@@ -38,7 +36,11 @@ describe('temporary matcher observer instrumentation', () => {
     const source = await readFile(MATCHER_SOURCE, 'utf8')
     expect(gitBlobSha1(source)).toBe(SUPPORTED_MATCHER_GIT_BLOB_SHA1)
     expect(() => instrumentSource(source)).not.toThrow()
-    expect(() => instrumentSource(source.replace('function scorePairs(', 'function scoreCandidatePairs('))).toThrow(/anchor mismatch/)
+    const broken = source.replace(
+      '      const geometry = scoreGeometry(pattern, shape, options)',
+      '      const geometry = scoreCandidateGeometry(pattern, shape, options)',
+    )
+    expect(() => instrumentSource(broken)).toThrow(/anchor mismatch/)
   })
 
   it('loads once, invokes repeatedly, and removes only its own generated module on dispose', async () => {
