@@ -36,9 +36,9 @@ export function snapshotWindowMarkdown(summaries) {
   const lines = [
     '## Snapshot window outcomes',
     '',
-    '| City | Window | Source | Result | Active | Probe | Rollback | Probe class | Warnings | Durable record |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    ...summaries.map((item) => `| ${item.city} | ${item.windowId} | ${sourceResult(item)} | ${item.result} | ${item.activeVersion ?? '—'} | ${item.activeProbeResult ?? 'not_run'} | ${item.rollbackAvailable === null ? 'not_checked' : item.rollbackAvailable ? 'available' : 'degraded'} | ${item.probeFailureClass ?? '—'} | ${item.diagnosticWarnings.join(', ') || 'none'} | ${item.durableRecordWrite} |`),
+    '| City | Window | Source | Result | Failure class | Active | Probe | Rollback | Probe class | Warnings | Durable record |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...summaries.map((item) => `| ${item.city} | ${item.windowId} | ${sourceResult(item)} | ${item.result} | ${item.failureClass} | ${item.activeVersion ?? '—'} | ${item.activeProbeResult ?? 'not_run'} | ${item.rollbackAvailable === null ? 'not_checked' : item.rollbackAvailable ? 'available' : 'degraded'} | ${item.probeFailureClass ?? '—'} | ${item.diagnosticWarnings.join(', ') || 'none'} | ${item.durableRecordWrite} |`),
     '',
     ...['published', 'unchanged', 'failed'].map((result) => {
       const cities = summaries.filter((item) => item.result === result).map((item) => item.city)
