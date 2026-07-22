@@ -1,0 +1,108 @@
+name: Repair Chiayi legacy rollback previous
+run-name: Repair Chiayi legacy previous by ${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type repair-Chiayi-2026-07-22 to run the production repair
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transit-snapshot
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.repository == 'a20030824/mochi-bus' && inputs.confirm == 'repair-Chiayi-2026-07-22'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Apply transit database migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply mochi-transit --remote
+      - name: Force-publish and verify Chiayi rollback evidence
+        env:
+          TDX_CLIENT_ID: ${{ secrets.TDX_CLIENT_ID }}
+          TDX_CLIENT_SECRET: ${{ secrets.TDX_CLIENT_SECRET }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SNAPSHOT_FORCE: '1'
+          SNAPSHOT_WINDOW_TYPE: manual
+          SNAPSHOT_WINDOW_DATE: '2026-07-22'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readonly city='Chiayi'
+          readonly expected_active='20260720T204100504Z'
+          readonly expected_legacy_previous='20260713T203452670Z'
+          readonly repair_window='v1:Chiayi:2026-07-22:manual'
+          readonly database_id='e5680212-29c5-4045-acd2-1e5df703e751'
+
+          query() {
+            local sql="$1"
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg sql "$sql" '{sql:$sql,params:[]}')" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$database_id/query" \
+              | jq -e -c '.result[0].results'
+          }
+
+          preflight="$(query "SELECT p.active_version,p.previous_version,p.active_probe_result,p.probe_failure_class,p.rollback_available,d.active_version AS d1_active FROM snapshot_active_probes p JOIN dataset_versions d ON d.city_code=p.city_code WHERE p.city_code='Chiayi' ORDER BY p.active_probe_at DESC LIMIT 1;")"
+          jq -e --arg active "$expected_active" --arg previous "$expected_legacy_previous" '
+            length == 1
+            and .[0].d1_active == $active
+            and .[0].active_version == $active
+            and .[0].previous_version == $previous
+            and .[0].active_probe_result == "degraded"
+            and .[0].probe_failure_class == "previous_unavailable"
+            and .[0].rollback_available == 0
+          ' <<<"$preflight" >/dev/null
+
+          npm run snapshot:window -- "$city"
+
+          postflight="$(query "SELECT w.result,w.active_version AS window_active,w.previous_version AS window_previous,w.failure_class,p.active_probe_result,p.probe_failure_class,p.rollback_available,p.active_version AS probe_active,p.previous_version AS probe_previous,p.hard_checks_passed,p.diagnostic_warnings,d.active_version AS d1_active FROM snapshot_windows w JOIN snapshot_active_probes p ON p.city_code=w.city_code AND p.window_id=w.window_id JOIN dataset_versions d ON d.city_code=w.city_code WHERE w.city_code='Chiayi' AND w.window_id='v1:Chiayi:2026-07-22:manual' LIMIT 1;")"
+          jq -e --arg previous "$expected_active" '
+            length == 1
+            and .[0].result == "published"
+            and .[0].failure_class == "none"
+            and .[0].active_probe_result == "success"
+            and .[0].probe_failure_class == "none"
+            and .[0].rollback_available == 1
+            and .[0].hard_checks_passed == 11
+            and (.[0].diagnostic_warnings | fromjson | length) == 0
+            and .[0].window_previous == $previous
+            and .[0].probe_previous == $previous
+            and .[0].window_active == .[0].probe_active
+            and .[0].window_active == .[0].d1_active
+            and .[0].window_active != $previous
+          ' <<<"$postflight" >/dev/null
+
+          new_active="$(jq -r '.[0].d1_active' <<<"$postflight")"
+          {
+            echo '## Chiayi legacy rollback repair'
+            echo
+            echo "- Window: \`$repair_window\`"
+            echo "- Previous active retained for rollback: \`$expected_active\`"
+            echo "- New active: \`$new_active\`"
+            echo '- Hard checks: `11/11`'
+            echo '- Rollback available: `true`'
+          } >> "$GITHUB_STEP_SUMMARY"
