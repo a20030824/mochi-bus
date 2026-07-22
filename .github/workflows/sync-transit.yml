@@ -10,6 +10,30 @@ on:
       city:
         description: TDX city code
         required: true
+        type: choice
+        options:
+          - Taipei
+          - NewTaipei
+          - Taoyuan
+          - Taichung
+          - Tainan
+          - Kaohsiung
+          - Keelung
+          - Hsinchu
+          - HsinchuCounty
+          - MiaoliCounty
+          - ChanghuaCounty
+          - NantouCounty
+          - YunlinCounty
+          - Chiayi
+          - ChiayiCounty
+          - PingtungCounty
+          - YilanCounty
+          - HualienCounty
+          - TaitungCounty
+          - KinmenCounty
+          - PenghuCounty
+          - LienchiangCounty
         default: Chiayi
       force_publish:
         description: Publish even when the source hash is unchanged
