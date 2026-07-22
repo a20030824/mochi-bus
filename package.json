@@ -25,6 +25,7 @@
     "snapshot:window": "node scripts/transit-snapshot/run-snapshot-window.mjs",
     "snapshot:watchdog": "node scripts/transit-snapshot/run-window-watchdog.mjs",
     "snapshot:public-probe": "node scripts/transit-snapshot/run-public-probe.mjs",
+    "snapshot:repair-legacy-previous": "node scripts/transit-snapshot/repair-legacy-previous.mjs",
     "snapshot:rollback": "node scripts/transit-snapshot/rollback.mjs"
   },
   "dependencies": {
