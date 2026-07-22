@@ -5,6 +5,13 @@ import type { MapEnv } from './map-http-context'
 
 const SNAPSHOT_VERSION = /^\d{8}T\d{9}Z$/
 const PROBE_WINDOW = /^v1:([A-Za-z0-9]+):\d{4}-\d{2}-\d{2}:(?:manual|\d{4})$/
+const ROUTE_UID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/
+const PATTERN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/
+
+export type RequestedProbeRouteIdentity = {
+  routeUid: string
+  patternId: string
+}
 
 // The snapshot query does not grant access to historical data. It is accepted
 // only when the requested version is exactly the uncached D1 active pointer.
@@ -24,6 +31,21 @@ export async function requestedProbeSnapshotVersion(
   const activeVersion = await getAuthoritativeActiveSnapshotVersion(c.env, city)
   if (activeVersion !== requested) invalidProbeRead()
   return requested
+}
+
+// Exact route identity is a publish-probe-only contract. Snapshot-only publisher
+// smoke requests keep the grouped route-name behavior, while ordinary callers
+// cannot use these selectors to browse active or historical snapshot variants.
+export function requestedProbeRouteIdentity(
+  c: Context<MapEnv>,
+  requestedVersion: string | undefined,
+): RequestedProbeRouteIdentity | undefined {
+  const routeUid = optionalQueryString(c.req.query('routeUid'), 'RouteUID', 100)
+  const patternId = optionalQueryString(c.req.query('patternId'), 'PatternID', 200)
+  if (!routeUid && !patternId) return undefined
+  if (!requestedVersion || !c.req.query('probe')) invalidProbeRead()
+  if (!routeUid || !patternId || !ROUTE_UID.test(routeUid) || !PATTERN_ID.test(patternId)) invalidProbeRead()
+  return { routeUid, patternId }
 }
 
 function invalidProbeRead(): never {
