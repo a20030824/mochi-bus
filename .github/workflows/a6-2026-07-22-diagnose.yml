@@ -1,0 +1,40 @@
+name: Diagnose A6 2026-07-22 rollback degradation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/a6-2026-07-22-diagnose.yml
+
+permissions:
+  contents: read
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read bounded A6 durable evidence
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_ID: e5680212-29c5-4045-acd2-1e5df703e751
+        shell: bash
+        run: |
+          set -euo pipefail
+          query() {
+            local sql="$1"
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg sql "$sql" '{sql:$sql,params:[]}')" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$DATABASE_ID/query" \
+              | jq -e -c '.result[0].results'
+          }
+
+          cities="'Tainan','MiaoliCounty','NantouCounty','PenghuCounty','KinmenCounty','LienchiangCounty'"
+          echo "ACTIVE_PROBES=$(query "SELECT city_code,window_id,active_probe_result,probe_failure_class,rollback_available,active_version,previous_version,hard_checks_passed,diagnostic_warnings,active_probe_at FROM snapshot_active_probes WHERE city_code IN ($cities) AND window_id LIKE '%:2026-07-22:0317' ORDER BY city_code;")"
+          echo "WINDOWS=$(query "SELECT city_code,window_id,result,active_version,previous_version,failure_class,last_source_check_at,last_published_at,completed_at FROM snapshot_windows WHERE city_code IN ($cities) AND window_id LIKE '%:2026-07-22:0317' ORDER BY city_code;")"
+          echo "D1_ACTIVE=$(query "SELECT city_code,active_version,imported_at FROM dataset_versions WHERE city_code IN ($cities) ORDER BY city_code;")"
+          echo "WATCHDOG=$(query "SELECT city_code,status,active_version,window_result,probe_result,rollback_available,diagnostic_class,source_record_version,active_probe_at FROM snapshot_watchdog_city_results WHERE schedule_date='2026-07-22' AND city_code IN ($cities) ORDER BY city_code;")"
