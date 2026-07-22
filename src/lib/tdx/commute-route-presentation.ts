@@ -190,10 +190,19 @@ export function createTDXCommuteRoutePresentation(
     env: TDXEnv,
     query: ResolvedBusQuery,
   ): Promise<RouteDetailWithEtaStates> => {
-    const [groups, etaItems] = await Promise.all([
+    // Both reads still start in parallel, but station order must finish its full
+    // resolution/cache lifecycle before an ETA failure escapes. Otherwise a fast
+    // 429 can open the credential circuit between singleflight cleanup and the
+    // fallback station-order cache write, turning a degradable response into 429.
+    const [groupsResult, etaItemsResult] = await Promise.allSettled([
       dependencies.getRouteStopGroups(env, query.city, query.routeName, query.routeUid),
       getBusETA(env, query),
     ])
+    if (groupsResult.status === 'rejected') throw groupsResult.reason
+    if (etaItemsResult.status === 'rejected') throw etaItemsResult.reason
+
+    const groups = groupsResult.value
+    const etaItems = etaItemsResult.value
     const group = selectRouteStopGroup(groups, query)
 
     if (!group) throw new QueryResolutionError('找不到這個方向的完整站序')
