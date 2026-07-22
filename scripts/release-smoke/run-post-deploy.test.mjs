@@ -16,11 +16,12 @@ describe('post-deploy smoke CLI adapter', () => {
     expect(source).toContain('safeReleaseSmokeDiagnostic(error, expectedSha)')
   })
 
-  it('uses the stable product-default route identity instead of catalogue order', () => {
-    expect(source).toContain("routeName: '307'")
-    expect(source).toContain("routeUid: 'TPE19108'")
+  it('uses a stable route name with catalogue-derived identities instead of order or a hardcoded UID', () => {
+    expect(source).toContain("const TAIPEI_ROUTE_SAMPLE = '307'")
     expect(source).toContain('selectRepresentativeRoute(taipei, TAIPEI_ROUTE_SAMPLE)')
     expect(source).not.toContain('taipei.routes[0]')
+    expect(source).not.toContain('TPE19108')
+    expect(source).not.toMatch(/routeUid=\$\{encodeURIComponent\(route\./)
     expect(source).toContain("'route_http_failed'")
     expect(source).toContain("validateRouteContract(detail, 'Taipei', route)")
   })
