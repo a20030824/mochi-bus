@@ -32,7 +32,7 @@ GET /api/v1/health/release
 - `workerVersionId` 是 bounded identifier
 - `workerCreatedAt` 是有效 ISO timestamp
 
-預設最多等待 5 分鐘，每 10 秒一次。舊 SHA 表示 propagation 尚未完成，不代表新 release 已壞；超時才以 `release_propagation_timeout` 結束。
+預設最多等待 5 分鐘，每 10 秒一次。舊 SHA 或短暫 release-endpoint 網路讀取失敗留在同一 bounded timeout 內重試，不代表新 release 已壞；超時才以 `release_propagation_timeout` 結束。結構無效的 identity 不重試。
 
 ## Initial HTTP and asset smoke
 
@@ -40,9 +40,9 @@ GET /api/v1/health/release
 
 - `/`
 - `/setup`
-- `/map?city=Taipei`
+- `/map?city=Chiayi`
 
-每個頁面必須回傳 2xx HTML、DOCTYPE 與非空 title。Runner 從 HTML 的同源 `src`／`href` 開始，遞迴讀取 JS static imports、dynamic imports、CSS `@import` 與 `url()`，因此不只檢查穩定 entry files，也會實際讀取 Vite hashed chunks。
+Fresh-browser map 使用較小的 Chiayi dataset，避免每次部署無必要下載雙北大型 network；Taipei 仍由代表性 API smoke 覆蓋。每個頁面必須回傳 2xx HTML、DOCTYPE 與非空 title。Runner 從 HTML 的同源 `src`／`href` 開始，遞迴讀取 JS static imports、dynamic imports、CSS `@import` 與 `url()`，因此不只檢查穩定 entry files，也會實際讀取 Vite hashed chunks。
 
 Asset graph 有固定節點上限；response body 也有固定 byte limit。外部 origin、data URL 與 blob URL 不進入 graph。任一同源 asset 404／5xx、HTML masquerading as JS/CSS、graph 無 asset、沒有 hashed chunk或超過上限都使 smoke 失敗。
 
@@ -122,7 +122,7 @@ Workflow 永遠上傳 `release-smoke-report.json`，保留 14 天。
 
 ## Local contract verification
 
-Pure-domain contract 由 Vitest 驗證，不需接觸 production：
+Pure-domain contract由 Vitest 驗證，不需接觸 production：
 
 ```text
 npm run test -- scripts/release-smoke/post-deploy.test.mjs
