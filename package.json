@@ -14,6 +14,7 @@
     "build:map": "vite build",
     "dev": "npm run build:map && wrangler dev",
     "deploy": "npm run build:map && wrangler deploy --minify",
+    "release:smoke": "node scripts/release-smoke/run-post-deploy.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:visual": "playwright test test/e2e/map-visual.spec.ts",
