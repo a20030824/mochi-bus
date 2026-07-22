@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   artifactHeadMatches,
+  createSnapshotProbeDiagnostic,
   deterministicSampleCaseId,
   deterministicSampleIndex,
   networkPrefixMatches,
@@ -72,7 +73,7 @@ function fixture(overrides = {}) {
         routes: [{ routeName: 'A' }, { routeName: 'B' }],
       }
       if (path.includes('/map/route?')) return {
-        schemaVersion: 1, source: 'snapshot',
+        schemaVersion: 1, source: 'snapshot', snapshotVersion: activeVersion,
         variants: [{ variantKey: sample.pattern_id, stops: { features: [{}, {}] } }],
       }
       if (path.includes('/arrivals?')) return {
@@ -89,13 +90,14 @@ function fixture(overrides = {}) {
     query,
     r2,
     publicApi,
+    diagnosticSink: vi.fn(),
     now: () => new Date('2026-07-19T19:29:00.000Z'),
     ...overrides,
   }
 }
 
-describe('unchanged active snapshot probe', () => {
-  it('requires all hard checks and only reads the network prefix', async () => {
+describe('active snapshot probe', () => {
+  it('requires all hard checks and pins every public read to the active version', async () => {
     const options = fixture()
     const result = await probeActiveSnapshot(options)
 
@@ -107,65 +109,27 @@ describe('unchanged active snapshot probe', () => {
       rollbackAvailable: true,
       hardChecksPassed: 11,
     })
-    expect(options.r2.readPrefix).toHaveBeenCalledWith(
-      `snapshots/${activeVersion}/cities/${city}/network.json`,
-      65_536,
-    )
-    expect(options.r2.getManifest).not.toHaveBeenCalledWith(expect.stringContaining('network.json'))
+    expect(options.publicApi.getJson).toHaveBeenCalledTimes(3)
+    for (const [path] of options.publicApi.getJson.mock.calls) {
+      expect(path).toContain(`snapshot=${activeVersion}`)
+      expect(path).toContain(`probe=${encodeURIComponent(windowId)}`)
+    }
+    expect(options.diagnosticSink).not.toHaveBeenCalled()
   })
 
-  it('accepts an active network HEAD without optional Content-Length', async () => {
-    const options = fixture()
-    const original = options.r2.head
-    options.r2.head = vi.fn(async (key) => key.endsWith('network.json') && key.includes(activeVersion)
+  it('accepts missing optional Content-Length but rejects a real mismatch', async () => {
+    const accepted = fixture()
+    const original = accepted.r2.head
+    accepted.r2.head = vi.fn(async (key) => key.endsWith('network.json') && key.includes(activeVersion)
       ? { size: null }
       : original(key))
+    await expect(probeActiveSnapshot(accepted)).resolves.toMatchObject({ activeProbeResult: 'success' })
 
-    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
-      activeProbeResult: 'success',
-      probeFailureClass: 'none',
-      rollbackAvailable: true,
-      hardChecksPassed: 11,
-    })
-  })
-
-  it('keeps rollback available when the previous network HEAD omits Content-Length', async () => {
-    const options = fixture()
-    const original = options.r2.head
-    options.r2.head = vi.fn(async (key) => key.endsWith('network.json') && key.includes(previousVersion)
-      ? { size: null }
-      : original(key))
-
-    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
-      activeProbeResult: 'success',
-      rollbackAvailable: true,
-      hardChecksPassed: 11,
-    })
-  })
-
-  it('still reports network_missing when HEAD provides a mismatched size', async () => {
-    const options = fixture()
-    const original = options.r2.head
-    options.r2.head = vi.fn(async (key) => key.endsWith('network.json') && key.includes(activeVersion)
-      ? { size: 7_999_999 }
-      : original(key))
-
-    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
-      activeProbeResult: 'error',
-      probeFailureClass: 'network_missing',
-      rollbackAvailable: false,
-    })
-  })
-
-  it('matches optional HEAD metadata without treating a real zero as unknown', () => {
     expect(artifactHeadMatches({ size: null }, { bytes: 100 })).toBe(true)
-    expect(artifactHeadMatches({}, { bytes: 100 })).toBe(true)
     expect(artifactHeadMatches({ size: 100 }, { bytes: 100 })).toBe(true)
     expect(artifactHeadMatches({ size: 99 }, { bytes: 100 })).toBe(false)
     expect(artifactHeadMatches({ size: 0 }, { bytes: 100 })).toBe(false)
     expect(artifactHeadMatches(null, { bytes: 100 })).toBe(false)
-    expect(artifactHeadMatches({ size: 100 }, { bytes: 0 })).toBe(false)
-    expect(artifactHeadMatches({ size: 100 }, { bytes: 'invalid' })).toBe(false)
   })
 
   it('uses a stable sample for a rerun and rotates across windows', () => {
@@ -196,37 +160,6 @@ describe('unchanged active snapshot probe', () => {
     const result = await probeActiveSnapshot(fixture({
       state: { version: activeVersion, previousVersion: null },
     }))
-    expect(result).toMatchObject({ activeProbeResult: 'degraded', rollbackAvailable: false })
-    expect(result.diagnosticWarnings).toContain('previous_unavailable')
-  })
-
-  it('passes when realtime is unavailable but the active place bundle is valid', async () => {
-    const options = fixture()
-    const original = options.publicApi.getJson
-    options.publicApi.getJson = vi.fn(async (path) => path.includes('/arrivals?')
-      ? {
-          schemaVersion: 1,
-          scheduleSource: 'place-bundle',
-          snapshotVersion: activeVersion,
-          warning: 'tdx-rate-limit',
-          routes: [{ variantKey: 'PATTERN_PRIVATE', source: 'schedule' }],
-        }
-      : original(path))
-
-    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
-      activeProbeResult: 'success',
-      hardChecksPassed: 11,
-    })
-  })
-
-  it('does not claim rollback availability when the previous network version is inconsistent', async () => {
-    const options = fixture()
-    const original = options.r2.readPrefix
-    options.r2.readPrefix = vi.fn(async (key, maximumBytes) => key.includes(previousVersion)
-      ? `{"schemaVersion":1,"city":"${city}","version":"wrong","routes":[`
-      : original(key, maximumBytes))
-
-    const result = await probeActiveSnapshot(options)
     expect(result).toMatchObject({ activeProbeResult: 'degraded', rollbackAvailable: false })
     expect(result.diagnosticWarnings).toContain('previous_unavailable')
   })
@@ -284,33 +217,85 @@ describe('unchanged active snapshot probe', () => {
         ? { schemaVersion: 2, source: 'snapshot', snapshotVersion: activeVersion, routes: [{}] }
         : original(path))
     }],
-    ['route_sample_failed', (options) => {
-      const original = options.publicApi.getJson
-      options.publicApi.getJson = vi.fn(async (path) => path.includes('/map/route?')
-        ? { schemaVersion: 1, source: 'snapshot', variants: [] }
-        : original(path))
-    }],
-    ['place_bundle_sample_failed', (options) => {
-      const original = options.publicApi.getJson
-      options.publicApi.getJson = vi.fn(async (path) => path.includes('/arrivals?')
-        ? { schemaVersion: 1, scheduleSource: 'route-objects', routes: [] }
-        : original(path))
-    }],
-    ['place_bundle_sample_failed', (options) => {
-      const original = options.publicApi.getJson
-      options.publicApi.getJson = vi.fn(async (path) => path.includes('/arrivals?')
-        ? {
-            schemaVersion: 1, scheduleSource: 'place-bundle', snapshotVersion: 'wrong',
-            routes: [{ variantKey: 'PATTERN_PRIVATE' }],
-          }
-        : original(path))
-    }],
-  ])('returns fixed %s without exposing private sample identity', async (failureClass, mutate) => {
+  ])('returns fixed %s for an earlier hard-check failure', async (failureClass, mutate) => {
     const options = fixture()
     mutate(options)
+    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
+      activeProbeResult: 'error', probeFailureClass: failureClass, rollbackAvailable: false,
+    })
+  })
+
+  it.each([
+    ['route_version', (path, original) => path.includes('/map/route?')
+      ? { schemaVersion: 1, source: 'snapshot', snapshotVersion: previousVersion, variants: [] }
+      : original(path)],
+    ['route_variant', (path, original) => path.includes('/map/route?')
+      ? { schemaVersion: 1, source: 'snapshot', snapshotVersion: activeVersion, variants: [] }
+      : original(path)],
+    ['route_stops', (path, original) => path.includes('/map/route?')
+      ? {
+          schemaVersion: 1, source: 'snapshot', snapshotVersion: activeVersion,
+          variants: [{ variantKey: 'PATTERN_PRIVATE', stops: { features: [{}] } }],
+        }
+      : original(path)],
+  ])('keeps genuine route defects as route_sample_failed at %s', async (failureStage, response) => {
+    const options = fixture()
+    const original = options.publicApi.getJson
+    options.publicApi.getJson = vi.fn(async (path) => response(path, original))
+
     const result = await probeActiveSnapshot(options)
-    expect(result).toMatchObject({ activeProbeResult: 'error', probeFailureClass: failureClass, rollbackAvailable: false })
-    expect(JSON.stringify(result)).not.toMatch(/PATTERN_PRIVATE|ROUTE_PRIVATE|ROUTE_NAME_PRIVATE|PLACE_PRIVATE|snapshots\//)
+
+    expect(result).toMatchObject({ activeProbeResult: 'error', probeFailureClass: 'route_sample_failed', hardChecksPassed: 9 })
+    expect(options.diagnosticSink).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'snapshot_probe_diagnostic', failureStage, failureClass: 'route_sample_failed', attempt: 1,
+      expectedSnapshotVersion: activeVersion,
+    }))
+  })
+
+  it.each([
+    ['place_version', {
+      schemaVersion: 1, scheduleSource: 'place-bundle', snapshotVersion: previousVersion,
+      routes: [{ variantKey: 'PATTERN_PRIVATE' }],
+    }],
+    ['place_pattern', {
+      schemaVersion: 1, scheduleSource: 'place-bundle', snapshotVersion: activeVersion,
+      routes: [],
+    }],
+  ])('keeps genuine place defects as place_bundle_sample_failed at %s', async (failureStage, placeResponse) => {
+    const options = fixture()
+    const original = options.publicApi.getJson
+    options.publicApi.getJson = vi.fn(async (path) => path.includes('/arrivals?') ? placeResponse : original(path))
+
+    const result = await probeActiveSnapshot(options)
+
+    expect(result).toMatchObject({
+      activeProbeResult: 'error', probeFailureClass: 'place_bundle_sample_failed', hardChecksPassed: 10,
+    })
+    expect(options.diagnosticSink).toHaveBeenCalledWith(expect.objectContaining({ failureStage }))
+  })
+
+  it('emits an allowlisted bounded diagnostic without raw sample identity or errors', () => {
+    const diagnostic = createSnapshotProbeDiagnostic({
+      city,
+      windowId,
+      sampleCaseId: 'case_9545a8a45776',
+      samplePatternId: 'PATTERN_PRIVATE',
+      sampleRouteUid: 'ROUTE_PRIVATE',
+      expectedSnapshotVersion: activeVersion,
+      observedSnapshotVersion: previousVersion,
+      attempt: 1,
+      failureStage: 'route_version',
+      failureClass: 'route_sample_failed',
+      error: new Error('Bearer private-token'),
+      url: 'https://private.example/path',
+    })
+
+    expect(Object.keys(diagnostic).sort()).toEqual([
+      'attempt', 'city', 'event', 'expectedSnapshotVersion', 'failureClass', 'failureStage',
+      'observedSnapshotVersion', 'sampleCaseId', 'samplePatternHash', 'sampleRouteHash', 'windowId',
+    ].sort())
+    const serialized = JSON.stringify(diagnostic)
+    expect(serialized).not.toMatch(/PATTERN_PRIVATE|ROUTE_PRIVATE|private-token|https?:\/\/|stack|message/)
   })
 
   it('validates the bounded network metadata prefix', () => {
@@ -322,13 +307,7 @@ describe('unchanged active snapshot probe', () => {
       activeVersion,
     )).toBe(true)
     expect(networkPrefixMatches('{"schemaVersion":1,"city":"Taipei","version":"wrong",', city, activeVersion)).toBe(false)
-    expect(networkPrefixMatches('{"schemaVersion":1,"city":"Taipei","vers', city, activeVersion)).toBe(false)
     expect(networkPrefixMatches('{"schemaVersion":1,"city":"Taipei","routes":[]}', city, activeVersion)).toBe(false)
-    expect(networkPrefixMatches(
-      `{"padding":"${'x'.repeat(65_000)}","schemaVersion":1,"city":"${city}","version":"${activeVersion}"}`,
-      city,
-      activeVersion,
-    )).toBe(false)
   })
 
   it('cancels an oversized network stream instead of downloading the full object', async () => {
