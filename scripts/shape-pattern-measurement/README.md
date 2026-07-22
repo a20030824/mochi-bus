@@ -1,23 +1,53 @@
 # Shape-to-pattern TDX measurement harness
 
-This directory is a measurement-only tool for the MB-C01 Shape-to-pattern matcher. It exists because production integration is blocked until real raw TDX distributions, solver latency, memory, projection-frontier width, assignment ambiguity cost, and Direction 2 outcomes are measured.
+This directory contains the measurement-only MB-C01 harness for the deterministic Shape-to-pattern matcher. It is isolated under `scripts/` and is not imported by `src/`, `web/`, Vite, the Worker, the snapshot producer, public APIs, journey ranking, rendering, or production telemetry.
 
-The harness is intentionally isolated under `scripts/`. It is not imported by `src/`, `web/`, Vite, the Worker, the snapshot producer, or public APIs.
+The harness creates replayable evidence. It does **not** establish a production guard or authorize production integration. Until real credentialed TDX reports are reviewed, the gate remains:
+
+> C. Temporarily not ready for production integration.
+
+Production PR 2 remains blocked.
 
 ## Why snapshot output is not evidence
 
-The current snapshot producer pairs `StopOfRoute` and `Shape` records by an index and then falls back to the first Shape. That destroys the original candidate matrix. This harness fetches raw `StopOfRoute` and `Shape` endpoints and preserves every pattern and Shape inside source-scoped `RouteUID + Direction` partitions. It never uses `shapes[index]`, `shapes[0]`, a lexical first candidate, greedy pairing, or an existing snapshot result.
+The snapshot producer has already selected Shapes using index and first-Shape fallback, so it cannot recover the original candidate matrix. This harness reads raw `StopOfRoute` and `Shape` endpoints and preserves all valid records in source-scoped `RouteUID + Direction` partitions. It never uses index pairing, the first candidate, lexical selection, greedy assignment, or snapshot output as measurement evidence.
+
+## Filesystem ownership and cleanup
+
+Raw data, reports, and generated matcher modules have separate, pairwise-disjoint roots:
+
+```text
+.tdx-measurement/raw/
+.tdx-measurement/reports/
+.tdx-measurement/generated/
+```
+
+CLI validation rejects overlapping roots, repository-root ownership, protected source paths, ancestor/descendant overlap, and realpath/symlink aliases. Each run creates a unique `run-*` child below the generated root with `mkdtemp()`. Cleanup verifies the real generated root, strict-child relationship, ownership marker, and per-run token before removing only that child. It never recursively removes the generated root, raw cache, report root, or unrelated sentinels.
+
+## Strict raw TDX boundary
+
+The candidate builder validates the original JSON values without coercion:
+
+- `Direction` must be the number `0`, `1`, or `2`; strings and other values are rejected.
+- Coordinates must be finite numbers within longitude/latitude ranges.
+- A direct Shape with any invalid coordinate is rejected as a whole.
+- `StopSequence` must be a unique positive safe integer.
+- Stops are ordered by numeric `StopSequence`, with original position as the stable tie-breaker after validation.
+- Missing, null, empty, and non-empty identities remain distinct contract states.
+- Rejected records retain explicit reasons and aggregate rejection counts.
+
+A malformed record is removed from the matcher input, but a valid record on the opposite side remains available in its one-sided partition. The harness does not erase valid raw candidates merely because a sibling record failed validation.
 
 ## Credentials
 
-Live measurement requires TDX member credentials. Credentials are read only from:
+Live measurement requires TDX member credentials from either:
 
 1. `TDX_CLIENT_ID` and `TDX_CLIENT_SECRET` in the process environment; or
-2. the repository's ignored `.dev.vars` file.
+2. the ignored `.dev.vars` file.
 
-There are deliberately no `--client-id`, `--client-secret`, or `--token` flags. The token response, Authorization header, client ID, secret, credential fingerprint, raw response headers, and response bodies are never written to reports or errors.
+There are no secret CLI flags. Token responses, Authorization headers, client IDs, secrets, credential fingerprints, raw response headers, and response bodies are excluded from reports and bounded errors.
 
-## Live fetch
+## Live fetch and atomic cache publication
 
 ```sh
 npm run measure:shape-pattern -- \
@@ -25,58 +55,78 @@ npm run measure:shape-pattern -- \
   --include-intercity
 ```
 
-Raw payloads are written below `.tdx-measurement/raw/`, which is ignored by Git. City requests use:
+City endpoints:
 
 - `StopOfRoute/City/{City}`
 - `Shape/City/{City}`
 
-InterCity is fetched once per run from:
+InterCity endpoints, fetched once per run:
 
 - `StopOfRoute/InterCity`
 - `Shape/InterCity`
 
-Fetches use bounded concurrency, timeout + AbortController, bounded retries, exponential backoff with jitter, and `Retry-After` handling. Progress output contains only endpoint category, city, phase, and timestamp.
+Fetches use bounded concurrency, timeout plus `AbortController`, bounded retries, exponential backoff with jitter, and `Retry-After`. The timeout remains active through request, headers, complete body consumption, and JSON parsing. Timers are cleared on success and every failure path. Authentication failures are not retried indefinitely and response bodies are not exposed.
 
-## Offline replay
+A live cache is assembled in a temporary sibling directory. Endpoint payloads and the manifest are fully written and verified before a same-filesystem rename publishes the final cache. Existing targets and partial caches fail closed.
+
+## Verified offline replay
 
 ```sh
 npm run measure:shape-pattern -- --replay --raw-dir .tdx-measurement/raw
 ```
 
-Replay verifies every endpoint content hash and the complete bundle hash before matcher execution. It does not make a network request. The same raw payload and matcher revision produce the same non-timing partition, outcome, and content-hash data; latency and memory fields are explicitly excluded from the deterministic content hash.
+The verified manifest is the replay source of truth for selected cities, InterCity inclusion, endpoint identity, canonical filenames, item counts, endpoint hashes, maximum `UpdateTime`, fetched-at time, and bundle hash. Replay rejects:
 
-## Uninstrumented and instrumented modes
+- explicit CLI scope that differs from the manifest;
+- missing, duplicate, or extra endpoints;
+- endpoint identity/filename mismatch;
+- path traversal and absolute paths;
+- symlinks and non-regular files;
+- endpoint content-hash mismatch; and
+- bundle metadata/hash mismatch.
 
-Uninstrumented mode transpiles the production TypeScript matcher source into an ignored temporary ES module and executes it without source modification. It measures complete matcher/partition wall time, process RSS, heap use, and outcomes.
+Replay does not access credentials or the network.
 
-Instrumented mode creates a temporary copy only. It never edits the production matcher. The loader:
+## Matcher loading and observer instrumentation
 
-1. reads `src/domain/map/shape-pattern-matcher.ts`;
-2. verifies the pinned Git blob revision;
-3. computes the source SHA-256 and requires an exact caller-supplied expected SHA-256;
-4. verifies every exact injection anchor occurs once;
-5. inserts only synchronous counters, monotonic timestamps, bounded numeric accumulators, and a callback hook;
-6. transpiles and imports the ignored temporary copy;
-7. deep-compares instrumented and uninstrumented results; and
-8. removes the temporary source in `finally`, including when the callback throws.
+Uninstrumented and instrumented matcher modules are loaded once per report run. Source verification, transpilation, and import timings are recorded separately from matcher latency. Warmups and formal iterations invoke the same loaded function.
 
-Obtain the expected hash from the checked-out source, review it against the intended matcher revision, then run:
+Instrumented mode:
 
-```sh
-MATCHER_SHA256="$(node -e \"const fs=require('fs'),c=require('crypto');process.stdout.write(c.createHash('sha256').update(fs.readFileSync('src/domain/map/shape-pattern-matcher.ts')).digest('hex'))\")"
-npm run measure:shape-pattern -- \
-  --replay \
-  --instrumented \
-  --expected-matcher-sha256 "$MATCHER_SHA256"
-```
+1. verifies the pinned production matcher Git blob;
+2. requires an exact caller-supplied matcher SHA-256;
+3. verifies every exact injection anchor occurs once;
+4. creates an ignored temporary module only;
+5. inserts synchronous observer calls, counters, and monotonic timings;
+6. compares instrumented and plain semantic results;
+7. requires structural counters to agree across iterations; and
+8. removes the generated module during cleanup.
 
-A source hash mismatch, Git blob mismatch, or missing/duplicated anchor fails closed as an unsupported matcher revision. The loader never guesses an insertion point with a fuzzy regular expression and never produces a partial instrumented report.
+Pair rows are created only from observer events emitted by the production matcher control flow. The report layer does not implement a second geometry normalizer, closure classifier, segment builder, compatibility pass, or Cartesian pair reconstruction.
 
-Instrumented counters cover projection candidate count, per-layer frontier width, peak frontier width, retained nodes, parent-node count, approximate path-key bytes, forward/reverse orientation time, cost/span projection solve time, geometry pair time, best/forced-match/forced-unmatched assignment solve counts and time, and active-mask/state peak.
+Projection solves emit matching start/end events for success, no-path, frontier-empty, threshold-rejected, and throw outcomes. End events include non-negative duration. Callback exceptions are contained so matcher semantics complete; the first callback error is retained, cleanup runs, and the measurement then fails with `MEASUREMENT_COLLECTOR_ERROR`. No final report is published after collector failure.
 
-## Outputs
+## Timing, memory, and unavailable metrics
 
-A successful run writes:
+Formal iteration timing uses a documented nearest-rank median. Raw iteration samples are retained. Loader timings are excluded from matcher latency.
+
+Memory observations are only process RSS/heap before, after, and delta. The harness does not claim an unobserved peak and does not claim forced garbage collection.
+
+Unavailable values are `null` or absent, never invented zeroes. A summary distribution with count zero has null min/median/percentiles/max. Null values are excluded from percentiles and top-N outliers. In uninstrumented mode `pairs.jsonl` is empty and `pairMetricsAvailable` is false.
+
+## Transactional reports
+
+Each successful mode/run publishes an immutable run directory under the report root. Publication is transactional:
+
+1. create a temporary sibling directory;
+2. write the six report files;
+3. parse and validate every file;
+4. run cross-file reconciliation;
+5. calculate each report-file hash;
+6. write `completion.json` last; and
+7. atomically rename the temporary directory to the final run ID.
+
+The six report files are:
 
 - `metadata.json`
 - `partitions.jsonl`
@@ -85,60 +135,27 @@ A successful run writes:
 - `outliers.json`
 - `summary.json`
 
-`metadata.json` records repository SHA, matcher SHA-256 and Git blob, harness version, Node/OS/CPU/memory information, selected cities, endpoint hashes, maximum TDX `UpdateTime`, mode, warmups, and iterations. It never contains credentials, tokens, headers, raw payloads, or URLs with secrets.
+Readers require a valid completion marker and verify all six hashes before returning data. Mid-write failure, validation failure, a stale target, missing completion marker, corruption, duplicate IDs, orphan references, unknown reasons, illegal nulls, range errors, and accounting mismatches fail closed without publishing a mixed directory.
 
-`partitions.jsonl` records source scope, city, `RouteUID`, Direction, candidate sizes, identity diagnostics, assignment/ambiguity timing, outcomes, and memory observations. Exact compatible-edge count and density require instrumented mode; uninstrumented records them as `null` rather than inventing values that the public matcher result does not expose.
+## Determinism
 
-`pairs.jsonl` records every geometry-scoring attempt. Instrumented runs additionally record whether each attempt was compatible plus internal projection/frontier/path/solver counters and timing; uninstrumented mode leaves `compatible` as `null` rather than inferring matcher-internal outcomes.
-
-`summary.json` uses a tested nearest-rank percentile algorithm for count, min, median, p75, p90, p95, p99, and max. `outliers.json` retains the configured top N, not a single maximum.
-
-## Privacy and cleanup
-
-All live raw data, generated matcher copies, complete reports, and route-level debug material remain below the ignored directory:
-
-```text
-.tdx-measurement/raw/
-.tdx-measurement/generated/
-.tdx-measurement/reports/
-```
-
-The harness deletes generated matcher copies after execution. To remove all local artifacts:
-
-```sh
-rm -rf .tdx-measurement
-```
-
-Before committing or pushing, verify:
-
-```sh
-git status --short
-git check-ignore -v .tdx-measurement/raw/example.json
-git diff --check
-```
-
-The working tree must contain no raw payload, token response, generated matcher, report output, or secret.
+Partition identities, pair identities, outcomes, JSONL ordering, and deterministic content hashes use stable ordering. Timings, memory observations, timestamps, run IDs, and publication metadata are excluded from deterministic content hashes.
 
 ## Tests
 
 ```sh
+npm ci
 npm run test:shape-pattern-measurement
-npm run test -- src/domain/map/shape-pattern-matcher.test.ts src/domain/map/shape-pattern-matcher.options.test.ts
 npm run check
+npm run build
+git diff --check
+git status --short
 ```
 
-CI runs only sanitized fixtures, candidate/report/redaction/replay/instrumentation tests, and architecture isolation. CI does not call live TDX, receive TDX production credentials, or upload raw payloads or real route-level reports.
+Committed sanitized tests cover destructive-cleanup boundaries, strict candidate validation, numeric `StopSequence`, verified manifest provenance and path integrity, body-inclusive timeouts, callback containment, failed projection durations, null metrics, load-once timing aggregation, transactional publication, report schema/reconciliation, sanitized replay, and production architecture isolation.
 
-## Production PR 2 readiness
+CI does not call live TDX, receive production TDX credentials, or upload raw payloads or real route-level reports.
 
-This harness only creates measurement capability. It does not establish a production guard or authorize integration.
+## Credentialed follow-up
 
-After a credentialed environment runs both modes on the required cities and InterCity, review at minimum:
-
-- partition and compatible-edge distributions;
-- stops, coordinates, segments, frontier width, retained nodes, and path-key allocation;
-- pair, partition, best-assignment, and ambiguity-proof latency;
-- RSS and heap distributions;
-- Direction 2 truly closed / near-closed / open outcomes, identity/geometry successes, sibling ambiguity, and fail-closed unresolved rates.
-
-Synthetic fixtures may verify correctness and instrumentation safety, but must not set production guards. PR 2 remains blocked until the real reports are reviewed and a bounded policy is justified. Any later integration must still forbid index, first-candidate, lexical, greedy, or snapshot-result fallback.
+A later credentialed environment must fetch the required nine cities plus InterCity, run uninstrumented and instrumented replay, confirm cleanup and a clean worktree, inspect distributions/outliers, and record an explicit production-gate decision. Synthetic fixtures verify capability and safety only; they must not select a production guard.
