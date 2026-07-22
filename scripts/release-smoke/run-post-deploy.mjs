@@ -7,6 +7,7 @@ import {
 } from '../transit-snapshot/active-probe.mjs'
 import {
   ReleaseSmokeError,
+  createReleaseSmokeEvent,
   discoverAssetGraph,
   runPostDeploySmoke,
   safeReleaseSmokeDiagnostic,
@@ -32,6 +33,7 @@ const HASHED_ASSET = /^\/assets\/[^/?]+-[A-Za-z0-9_-]{6,}\.(?:js|css)$/
 
 export async function main(env = process.env) {
   const expectedSha = env.EXPECTED_RELEASE_SHA
+  const smokeStartedAt = Date.now()
   try {
     const origin = productionOrigin(env.RELEASE_SMOKE_ORIGIN ?? DEFAULT_ORIGIN)
     const token = smokeToken(env, expectedSha)
@@ -48,17 +50,27 @@ export async function main(env = process.env) {
       observationIntervalMs: duration(env.RELEASE_SMOKE_OBSERVATION_POLL_MS, 60_000, false),
     })
     await writeReport(report)
-    console.log(JSON.stringify({
-      event: 'release_smoke_completed',
+    console.log(JSON.stringify(createReleaseSmokeEvent({
       result: 'success',
       releaseSha: report.releaseSha,
       workerVersionId: report.workerVersionId,
-      observationChecks: report.observationChecks,
-    }))
+      workerCreatedAt: report.workerCreatedAt,
+      durationMs: Date.parse(report.completedAt) - Date.parse(report.startedAt),
+    })))
   } catch (error) {
     const diagnostic = safeReleaseSmokeDiagnostic(error, expectedSha)
     await writeReport({ schemaVersion: 1, ...diagnostic })
-    console.error(JSON.stringify(diagnostic))
+    const event = diagnostic.releaseSha === null
+      ? diagnostic
+      : createReleaseSmokeEvent({
+          result: 'error',
+          releaseSha: diagnostic.releaseSha,
+          workerVersionId: null,
+          workerCreatedAt: null,
+          durationMs: Math.max(0, Date.now() - smokeStartedAt),
+          failureClass: diagnostic.failureClass,
+        })
+    console.error(JSON.stringify(event))
     process.exitCode = 1
   }
 }
