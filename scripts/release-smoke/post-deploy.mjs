@@ -26,6 +26,29 @@ const FAILURE_CLASSES = new Set([
   'browser_chunk_load_failed',
   'unknown',
 ])
+const TELEMETRY_FAILURE_MAP = Object.freeze({
+  release_not_observed: 'network',
+  release_identity_invalid: 'invalid_schema',
+  release_propagation_timeout: 'timeout',
+  release_changed_during_observation: 'network',
+  release_observation_failed: 'network',
+  page_http_failed: 'network',
+  page_contract_invalid: 'contract_parse',
+  page_assets_missing: 'asset_load',
+  asset_http_failed: 'asset_load',
+  asset_contract_invalid: 'asset_load',
+  asset_graph_limit: 'asset_load',
+  hashed_asset_missing: 'asset_load',
+  routes_contract_invalid: 'contract_parse',
+  route_contract_invalid: 'contract_parse',
+  network_contract_invalid: 'contract_parse',
+  degraded_contract_invalid: 'contract_parse',
+  browser_boot_failed: 'bootstrap',
+  browser_page_error: 'bootstrap',
+  browser_console_error: 'bootstrap',
+  browser_chunk_load_failed: 'asset_load',
+  unknown: 'unknown',
+})
 
 export class ReleaseSmokeError extends Error {
   constructor(code) {
@@ -221,6 +244,49 @@ export async function runPostDeploySmoke({
   })
 }
 
+export function createReleaseSmokeEvent({
+  result,
+  releaseSha,
+  workerVersionId,
+  workerCreatedAt,
+  durationMs,
+  failureClass = 'none',
+}) {
+  const success = result === 'success'
+  const failed = result === 'error'
+  const detailedFailure = FAILURE_CLASSES.has(failureClass) ? failureClass : 'unknown'
+  if ((!success && !failed)
+    || !FULL_SHA.test(String(releaseSha ?? ''))
+    || !(workerVersionId === null || (typeof workerVersionId === 'string' && SAFE_IDENTIFIER.test(workerVersionId)))
+    || !(workerCreatedAt === null || (typeof workerCreatedAt === 'string'
+      && ISO_TIMESTAMP.test(workerCreatedAt) && Number.isFinite(Date.parse(workerCreatedAt))))
+    || !Number.isFinite(durationMs) || durationMs < 0
+    || (success ? failureClass !== 'none' : failureClass === 'none')) {
+    throw new ReleaseSmokeError('release_identity_invalid')
+  }
+  return Object.freeze({
+    eventSchema: 7,
+    event: 'release_smoke_completed',
+    releaseSha,
+    workerVersionId,
+    workerCreatedAt: workerCreatedAt === null ? null : new Date(Date.parse(workerCreatedAt)).toISOString(),
+    deploymentId: null,
+    city: null,
+    operation: 'release_smoke',
+    result,
+    source: 'worker',
+    snapshotVersion: null,
+    httpStatusClass: 'none',
+    latencyBucket: latencyBucket(durationMs),
+    cacheResult: 'not_applicable',
+    trafficClass: 'synthetic',
+    sampleProbability: 1,
+    failureClass: success ? 'none' : TELEMETRY_FAILURE_MAP[detailedFailure],
+    emptyReason: 'not_applicable',
+    qualityBucket: 'not_applicable',
+  })
+}
+
 export function safeReleaseSmokeDiagnostic(error, expectedSha) {
   const code = error instanceof ReleaseSmokeError || FAILURE_CLASSES.has(error?.code)
     ? error.code
@@ -261,7 +327,8 @@ function extractHtmlAssets(html) {
 function extractJavaScriptAssets(source, parentPath) {
   const assets = []
   const patterns = [
-    /\b(?:import|export)\s+(?:[^"']*?\sfrom\s*)?["']([^"']+)["']/g,
+    /\bimport\s*["']([^"']+)["']/g,
+    /\b(?:import|export)[^;"']*?\bfrom\s*["']([^"']+)["']/g,
     /\bimport\(\s*["']([^"']+)["']\s*\)/g,
   ]
   for (const pattern of patterns) {
@@ -308,4 +375,14 @@ function isStaticAssetPath(path) {
 
 function validDuration(value, allowZero = true) {
   return Number.isSafeInteger(value) && (allowZero ? value >= 0 : value > 0)
+}
+
+function latencyBucket(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'unknown'
+  if (milliseconds < 50) return 'lt_50ms'
+  if (milliseconds < 200) return '50_199ms'
+  if (milliseconds < 1_000) return '200_999ms'
+  if (milliseconds < 3_000) return '1_3s'
+  if (milliseconds <= 6_000) return '3_6s'
+  return 'gt_6s'
 }
