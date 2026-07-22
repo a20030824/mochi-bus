@@ -1,72 +1,139 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { rm } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
-import { pathToFileURL } from 'node:url'
-import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildCandidatePartitions } from './build-candidates.mjs'
 import { helpText, parseCli } from './cli.mjs'
-import { createMeasurementReport, writeMeasurementReport } from './report.mjs'
-import { fetchRawBundle, replayRawBundle, safeErrorRecord } from './tdx-source.mjs'
+import { createMeasurementReport, publishMeasurementReport } from './report.mjs'
+import {
+  assertRedacted, assertReplayScope, fetchRawBundle, replayRawBundle, safeErrorRecord,
+} from './tdx-source.mjs'
 import { stableStringify } from './util.mjs'
 
 const execFileAsync = promisify(execFile)
+const OWNERSHIP_MARKER = '.measurement-run-owner'
 
-export async function main(argv = process.argv.slice(2)) {
-  const options = await parseCli(argv)
-  if (options.help) {
-    process.stdout.write(helpText)
-    return
-  }
+export async function runMeasurement(options, dependencies = {}) {
+  const generatedOwnership = await createOwnedGeneratedChild(options.generatedRoot)
+  let primaryError = null
   try {
     const source = options.replay
-      ? await replayRawBundle({ rawDir: options.rawDir })
-      : await fetchRawBundle({
+      ? await (dependencies.replayRawBundle ?? replayRawBundle)({ rawDir: options.rawDir })
+      : await (dependencies.fetchRawBundle ?? fetchRawBundle)({
           cities: options.cities,
           includeIntercity: options.includeIntercity,
           rawDir: options.rawDir,
           concurrency: options.fetchConcurrency,
+          fetcher: dependencies.fetcher,
+          credentials: dependencies.credentials,
+          progress: dependencies.progress,
         })
+    if (options.replay) assertReplayScope(options, source.manifest)
     const candidateBundle = buildCandidatePartitions(source.bundle)
-    const repositoryMainSha = await resolveRepositoryMainSha()
-    const report = await createMeasurementReport({
+    const repositoryMainSha = dependencies.repositoryMainSha ?? await resolveRepositoryMainSha()
+    const report = await (dependencies.createMeasurementReport ?? createMeasurementReport)({
       candidateBundle,
       rawManifest: source.manifest,
-      options,
+      options: {
+        ...options,
+        cities: [...source.manifest.cities],
+        includeIntercity: source.manifest.includeIntercity,
+        generatedRunDir: generatedOwnership.child,
+      },
       repositoryMainSha,
     })
-    await writeMeasurementReport(report, options.reportDir)
-    process.stdout.write(`${stableStringify({
-      phase: 'complete',
-      mode: report.metadata.mode,
-      partitionCount: report.partitions.length,
-      pairCount: report.pairs.length,
-      reportDir: options.reportDir,
-      deterministicContentHash: report.metadata.deterministicContentHash,
-    })}\n`)
+    const runDir = await (dependencies.publishMeasurementReport ?? publishMeasurementReport)(report, options.reportDir)
+    return { report, runDir, candidateBundle, manifest: source.manifest }
+  } catch (error) {
+    primaryError = error
+    throw error
   } finally {
-    await rm(options.generatedDir, { recursive: true, force: true })
-  }
-}
-
-async function resolveRepositoryMainSha() {
-  if (/^[a-f0-9]{40}$/i.test(process.env.GITHUB_SHA ?? '')) return process.env.GITHUB_SHA
-  try {
-    const { stdout } = await execFileAsync('git', ['rev-parse', 'origin/main'])
-    return stdout.trim()
-  } catch {
     try {
-      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'])
-      return stdout.trim()
-    } catch {
-      return 'unknown'
+      await cleanupOwnedGeneratedChild(generatedOwnership, {
+        rawDir: options.rawDir,
+        reportDir: options.reportDir,
+      })
+    } catch (cleanupError) {
+      if (primaryError) throw new AggregateError([primaryError, cleanupError], 'Measurement failed and generated cleanup also failed')
+      throw cleanupError
     }
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch((error) => {
-    process.stderr.write(`${stableStringify({ phase: 'failed', ...safeErrorRecord(error) })}\n`)
-    process.exitCode = 1
-  })
+export async function createOwnedGeneratedChild(generatedRoot) {
+  const root = resolve(generatedRoot)
+  await mkdir(root, { recursive: true })
+  const rootStat = await lstat(root)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Generated root must be a real directory')
+  const child = await mkdtemp(join(root, 'run-'))
+  const token = randomUUID()
+  const marker = join(child, OWNERSHIP_MARKER)
+  await writeFile(marker, `${token}\n`, { flag: 'wx', mode: 0o600 })
+  return { root, child, marker, token }
 }
+
+export async function cleanupOwnedGeneratedChild(ownership, { rawDir, reportDir }) {
+  const rootStat = await lstat(ownership.root)
+  const childStat = await lstat(ownership.child)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Generated root changed before cleanup')
+  if (!childStat.isDirectory() || childStat.isSymbolicLink()) throw new Error('Generated run child changed before cleanup')
+  const resolvedRoot = await realpath(ownership.root)
+  const resolvedChild = await realpath(ownership.child)
+  assertStrictOwnedChild(resolvedRoot, resolvedChild)
+  for (const protectedPath of [resolve(rawDir), resolve(reportDir)]) {
+    if (pathsOverlap(resolvedChild, protectedPath)) throw new Error('Generated cleanup target overlaps persistent measurement data')
+  }
+  const markerStat = await lstat(ownership.marker)
+  if (!markerStat.isFile() || markerStat.isSymbolicLink()) throw new Error('Generated run ownership marker is invalid')
+  const marker = (await readFile(ownership.marker, 'utf8')).trim()
+  if (marker !== ownership.token) throw new Error('Generated run ownership marker does not match this process')
+  await rm(resolvedChild, { recursive: true, force: false })
+}
+
+function assertStrictOwnedChild(root, child) {
+  const path = relative(root, child)
+  if (path === '' || path === '..' || path.startsWith(`..${sep}`)) {
+    throw new Error('Generated cleanup target is not a strict child of the generated root')
+  }
+}
+function pathsOverlap(left, right) {
+  return contains(left, right) || contains(right, left)
+}
+function contains(ancestor, candidate) {
+  const path = relative(resolve(ancestor), resolve(candidate))
+  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`))
+}
+async function resolveRepositoryMainSha() {
+  for (const ref of ['origin/main', 'main', 'HEAD']) {
+    try {
+      const { stdout } = await execFileAsync('git', ['rev-parse', '--verify', ref], { encoding: 'utf8' })
+      const sha = stdout.trim()
+      if (/^[a-f0-9]{40}$/.test(sha)) return sha
+    } catch {}
+  }
+  throw new Error('Unable to determine repository revision')
+}
+
+async function main() {
+  let options
+  try {
+    options = await parseCli(process.argv.slice(2))
+    if (options.help) {
+      process.stdout.write(helpText)
+      return
+    }
+    const result = await runMeasurement(options)
+    process.stdout.write(`${stableStringify({ phase: 'complete', runDir: result.runDir, runId: result.report.metadata.runId })}\n`)
+  } catch (error) {
+    const record = safeErrorRecord(error)
+    const secrets = [process.env.TDX_CLIENT_ID, process.env.TDX_CLIENT_SECRET]
+    assertRedacted(record, secrets)
+    process.stderr.write(`${stableStringify(record)}\n`)
+    process.exitCode = 1
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) await main()

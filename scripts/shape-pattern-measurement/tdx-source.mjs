@@ -1,10 +1,12 @@
-import { mkdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { DEFAULT_MAX_ATTEMPTS, DEFAULT_TIMEOUT_MS } from './constants.mjs'
-import { contentHash, readJson, sanitizePathFragment, sleep, stableStringify, writeJson } from './util.mjs'
+import { randomUUID } from 'node:crypto'
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { DEFAULT_MAX_ATTEMPTS, DEFAULT_TIMEOUT_MS, RAW_SCHEMA_VERSION } from './constants.mjs'
+import { atomicWrite, contentHash, readJson, sleep, stableStringify, writeJson } from './util.mjs'
 
 const TOKEN_ENDPOINT = 'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token'
 const API_BASE = 'https://tdx.transportdata.tw/api/basic/v2/Bus'
+const SAFE_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}\.json$/
 
 export class TDXMeasurementError extends Error {
   constructor(message, details = {}, options = {}) {
@@ -52,6 +54,19 @@ export function parseVars(source) {
   return result
 }
 
+export function expectedEndpointSpecs(cities, includeIntercity) {
+  const specs = []
+  for (const city of cities) {
+    specs.push(endpointSpec('city', city, 'stop-of-route', `StopOfRoute/City/${city}`))
+    specs.push(endpointSpec('city', city, 'shape', `Shape/City/${city}`))
+  }
+  if (includeIntercity) {
+    specs.push(endpointSpec('intercity', null, 'stop-of-route', 'StopOfRoute/InterCity'))
+    specs.push(endpointSpec('intercity', null, 'shape', 'Shape/InterCity'))
+  }
+  return specs.sort((a, b) => a.endpointId.localeCompare(b.endpointId))
+}
+
 export async function fetchRawBundle({
   cities,
   includeIntercity,
@@ -62,141 +77,252 @@ export async function fetchRawBundle({
   random = Math.random,
   progress = (entry) => console.log(stableStringify(entry)),
   credentials,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
 }) {
+  const target = resolve(rawDir)
+  await assertMissing(target)
   const resolvedCredentials = credentials ?? await loadCredentials()
-  const token = await fetchToken(resolvedCredentials, { fetcher, random, now })
-  const requests = []
-  for (const city of cities) {
-    requests.push(endpointRequest('stop-of-route', city, `StopOfRoute/City/${city}`))
-    requests.push(endpointRequest('shape', city, `Shape/City/${city}`))
+  const token = await fetchToken(resolvedCredentials, { fetcher, random, now, timeoutMs, maxAttempts })
+  const specs = expectedEndpointSpecs(cities, includeIntercity)
+  await mkdir(dirname(target), { recursive: true })
+  const temporary = `${target}.tmp-${randomUUID()}`
+  await mkdir(temporary, { recursive: false })
+  try {
+    const fetchedAt = now().toISOString()
+    const responses = await mapConcurrent(specs, concurrency, async (spec) => {
+      progress({ phase: 'fetch-start', endpointCategory: spec.category, city: spec.city, timestamp: now().toISOString() })
+      const payload = await fetchEndpointPayload(spec, token, { fetcher, random, now, timeoutMs, maxAttempts })
+      const entry = manifestEntry(spec, payload)
+      await atomicWrite(join(temporary, entry.fileName), `${stableStringify(payload, 2)}\n`)
+      progress({ phase: 'fetch-complete', endpointCategory: spec.category, city: spec.city, timestamp: now().toISOString() })
+      return { ...entry, payload }
+    })
+    const manifest = createManifest({ cities, includeIntercity, fetchedAt, responses })
+    const bundle = bundleFromResponses(responses, manifest)
+    await writeJson(join(temporary, 'manifest.json'), manifest)
+    await syncDirectory(temporary)
+    await rename(temporary, target)
+    return { bundle, manifest }
+  } catch (error) {
+    await rm(temporary, { recursive: true, force: true }).catch(() => undefined)
+    throw error
   }
-  if (includeIntercity) {
-    requests.push(endpointRequest('stop-of-route-intercity', null, 'StopOfRoute/InterCity', 'intercity'))
-    requests.push(endpointRequest('shape-intercity', null, 'Shape/InterCity', 'intercity'))
-  }
-
-  const fetchedAt = now().toISOString()
-  const responses = await mapConcurrent(requests, concurrency, async (request) => {
-    progress({ phase: 'fetch-start', endpointCategory: request.category, city: request.city, timestamp: now().toISOString() })
-    const payload = await fetchJsonEndpoint(request, token, { fetcher, random, now })
-    const hash = contentHash(payload)
-    const fileName = `${sanitizePathFragment(request.scope)}-${sanitizePathFragment(request.city ?? 'all')}-${sanitizePathFragment(request.category)}.json`
-    await writeJson(join(rawDir, fileName), payload)
-    progress({ phase: 'fetch-complete', endpointCategory: request.category, city: request.city, timestamp: now().toISOString() })
-    return { ...request, fileName, contentHash: hash, itemCount: Array.isArray(payload) ? payload.length : null, maxUpdateTime: payloadMaxUpdateTime(payload), payload }
-  })
-
-  const bundle = bundleFromResponses(responses, { cities, includeIntercity, fetchedAt })
-  const manifest = {
-    schemaVersion: 1,
-    fetchedAt,
-    cities: [...cities],
-    includeIntercity,
-    endpoints: responses.map(({ payload: _payload, path: _path, ...entry }) => entry),
-    bundleContentHash: contentHash(bundle.sources),
-  }
-  await mkdir(rawDir, { recursive: true })
-  await writeJson(join(rawDir, 'manifest.json'), manifest)
-  return { bundle, manifest }
 }
 
 export async function replayRawBundle({ rawDir }) {
-  const manifest = await readJson(join(rawDir, 'manifest.json'))
-  if (manifest?.schemaVersion !== 1 || !Array.isArray(manifest.endpoints)) {
-    throw new TDXMeasurementError('Raw cache manifest is invalid', { failureClass: 'corrupt_cache' })
-  }
+  const root = resolve(rawDir)
+  await assertDirectoryNoSymlink(root)
+  const manifestPath = join(root, 'manifest.json')
+  await assertRegularFileNoSymlink(manifestPath, root)
+  const manifest = await readJson(manifestPath)
+  const specs = validateManifest(manifest)
   const responses = []
-  for (const entry of manifest.endpoints) {
-    const payload = await readJson(join(rawDir, entry.fileName))
-    if (contentHash(payload) !== entry.contentHash) {
-      throw new TDXMeasurementError('Raw cache content hash mismatch', {
-        endpointCategory: entry.category, city: entry.city, failureClass: 'corrupt_cache',
-      })
+  const entryById = new Map(manifest.endpoints.map((entry) => [entry.endpointId, entry]))
+  for (const spec of specs) {
+    const entry = entryById.get(spec.endpointId)
+    const file = await resolveManifestFile(root, entry.fileName)
+    const payload = await readJson(file)
+    if (!Array.isArray(payload) || contentHash(payload) !== entry.contentHash) {
+      throw corruptCache(entry, 'Raw cache content hash mismatch')
     }
     responses.push({ ...entry, payload })
   }
-  const bundle = bundleFromResponses(responses, manifest)
-  if (contentHash(bundle.sources) !== manifest.bundleContentHash) {
+  const expectedBundleHash = computeBundleHash(manifest)
+  if (expectedBundleHash !== manifest.bundleContentHash) {
     throw new TDXMeasurementError('Raw cache bundle hash mismatch', { failureClass: 'corrupt_cache' })
   }
-  return { bundle, manifest }
+  return { bundle: bundleFromResponses(responses, manifest), manifest }
 }
 
-function bundleFromResponses(responses, metadata) {
+export function assertReplayScope(options, manifest) {
+  if (options.citiesExplicit && stableStringify(options.cities) !== stableStringify(manifest.cities)) {
+    throw new TDXMeasurementError('Replay cities do not match verified manifest', { failureClass: 'replay_scope_mismatch' })
+  }
+  if (options.includeIntercityExplicit && options.includeIntercity !== manifest.includeIntercity) {
+    throw new TDXMeasurementError('Replay InterCity scope does not match verified manifest', { failureClass: 'replay_scope_mismatch' })
+  }
+}
+
+export function validateManifest(manifest) {
+  if (!plainObject(manifest) || manifest.schemaVersion !== RAW_SCHEMA_VERSION) {
+    throw new TDXMeasurementError('Raw cache manifest schema is invalid', { failureClass: 'corrupt_cache' })
+  }
+  if (!Array.isArray(manifest.cities) || !manifest.cities.length
+    || manifest.cities.some((city) => typeof city !== 'string' || !city)
+    || new Set(manifest.cities).size !== manifest.cities.length
+    || typeof manifest.includeIntercity !== 'boolean'
+    || typeof manifest.fetchedAt !== 'string'
+    || !Array.isArray(manifest.endpoints)
+    || typeof manifest.bundleContentHash !== 'string'
+    || !/^[a-f0-9]{64}$/.test(manifest.bundleContentHash)) {
+    throw new TDXMeasurementError('Raw cache manifest metadata is invalid', { failureClass: 'corrupt_cache' })
+  }
+  const specs = expectedEndpointSpecs(manifest.cities, manifest.includeIntercity)
+  const expectedIds = new Set(specs.map((entry) => entry.endpointId))
+  const seen = new Set()
+  for (const entry of manifest.endpoints) {
+    if (!plainObject(entry) || typeof entry.endpointId !== 'string' || seen.has(entry.endpointId)) {
+      throw new TDXMeasurementError('Raw cache manifest has duplicate or invalid endpoints', { failureClass: 'corrupt_cache' })
+    }
+    seen.add(entry.endpointId)
+    const spec = specs.find((candidate) => candidate.endpointId === entry.endpointId)
+    if (!spec || !entryMatchesSpec(entry, spec)
+      || !Number.isSafeInteger(entry.itemCount) || entry.itemCount < 0
+      || !/^[a-f0-9]{64}$/.test(entry.contentHash)
+      || (entry.maxUpdateTime !== null && typeof entry.maxUpdateTime !== 'string')) {
+      throw corruptCache(entry, 'Raw cache endpoint metadata is invalid')
+    }
+  }
+  if (seen.size !== expectedIds.size || [...expectedIds].some((id) => !seen.has(id))) {
+    throw new TDXMeasurementError('Raw cache endpoint set is incomplete', { failureClass: 'corrupt_cache' })
+  }
+  if (manifest.endpoints.length !== specs.length) {
+    throw new TDXMeasurementError('Raw cache endpoint set contains extras', { failureClass: 'corrupt_cache' })
+  }
+  return specs
+}
+
+function createManifest({ cities, includeIntercity, fetchedAt, responses }) {
+  const endpoints = responses.map(({ payload: _payload, ...entry }) => entry)
+    .sort((a, b) => a.endpointId.localeCompare(b.endpointId))
+  const manifest = {
+    schemaVersion: RAW_SCHEMA_VERSION,
+    fetchedAt,
+    cities: [...cities],
+    includeIntercity,
+    endpoints,
+    bundleContentHash: null,
+  }
+  manifest.bundleContentHash = computeBundleHash(manifest)
+  return manifest
+}
+
+export function computeBundleHash(manifest) {
+  return contentHash({
+    schemaVersion: manifest.schemaVersion,
+    fetchedAt: manifest.fetchedAt,
+    cities: manifest.cities,
+    includeIntercity: manifest.includeIntercity,
+    endpoints: [...manifest.endpoints]
+      .sort((a, b) => a.endpointId.localeCompare(b.endpointId))
+      .map((entry) => ({
+        endpointId: entry.endpointId,
+        scope: entry.scope,
+        city: entry.city,
+        category: entry.category,
+        fileName: entry.fileName,
+        contentHash: entry.contentHash,
+        itemCount: entry.itemCount,
+        maxUpdateTime: entry.maxUpdateTime,
+      })),
+  })
+}
+
+function bundleFromResponses(responses, manifest) {
+  const byId = new Map(responses.map((entry) => [entry.endpointId, entry.payload]))
   const sources = []
-  for (const city of metadata.cities ?? []) {
-    const stopOfRoute = responses.find((entry) => entry.scope === 'city' && entry.city === city && entry.category === 'stop-of-route')?.payload
-    const shapes = responses.find((entry) => entry.scope === 'city' && entry.city === city && entry.category === 'shape')?.payload
-    if (!Array.isArray(stopOfRoute) || !Array.isArray(shapes)) {
-      throw new TDXMeasurementError('Raw cache is missing a city endpoint', { city, failureClass: 'corrupt_cache' })
-    }
-    sources.push({ scope: 'city', city, stopOfRoute, shapes })
+  for (const city of manifest.cities) {
+    sources.push({
+      scope: 'city',
+      city,
+      stopOfRoute: byId.get(endpointId('city', city, 'stop-of-route')),
+      shapes: byId.get(endpointId('city', city, 'shape')),
+    })
   }
-  if (metadata.includeIntercity) {
-    const stopOfRoute = responses.find((entry) => entry.scope === 'intercity' && entry.category === 'stop-of-route-intercity')?.payload
-    const shapes = responses.find((entry) => entry.scope === 'intercity' && entry.category === 'shape-intercity')?.payload
-    if (!Array.isArray(stopOfRoute) || !Array.isArray(shapes)) {
-      throw new TDXMeasurementError('Raw cache is missing an InterCity endpoint', { failureClass: 'corrupt_cache' })
-    }
-    sources.push({ scope: 'intercity', city: null, stopOfRoute, shapes })
+  if (manifest.includeIntercity) {
+    sources.push({
+      scope: 'intercity',
+      city: null,
+      stopOfRoute: byId.get(endpointId('intercity', null, 'stop-of-route')),
+      shapes: byId.get(endpointId('intercity', null, 'shape')),
+    })
   }
-  return { schemaVersion: 1, fetchedAt: metadata.fetchedAt, sources }
+  if (sources.some((source) => !Array.isArray(source.stopOfRoute) || !Array.isArray(source.shapes))) {
+    throw new TDXMeasurementError('Raw cache endpoint payload is missing', { failureClass: 'corrupt_cache' })
+  }
+  return { schemaVersion: RAW_SCHEMA_VERSION, fetchedAt: manifest.fetchedAt, sources }
 }
 
 async function fetchToken({ clientId, clientSecret }, dependencies) {
   const body = new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret })
-  const response = await requestWithRetry({
+  const data = await requestJsonWithRetry({
     endpointCategory: 'token', city: null, url: TOKEN_ENDPOINT,
     init: { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body },
+    expectArray: false,
     ...dependencies,
   })
-  let data
-  try { data = await response.json() } catch {
-    throw safeError('token', null, response.status, 'invalid_json', 0)
-  }
-  if (!data || typeof data.access_token !== 'string' || !data.access_token) {
-    throw safeError('token', null, response.status, 'invalid_schema', 0)
+  if (!plainObject(data) || typeof data.access_token !== 'string' || !data.access_token) {
+    throw safeError('token', null, null, 'invalid_schema', 0)
   }
   return data.access_token
 }
 
-async function fetchJsonEndpoint(request, token, dependencies) {
-  const response = await requestWithRetry({
-    endpointCategory: request.category,
-    city: request.city,
-    url: `${API_BASE}/${request.path}?$format=JSON`,
+async function fetchEndpointPayload(spec, token, dependencies) {
+  return requestJsonWithRetry({
+    endpointCategory: spec.category,
+    city: spec.city,
+    url: `${API_BASE}/${spec.path}?$format=JSON`,
     init: { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
+    expectArray: true,
     ...dependencies,
   })
-  try {
-    const data = await response.json()
-    if (!Array.isArray(data)) throw new Error('not-array')
-    return data
-  } catch {
-    throw safeError(request.category, request.city, response.status, 'invalid_json', 0)
-  }
 }
 
-async function requestWithRetry({ endpointCategory, city, url, init, fetcher, random, now, maxAttempts = DEFAULT_MAX_ATTEMPTS }) {
+export async function requestJsonWithRetry({
+  endpointCategory,
+  city,
+  url,
+  init,
+  fetcher,
+  random,
+  now,
+  expectArray,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+}) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     let response
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
-      try { response = await fetcher(url, { ...init, signal: controller.signal }) } finally { clearTimeout(timer) }
+      response = await fetcher(url, { ...init, signal: controller.signal })
+      if (!response.ok) {
+        const retryable = response.status === 429 || response.status >= 500
+        if (!retryable || attempt === maxAttempts - 1) {
+          throw safeError(endpointCategory, city, response.status, classifyHttp(response.status), attempt)
+        }
+        clearTimeout(timer)
+        await sleep(backoffDelay(attempt, response.headers?.get?.('Retry-After') ?? null, random, now))
+        continue
+      }
+      const text = await response.text()
+      let data
+      try { data = JSON.parse(text) } catch {
+        throw safeError(endpointCategory, city, response.status, 'invalid_json', attempt)
+      }
+      if ((expectArray && !Array.isArray(data)) || (!expectArray && !plainObject(data))) {
+        throw safeError(endpointCategory, city, response.status, 'invalid_schema', attempt)
+      }
+      return data
     } catch (error) {
-      if (attempt === maxAttempts - 1) throw safeError(endpointCategory, city, null, classifyTransport(error), attempt)
+      if (error instanceof TDXMeasurementError) throw error
+      const final = attempt === maxAttempts - 1
+      if (final) throw safeError(endpointCategory, city, response?.status ?? null, classifyTransport(error), attempt)
       await sleep(backoffDelay(attempt, null, random, now))
-      continue
+    } finally {
+      clearTimeout(timer)
     }
-    if (response.ok) return response
-    const retryable = response.status === 429 || response.status >= 500
-    if (!retryable || attempt === maxAttempts - 1) {
-      throw safeError(endpointCategory, city, response.status, classifyHttp(response.status), attempt)
-    }
-    await sleep(backoffDelay(attempt, response.headers.get('Retry-After'), random, now))
   }
   throw safeError(endpointCategory, city, null, 'retry_exhausted', maxAttempts - 1)
+}
+
+export function parseRetryAfter(value, now = new Date()) {
+  if (value === null || value === undefined || value === '') return null
+  if (/^(?:0|[1-9]\d*)$/.test(value)) return Number(value) * 1000
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return Math.max(0, date.getTime() - now.getTime())
 }
 
 function backoffDelay(attempt, retryAfter, random, now) {
@@ -206,22 +332,91 @@ function backoffDelay(attempt, retryAfter, random, now) {
   return Math.round(base * (0.75 + random() * 0.5))
 }
 
-export function parseRetryAfter(value, now = new Date()) {
-  if (value === null || value === undefined || value === '') return null
-  const seconds = Number(value)
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return null
-  return Math.max(0, date.getTime() - now.getTime())
+function endpointSpec(scope, city, category, path) {
+  const id = endpointId(scope, city, category)
+  return { endpointId: id, scope, city, category, path, fileName: `${id}.json` }
 }
-
+function endpointId(scope, city, category) {
+  return scope === 'intercity' ? `intercity-${category}` : `city-${city}-${category}`
+}
+function manifestEntry(spec, payload) {
+  return {
+    endpointId: spec.endpointId,
+    scope: spec.scope,
+    city: spec.city,
+    category: spec.category,
+    fileName: spec.fileName,
+    contentHash: contentHash(payload),
+    itemCount: payload.length,
+    maxUpdateTime: payloadMaxUpdateTime(payload),
+  }
+}
+function entryMatchesSpec(entry, spec) {
+  return entry.scope === spec.scope
+    && entry.city === spec.city
+    && entry.category === spec.category
+    && entry.fileName === spec.fileName
+    && isCanonicalFileName(entry.fileName)
+}
+function isCanonicalFileName(value) {
+  return typeof value === 'string'
+    && SAFE_FILE_NAME.test(value)
+    && basename(value) === value
+    && !isAbsolute(value)
+    && !value.split(/[\\/]/).some((part) => part === '.' || part === '..')
+}
+async function resolveManifestFile(root, fileName) {
+  if (!isCanonicalFileName(fileName)) throw new TDXMeasurementError('Raw cache path is invalid', { failureClass: 'corrupt_cache' })
+  const file = resolve(root, fileName)
+  const rel = relative(root, file)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new TDXMeasurementError('Raw cache path escapes its root', { failureClass: 'corrupt_cache' })
+  }
+  await assertRegularFileNoSymlink(file, root)
+  return file
+}
+async function assertDirectoryNoSymlink(path) {
+  const stat = await lstat(path).catch(() => null)
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) {
+    throw new TDXMeasurementError('Raw cache root is not a trusted directory', { failureClass: 'corrupt_cache' })
+  }
+}
+async function assertRegularFileNoSymlink(path, root) {
+  const stat = await lstat(path).catch(() => null)
+  if (!stat?.isFile() || stat.isSymbolicLink()) {
+    throw new TDXMeasurementError('Raw cache entry is not a regular file', { failureClass: 'corrupt_cache' })
+  }
+  const resolvedRoot = await realpath(root)
+  const resolvedFile = await realpath(path)
+  const rel = relative(resolvedRoot, resolvedFile)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new TDXMeasurementError('Raw cache entry escapes its root', { failureClass: 'corrupt_cache' })
+  }
+}
+async function assertMissing(path) {
+  try {
+    await lstat(path)
+    throw new TDXMeasurementError('Raw cache target already exists', { failureClass: 'cache_target_exists' })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
+}
+async function syncDirectory(path) {
+  const handle = await open(path, 'r')
+  try { await handle.sync() } finally { await handle.close() }
+}
 function payloadMaxUpdateTime(payload) {
-  if (!Array.isArray(payload)) return null
   return payload.map((item) => typeof item?.UpdateTime === 'string' ? item.UpdateTime : null)
     .filter(Boolean).sort().at(-1) ?? null
 }
-
-function endpointRequest(category, city, path, scope = 'city') { return { category, city, path, scope } }
+function corruptCache(entry, message) {
+  return new TDXMeasurementError(message, {
+    endpointCategory: entry?.category ?? 'unknown',
+    city: entry?.city ?? null,
+    failureClass: 'corrupt_cache',
+  })
+}
 function classifyTransport(error) { return error?.name === 'AbortError' ? 'timeout' : 'transport' }
 function classifyHttp(status) { return status === 429 ? 'rate_limited' : status >= 500 ? 'upstream_5xx' : 'upstream_4xx' }
 function safeError(endpointCategory, city, httpStatus, failureClass, retryCount) {
@@ -229,28 +424,30 @@ function safeError(endpointCategory, city, httpStatus, failureClass, retryCount)
     endpointCategory, city, httpStatus, failureClass, retryCount,
   })
 }
-
 export function safeErrorRecord(error) {
   if (error instanceof TDXMeasurementError) return { ...error.details }
   if (error?.code === 'UNSUPPORTED_MATCHER_REVISION') {
     return { endpointCategory: 'matcher', city: null, httpStatus: null, failureClass: 'unsupported_matcher_revision', retryCount: 0, timestamp: new Date().toISOString() }
   }
+  if (error?.code === 'MEASUREMENT_COLLECTOR_ERROR') {
+    return { endpointCategory: 'measurement', city: null, httpStatus: null, failureClass: 'collector_failure', retryCount: 0, timestamp: new Date().toISOString() }
+  }
   return { endpointCategory: 'unknown', city: null, httpStatus: null, failureClass: 'unexpected', retryCount: 0, timestamp: new Date().toISOString() }
 }
-
 export function assertRedacted(value, secrets) {
   const serialized = typeof value === 'string' ? value : stableStringify(value)
-  const forbidden = ['Authorization', ...secrets.filter(Boolean)]
-  for (const secret of forbidden) if (serialized.includes(secret)) throw new Error('Sensitive value leaked into measurement output')
+  for (const secret of ['Authorization', ...secrets.filter(Boolean)]) {
+    if (serialized.includes(secret)) throw new Error('Sensitive value leaked into measurement output')
+  }
 }
-
+function plainObject(value) { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) }
 async function mapConcurrent(items, concurrency, worker) {
+  if (!Number.isSafeInteger(concurrency) || concurrency <= 0) throw new RangeError('concurrency must be positive')
   const results = new Array(items.length)
   let nextIndex = 0
   const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (true) {
-      const index = nextIndex
-      nextIndex += 1
+      const index = nextIndex++
       if (index >= items.length) return
       results[index] = await worker(items[index], index)
     }

@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, relative, resolve } from 'node:path'
 
 export const sha256Hex = (value) => createHash('sha256').update(value).digest('hex')
 
@@ -22,9 +22,20 @@ export const contentHash = (value) => sha256Hex(stableStringify(value))
 
 export async function atomicWrite(file, content) {
   await mkdir(dirname(file), { recursive: true })
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`
-  await writeFile(temporary, content)
-  await rename(temporary, file)
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  const handle = await open(temporary, 'wx', 0o600)
+  try {
+    await handle.writeFile(content)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  try {
+    await rename(temporary, file)
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined)
+    throw error
+  }
 }
 
 export async function readJson(file) {
@@ -41,27 +52,23 @@ export function finiteNonNegative(value, name) {
 }
 
 export function positiveInteger(value, name) {
-  if (!Number.isInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer`)
+  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive safe integer`)
   return value
 }
 
-export function optionalBoolean(value) {
-  return value === true
-}
-
 export function sanitizePathFragment(value) {
-  return String(value).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120)
+  return String(value).replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 120)
 }
 
 export function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 }
 
 export function percentile(values, percentileValue) {
   if (!Number.isFinite(percentileValue) || percentileValue < 0 || percentileValue > 1) {
     throw new RangeError('percentile must be within [0, 1]')
   }
-  const sorted = values.filter(Number.isFinite).slice().sort((a, b) => a - b)
+  const sorted = values.filter((value) => Number.isFinite(value)).slice().sort((a, b) => a - b)
   if (!sorted.length) return null
   if (percentileValue === 0) return sorted[0]
   const index = Math.min(sorted.length - 1, Math.ceil(percentileValue * sorted.length) - 1)
@@ -69,7 +76,7 @@ export function percentile(values, percentileValue) {
 }
 
 export function distribution(values) {
-  const finite = values.filter(Number.isFinite)
+  const finite = values.filter((value) => Number.isFinite(value))
   return {
     count: finite.length,
     min: percentile(finite, 0),
@@ -82,19 +89,19 @@ export function distribution(values) {
   }
 }
 
-export function omitNondeterministic(value) {
-  if (Array.isArray(value)) return value.map(omitNondeterministic)
-  if (!value || typeof value !== 'object') return value
-  const omitted = new Set([
-    'startedAt', 'completedAt', 'fetchedAt', 'timestamp', 'wallTimeMs', 'partitionWallTimeMs',
-    'pairTimeMs', 'forwardTimeMs', 'reverseTimeMs', 'assignmentTimeMs', 'ambiguityProofTimeMs',
-    'bestAssignmentTimeMs', 'bestTimeMs', 'forcedMatchTimeMs', 'forcedUnmatchedTimeMs',
-    'costObjectiveSolveTimeMs', 'spanObjectiveSolveTimeMs',
-    'rssBytes', 'heapUsedBytes', 'peakRssBytes', 'peakHeapUsedBytes',
-  ])
-  return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !omitted.has(key))
-    .map(([key, child]) => [key, omitNondeterministic(child)]))
+export function median(values) {
+  return percentile(values, 0.5)
+}
+
+export function pathContains(ancestor, candidate) {
+  const rel = relative(resolve(ancestor), resolve(candidate))
+  return rel === '' || (!rel.startsWith('..') && !rel.includes(`..${process.platform === 'win32' ? '\\' : '/'}`) && !resolve(candidate).startsWith(`${resolve(ancestor)}..`))
+}
+
+export function assertStrictChild(parent, child, label = 'path') {
+  if (!pathContains(parent, child) || resolve(parent) === resolve(child)) {
+    throw new Error(`${label} must be a strict child of its owned root`)
+  }
 }
 
 export function assertFiniteTree(value, path = '$') {
@@ -103,4 +110,21 @@ export function assertFiniteTree(value, path = '$') {
   else if (value && typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) assertFiniteTree(child, `${path}.${key}`)
   }
+}
+
+const NONDETERMINISTIC_KEYS = new Set([
+  'runId', 'deterministicContentHash', 'startedAt', 'completedAt', 'publishedAt', 'timestamp', 'fetchedAt',
+  'elapsedMs', 'matcherLatencyMs', 'matcherIterationSamplesMs', 'iterationLatencyMs', 'pairTimeMs', 'forwardTimeMs', 'reverseTimeMs',
+  'costObjectiveSolveTimeMs', 'spanObjectiveSolveTimeMs', 'bestAssignmentTimeMs',
+  'ambiguityProofTimeMs', 'sourceVerificationTimeMs', 'transpileTimeMs', 'importTimeMs',
+  'rssBeforeBytes', 'rssAfterBytes', 'rssDeltaBytes', 'heapBeforeBytes', 'heapAfterBytes',
+  'heapDeltaBytes', 'memoryObservation',
+])
+
+export function omitNondeterministic(value) {
+  if (Array.isArray(value)) return value.map(omitNondeterministic)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !NONDETERMINISTIC_KEYS.has(key))
+    .map(([key, child]) => [key, omitNondeterministic(child)]))
 }
