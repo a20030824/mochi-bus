@@ -62,6 +62,9 @@ export async function getPinnedSnapshotRouteCatalog(
   }))
 }
 
+// Snapshot-only publisher smoke keeps the grouped route-name read. The active
+// deterministic probe uses getPinnedSnapshotRouteVariant below so unrelated
+// same-name variants cannot add R2 reads or fail the exact sample request.
 export async function getPinnedSnapshotRouteVariants(
   env: TransitBindings,
   city: string,
@@ -72,53 +75,78 @@ export async function getPinnedSnapshotRouteVariants(
     SELECT p.pattern_id, p.route_uid, p.subroute_uid, r.route_name, p.subroute_name, p.direction,
            p.departure_name, p.destination_name, p.shape_key, p.updated_at
     FROM patterns p
-    JOIN routes r ON r.version = p.version AND r.route_uid = p.route_uid
+    JOIN routes r ON r.version = p.version AND r.city_code = p.city_code AND r.route_uid = p.route_uid
     WHERE p.version = ? AND p.city_code = ? AND r.route_name = ?
     ORDER BY p.direction, p.pattern_id
   `).bind(version, city, routeName).all<PatternRow>()
   if (!patterns.results.length) return []
 
-  const variants = await Promise.all(patterns.results.map(async (pattern): Promise<RouteMapVariant | null> => {
-    const [stops, shapeObject] = await Promise.all([
-      env.TRANSIT_DB.prepare(`
-        SELECT s.stop_uid, s.stop_name, ps.stop_sequence, s.latitude, s.longitude
-        FROM pattern_stops ps
-        JOIN stops s ON s.version = ps.version AND s.stop_uid = ps.stop_uid
-        WHERE ps.version = ? AND ps.pattern_id = ?
-        ORDER BY ps.stop_sequence
-      `).bind(version, pattern.pattern_id).all<StopRow>(),
-      env.TRANSIT_SHAPES.get(pattern.shape_key),
-    ])
-    if (!shapeObject) return null
-    const shape = await shapeObject.json<ShapeFeature>()
-    return {
-      variantKey: pattern.pattern_id,
-      routeName: pattern.route_name,
-      routeUid: pattern.route_uid,
-      ...(pattern.subroute_uid ? { subRouteUid: pattern.subroute_uid } : {}),
-      direction: pattern.direction,
-      label: `${pattern.departure_name} → ${pattern.destination_name}`,
-      subRouteName: pattern.subroute_name,
-      shape,
-      stops: {
-        type: 'FeatureCollection' as const,
-        features: stops.results.map((stop) => ({
-          type: 'Feature' as const,
-          properties: {
-            stopUid: stop.stop_uid,
-            stopName: stop.stop_name,
-            sequence: stop.stop_sequence,
-          },
-          geometry: {
-            type: 'Point' as const,
-            coordinates: [stop.longitude, stop.latitude] as [number, number],
-          },
-        })),
-      },
-      updatedAt: pattern.updated_at,
-    }
-  }))
+  const variants = await Promise.all(patterns.results.map((pattern) => readPinnedPatternVariant(env, version, pattern)))
   return variants.filter((variant): variant is RouteMapVariant => variant !== null)
+}
+
+export async function getPinnedSnapshotRouteVariant(
+  env: TransitBindings,
+  city: string,
+  routeUid: string,
+  patternId: string,
+  version: string,
+): Promise<RouteMapVariant | null> {
+  const pattern = await env.TRANSIT_DB.prepare(`
+    SELECT p.pattern_id, p.route_uid, p.subroute_uid, r.route_name, p.subroute_name, p.direction,
+           p.departure_name, p.destination_name, p.shape_key, p.updated_at
+    FROM patterns p
+    JOIN routes r ON r.version = p.version AND r.city_code = p.city_code AND r.route_uid = p.route_uid
+    WHERE p.version = ? AND p.city_code = ? AND p.route_uid = ? AND p.pattern_id = ?
+    LIMIT 1
+  `).bind(version, city, routeUid, patternId).first<PatternRow>()
+  if (!pattern) return null
+  return readPinnedPatternVariant(env, version, pattern)
+}
+
+async function readPinnedPatternVariant(
+  env: TransitBindings,
+  version: string,
+  pattern: PatternRow,
+): Promise<RouteMapVariant | null> {
+  const [stops, shapeObject] = await Promise.all([
+    env.TRANSIT_DB.prepare(`
+      SELECT s.stop_uid, s.stop_name, ps.stop_sequence, s.latitude, s.longitude
+      FROM pattern_stops ps
+      JOIN stops s ON s.version = ps.version AND s.stop_uid = ps.stop_uid
+      WHERE ps.version = ? AND ps.pattern_id = ?
+      ORDER BY ps.stop_sequence
+    `).bind(version, pattern.pattern_id).all<StopRow>(),
+    env.TRANSIT_SHAPES.get(pattern.shape_key),
+  ])
+  if (!shapeObject) return null
+  const shape = await shapeObject.json<ShapeFeature>()
+  return {
+    variantKey: pattern.pattern_id,
+    routeName: pattern.route_name,
+    routeUid: pattern.route_uid,
+    ...(pattern.subroute_uid ? { subRouteUid: pattern.subroute_uid } : {}),
+    direction: pattern.direction,
+    label: `${pattern.departure_name} → ${pattern.destination_name}`,
+    subRouteName: pattern.subroute_name,
+    shape,
+    stops: {
+      type: 'FeatureCollection' as const,
+      features: stops.results.map((stop) => ({
+        type: 'Feature' as const,
+        properties: {
+          stopUid: stop.stop_uid,
+          stopName: stop.stop_name,
+          sequence: stop.stop_sequence,
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [stop.longitude, stop.latitude] as [number, number],
+        },
+      })),
+    },
+    updatedAt: pattern.updated_at,
+  }
 }
 
 export async function getPinnedStopPlaceBundle(
