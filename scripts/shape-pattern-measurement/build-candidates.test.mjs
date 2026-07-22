@@ -116,7 +116,7 @@ describe('strict raw TDX candidate boundary', () => {
     expect(buildCandidatePartitions(bundle([pattern({ SubRouteUID: null })])).partitions[0].patterns).toHaveLength(1)
     const empty = buildCandidatePartitions(bundle([pattern({ SubRouteUID: '' })]))
     expect(allPatterns(empty)).toEqual([])
-    expect(rejectionReasons(empty, 'pattern')).toEqual(['invalid-sub-route-uid'])
+    expect(rejectionReasons(empty, 'pattern')).toEqual(['empty-sub-route-uid'])
   })
 
   it('rejects the whole direct Shape when any point is invalid', () => {
