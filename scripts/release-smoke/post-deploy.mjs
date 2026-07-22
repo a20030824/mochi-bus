@@ -17,6 +17,8 @@ const FAILURE_CLASSES = new Set([
   'asset_graph_limit',
   'hashed_asset_missing',
   'routes_contract_invalid',
+  'route_sample_missing',
+  'route_http_failed',
   'route_contract_invalid',
   'network_contract_invalid',
   'degraded_contract_invalid',
@@ -40,6 +42,8 @@ const TELEMETRY_FAILURE_MAP = Object.freeze({
   asset_graph_limit: 'asset_load',
   hashed_asset_missing: 'asset_load',
   routes_contract_invalid: 'contract_parse',
+  route_sample_missing: 'contract_parse',
+  route_http_failed: 'network',
   route_contract_invalid: 'contract_parse',
   network_contract_invalid: 'contract_parse',
   degraded_contract_invalid: 'contract_parse',
@@ -138,6 +142,38 @@ export function validateRoutesContract(value, city) {
     snapshotVersion: value.snapshotVersion,
     routes: value.routes,
   })
+}
+
+export function selectRepresentativeRoute(routes, expected) {
+  if (!routes || !Array.isArray(routes.routes)
+    || !expected || typeof expected !== 'object'
+    || typeof expected.routeName !== 'string' || expected.routeName.length === 0
+    || typeof expected.routeUid !== 'string' || expected.routeUid.length === 0) {
+    throw new ReleaseSmokeError('route_sample_missing')
+  }
+  const route = routes.routes.find((candidate) => candidate?.routeName === expected.routeName
+    && candidate?.routeUid === expected.routeUid)
+  if (!route) throw new ReleaseSmokeError('route_sample_missing')
+  return Object.freeze({ routeName: route.routeName, routeUid: route.routeUid })
+}
+
+export function validateRouteContract(value, city, route) {
+  const variant = Array.isArray(value?.variants)
+    ? value.variants.find((candidate) => candidate?.routeUid === route?.routeUid
+      && typeof candidate?.variantKey === 'string' && candidate.variantKey.length > 0
+      && Array.isArray(candidate?.stops?.features)
+      && candidate.stops.features.length >= 2
+      && candidate.stops.features.every((feature) => typeof feature?.properties?.stopUid === 'string'
+        && feature.properties.stopUid.length > 0))
+    : undefined
+  if (value?.schemaVersion !== 1
+    || value?.city !== city
+    || value?.routeName !== route?.routeName
+    || value?.source !== 'snapshot'
+    || !variant) {
+    throw new ReleaseSmokeError('route_contract_invalid')
+  }
+  return variant
 }
 
 export function validateArrivalsContract(value, city, snapshotVersion) {
