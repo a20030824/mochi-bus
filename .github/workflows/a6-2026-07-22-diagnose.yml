@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Read bounded A6 durable evidence
+      - name: Read previous snapshot D1 counts
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -33,11 +33,5 @@ jobs:
               | jq -e -c '.result[0].results'
           }
 
-          cities="'Tainan','MiaoliCounty','NantouCounty','PenghuCounty','KinmenCounty','LienchiangCounty'"
-          echo "ACTIVE_PROBES=$(query "SELECT city_code,window_id,active_probe_result,probe_failure_class,rollback_available,active_version,previous_version,hard_checks_passed,diagnostic_warnings,active_probe_at FROM snapshot_active_probes WHERE city_code IN ($cities) AND window_id LIKE '%:2026-07-22:0317' ORDER BY city_code;")"
-          echo "WINDOWS=$(query "SELECT city_code,window_id,result,active_version,previous_version,failure_class,last_source_check_at,last_published_at,completed_at FROM snapshot_windows WHERE city_code IN ($cities) AND window_id LIKE '%:2026-07-22:0317' ORDER BY city_code;")"
-          echo "D1_ACTIVE=$(query "SELECT city_code,active_version,imported_at FROM dataset_versions WHERE city_code IN ($cities) ORDER BY city_code;")"
-          echo "WATCHDOG=$(query "SELECT city_code,status,active_version,window_result,probe_result,rollback_available,diagnostic_class,source_record_version,active_probe_at FROM snapshot_watchdog_city_results WHERE schedule_date='2026-07-22' AND city_code IN ($cities) ORDER BY city_code;")"
-
           previous_targets="WITH targets(city_code,version) AS (VALUES ('KinmenCounty','20260714T203914746Z'),('LienchiangCounty','20260714T204009205Z'),('MiaoliCounty','20260714T203553785Z'),('NantouCounty','20260714T203709933Z'),('PenghuCounty','20260714T203833123Z'),('Tainan','20260719T215940346Z'))"
-          echo "PREVIOUS_D1_COUNTS=$(query "$previous_targets SELECT t.city_code,t.version,(SELECT COUNT(*) FROM routes r WHERE r.city_code=t.city_code AND r.version=t.version) AS routes,(SELECT COUNT(*) FROM patterns p WHERE p.city_code=t.city_code AND p.version=t.version) AS patterns,(SELECT COUNT(*) FROM stops s WHERE s.city_code=t.city_code AND s.version=t.version) AS stops,(SELECT COUNT(*) FROM stop_places sp WHERE sp.city_code=t.city_code AND sp.version=t.version) AS places,(SELECT COUNT(*) FROM pattern_stops ps JOIN patterns p ON p.version=ps.version AND p.pattern_id=ps.pattern_id WHERE p.city_code=t.city_code AND ps.version=t.version) AS pattern_stops,(SELECT COUNT(*) FROM routes r WHERE r.city_code=t.city_code AND r.version=t.version AND NOT EXISTS (SELECT 1 FROM patterns p WHERE p.version=r.version AND p.city_code=r.city_code AND p.route_uid=r.route_uid)) AS route_without_pattern FROM targets t ORDER BY t.city_code;")"
+          query "$previous_targets SELECT t.city_code,t.version,(SELECT COUNT(*) FROM routes r WHERE r.city_code=t.city_code AND r.version=t.version) AS routes,(SELECT COUNT(*) FROM patterns p WHERE p.city_code=t.city_code AND p.version=t.version) AS patterns,(SELECT COUNT(*) FROM stops s WHERE s.city_code=t.city_code AND s.version=t.version) AS stops,(SELECT COUNT(*) FROM stop_places sp WHERE sp.city_code=t.city_code AND sp.version=t.version) AS places,(SELECT COUNT(*) FROM pattern_stops ps JOIN patterns p ON p.version=ps.version AND p.pattern_id=ps.pattern_id WHERE p.city_code=t.city_code AND ps.version=t.version) AS pattern_stops,(SELECT COUNT(*) FROM routes r WHERE r.city_code=t.city_code AND r.version=t.version AND NOT EXISTS (SELECT 1 FROM patterns p WHERE p.version=r.version AND p.city_code=r.city_code AND p.route_uid=r.route_uid)) AS route_without_pattern FROM targets t ORDER BY t.city_code;"
