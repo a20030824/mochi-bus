@@ -179,6 +179,15 @@ const DEFAULT_OPTIONS: ResolvedOptions = {
   circularShapeMaxGapMeters: 500,
 }
 
+const NUMERIC_OPTION_NAMES = [
+  'ambiguityAbsoluteMeters',
+  'ambiguityRelativeRatio',
+  'maxMeanStopDistanceMeters',
+  'maxStopDistanceMeters',
+  'maxEndpointDistanceMeters',
+  'circularShapeMaxGapMeters',
+] as const satisfies readonly (keyof ResolvedOptions)[]
+
 const FLOATING_COST_EPSILON_FACTOR = 64
 const NUMERIC_METERS_EPSILON = 1e-9
 const STOP_DISTANCE_MAX_WEIGHT = 0.25
@@ -194,7 +203,8 @@ export function matchShapesToPatterns(
   shapes: readonly RouteShapeCandidate[],
   matcherOptions: ShapePatternMatcherOptions = {},
 ): ShapePatternMatchResult {
-  const options = { ...DEFAULT_OPTIONS, ...matcherOptions }
+  const options: ResolvedOptions = { ...DEFAULT_OPTIONS, ...matcherOptions }
+  validateResolvedOptions(options)
   const duplicatePatternIds = duplicateIds(patterns.map((pattern) => pattern.patternId))
   const duplicateShapeIds = duplicateIds(shapes.map((shape) => shape.shapeId))
   const unresolved: UnresolvedShapePattern[] = []
@@ -375,6 +385,17 @@ export function matchShapesToPatterns(
       .filter((shape) => !matchedShapeIds.has(shape.shapeId))
       .map((shape) => shape.shapeId)
       .sort(),
+  }
+}
+
+function validateResolvedOptions(options: ResolvedOptions): void {
+  for (const optionName of NUMERIC_OPTION_NAMES) {
+    const value = options[optionName]
+    if (!Number.isFinite(value) || value < 0) {
+      throw new RangeError(
+        `ShapePatternMatcher option "${optionName}" must be a finite non-negative number.`,
+      )
+    }
   }
 }
 
@@ -1183,6 +1204,7 @@ function candidateShapeIds(pairs: ScoredPair[]): string[] {
 }
 
 function floatingCostEpsilon(value: number): number {
+  if (!Number.isFinite(value)) return 0
   return Math.max(
     NUMERIC_METERS_EPSILON,
     Number.EPSILON * FLOATING_COST_EPSILON_FACTOR * Math.max(1, Math.abs(value)),
@@ -1191,11 +1213,15 @@ function floatingCostEpsilon(value: number): number {
 
 /** Inclusive threshold comparison with only machine-scale floating tolerance. */
 function atOrBelowFloatingThreshold(value: number, limit: number): boolean {
+  if (!Number.isFinite(value) || !Number.isFinite(limit)) return false
   return value <= limit + floatingCostEpsilon(limit)
 }
 
 function compareFloating(a: number, b: number): number {
   if (a === b) return 0
+  if (Number.isNaN(a)) return 1
+  if (Number.isNaN(b)) return -1
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return a < b ? -1 : 1
   const epsilon = floatingCostEpsilon(Math.max(Math.abs(a), Math.abs(b)))
   if (Math.abs(a - b) <= epsilon) return 0
   return a < b ? -1 : 1
