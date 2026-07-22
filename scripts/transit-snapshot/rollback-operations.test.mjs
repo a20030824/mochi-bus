@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { executeReconcile, executeRollback } from './rollback-operations.mjs'
+import { executeReconcile, executeRollback, safeOperationDiagnostic } from './rollback-operations.mjs'
 
 const manifest = {
   schemaVersion: 2, city: 'Taipei', version: 'v1', contentHash: 'hash-v1',
@@ -38,15 +38,22 @@ function validated(version) {
 
 function rollbackHarness(overrides = {}) {
   const calls = []
+  let activeVersion = 'v2'
   const state = { schemaVersion: 2, version: 'v2', previousVersion: 'v1' }
+  const transition = vi.fn(async ({ expectedVersion, targetVersion }) => {
+    calls.push(`transition:${expectedVersion}->${targetVersion}`)
+    if (activeVersion !== expectedVersion) return false
+    activeVersion = targetVersion
+    return true
+  })
   return {
     calls,
     options: {
       city: 'Taipei',
-      readAuthority: vi.fn(async () => ({ activeVersion: 'v2', importedAt: '2026-07-21T00:00:00.000Z' })),
+      readAuthority: vi.fn(async () => ({ activeVersion, importedAt: '2026-07-21T00:00:00.000Z' })),
       readState: vi.fn(async () => state),
       validateVersion: vi.fn(async (version) => validated(version)),
-      transition: vi.fn(async ({ expectedVersion, targetVersion }) => { calls.push(`transition:${expectedVersion}->${targetVersion}`); return true }),
+      transition,
       smoke: vi.fn(async ({ version }) => { calls.push(`smoke:${version}`) }),
       writeState: vi.fn(async (value) => { calls.push(`write:${value.version}`) }),
       now: () => new Date('2026-07-22T00:00:00.000Z'),
@@ -171,5 +178,27 @@ describe('executeReconcile', () => {
   it('classifies a reconcile state write failure without raw details', async () => {
     const options = reconcileHarness({ explicitPrevious: 'v1', writeState: vi.fn(async () => { throw new Error('token=secret') }) })
     await expect(executeReconcile(options)).rejects.toMatchObject({ code: 'reconcile_failed' })
+  })
+})
+
+describe('safeOperationDiagnostic', () => {
+  it('emits only bounded allowlisted fields', () => {
+    const raw = Object.assign(new Error('https://secret.example/?token=abc'), {
+      stack: 'token=abc',
+      code: 'restore_failed',
+      activeVersion: 'v2',
+      previousVersion: 'v1',
+    })
+    const diagnostic = safeOperationDiagnostic(raw, 'rollback', 'Taipei')
+    expect(diagnostic).toEqual({
+      event: 'snapshot_authority_operation',
+      operation: 'rollback',
+      city: 'Taipei',
+      outcome: 'restore_failed',
+      activeVersion: 'v2',
+      previousVersion: 'v1',
+      targetVersion: null,
+    })
+    expect(JSON.stringify(diagnostic)).not.toMatch(/secret|token|https|stack/)
   })
 })
