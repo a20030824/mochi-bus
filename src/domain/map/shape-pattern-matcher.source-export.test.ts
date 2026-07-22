@@ -16,5 +16,6 @@ describe('temporary matcher source export', () => {
   it('emits deterministic source chunks for connector-safe patching', () => {
     emitBase64Chunks('implementation', 'src/domain/map/shape-pattern-matcher.ts')
     emitBase64Chunks('review2', 'src/domain/map/shape-pattern-matcher.review2.test.ts')
+    emitBase64Chunks('review3', 'src/domain/map/shape-pattern-matcher.review3.test.ts')
   })
 })
