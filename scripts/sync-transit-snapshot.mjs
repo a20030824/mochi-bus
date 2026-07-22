@@ -528,7 +528,7 @@ try {
     },
     rollback: async (targetVersion, rejectedVersion) => {
       console.log(JSON.stringify(snapshotProgressMarker(CITY, 'rollback', { lastSourceCheckAt, previousVersion })))
-      const restored = guardedActivateSnapshot(rejectedVersion, targetVersion, new Date().toISOString())
+      const restored = guardedActivateSnapshot(rejectedVersion, targetVersion, new Date().toISOString(), false)
       if (!restored) return false
       console.error(JSON.stringify({ city: CITY, version, phase: 'rollback', restoredVersion: targetVersion }))
       // Rollback 成功後,terminal failure 的根因仍是 smoke,不是把恢復動作誤報成失敗原因。
@@ -976,9 +976,12 @@ function queryExistingSnapshots() {
     active: payload[3]?.results ?? [],
   }
 }
-function guardedActivateSnapshot(expectedVersion, targetVersion, changedAt) {
+function guardedActivateSnapshot(expectedVersion, targetVersion, changedAt, updateSource = true) {
+  const assignments = updateSource
+    ? `active_version=${sqlValue(targetVersion)}, source_updated_at=${sqlValue(changedAt)}, imported_at=${sqlValue(changedAt)}`
+    : `active_version=${sqlValue(targetVersion)}, imported_at=${sqlValue(changedAt)}`
   const statement = expectedVersion
-    ? `UPDATE dataset_versions SET active_version=${sqlValue(targetVersion)}, source_updated_at=${sqlValue(changedAt)}, imported_at=${sqlValue(changedAt)} WHERE city_code=${sqlValue(CITY)} AND active_version=${sqlValue(expectedVersion)} RETURNING active_version`
+    ? `UPDATE dataset_versions SET ${assignments} WHERE city_code=${sqlValue(CITY)} AND active_version=${sqlValue(expectedVersion)} RETURNING active_version`
     : `INSERT INTO dataset_versions(city_code, active_version, source_updated_at, imported_at) VALUES (${values(CITY, targetVersion, changedAt, changedAt)}) ON CONFLICT(city_code) DO NOTHING RETURNING active_version`
   const result = queryRemoteD1(statement)
   return result[0]?.results?.[0]?.active_version === targetVersion

@@ -200,5 +200,6 @@ describe('safeOperationDiagnostic', () => {
       targetVersion: null,
     })
     expect(JSON.stringify(diagnostic)).not.toMatch(/secret|token|https|stack/)
+    expect(safeOperationDiagnostic(new Error('raw secret'), 'rollback', 'Taipei').outcome).toBe('unknown')
   })
 })

@@ -21,13 +21,14 @@ const OPERATION_CODES = new Set([
   'state_write_failed_reconcile_required',
   'reconcile_previous_required',
   'reconcile_failed',
+  'unknown',
 ])
 
 export class SnapshotOperationError extends Error {
   constructor(code, fields = {}) {
     super('Snapshot operation failed')
     this.name = 'SnapshotOperationError'
-    this.code = OPERATION_CODES.has(code) ? code : 'reconcile_failed'
+    this.code = OPERATION_CODES.has(code) ? code : 'unknown'
     this.city = safeField(fields.city)
     this.activeVersion = safeVersionField(fields.activeVersion)
     this.previousVersion = safeVersionField(fields.previousVersion)
@@ -148,7 +149,7 @@ export async function executeReconcile(options) {
 
 export function safeOperationDiagnostic(error, operation, city) {
   const code = error instanceof SnapshotOperationError || OPERATION_CODES.has(error?.code)
-    ? error.code : 'reconcile_failed'
+    ? error.code : 'unknown'
   return Object.freeze({
     event: 'snapshot_authority_operation',
     operation: operation === 'rollback' ? 'rollback' : 'reconcile',
