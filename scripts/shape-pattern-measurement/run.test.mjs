@@ -2,16 +2,14 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  cleanupOwnedGeneratedChild, createOwnedGeneratedChild, runMeasurement,
-} from './run.mjs'
+import { cleanupOwnedGeneratedChild, createOwnedGeneratedChild, runMeasurement } from './run.mjs'
 
 const roots = []
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-async function workspace() {
+async function makeWorkspace() {
   const root = await mkdtemp(join(tmpdir(), 'shape-measure-run-'))
   roots.push(root)
   const generatedRoot = join(root, 'generated')
@@ -69,7 +67,7 @@ async function expectPersistentSentinels(workspace) {
 
 describe('per-run generated cleanup ownership', () => {
   it('deletes only the child created by this run', async () => {
-    const workspace = await workspace()
+    const workspace = await makeWorkspace()
     const ownership = await createOwnedGeneratedChild(workspace.generatedRoot)
     await writeFile(join(ownership.child, 'generated.mjs'), 'temporary')
     await cleanupOwnedGeneratedChild(ownership, workspace)
@@ -77,7 +75,7 @@ describe('per-run generated cleanup ownership', () => {
   })
 
   it('fails closed if the ownership marker was changed', async () => {
-    const workspace = await workspace()
+    const workspace = await makeWorkspace()
     const ownership = await createOwnedGeneratedChild(workspace.generatedRoot)
     await writeFile(ownership.marker, 'forged\n')
     await expect(cleanupOwnedGeneratedChild(ownership, workspace)).rejects.toThrow(/ownership marker/)
@@ -85,7 +83,7 @@ describe('per-run generated cleanup ownership', () => {
   })
 
   it.each(['matcher', 'collector', 'report'])('cleans its child after %s failure without deleting raw, reports, or unrelated files', async (failureClass) => {
-    const workspace = await workspace()
+    const workspace = await makeWorkspace()
     const publish = vi.fn(async () => { throw new Error('report failure') })
     const create = vi.fn(async () => {
       if (failureClass === 'report') return { metadata: { runId: 'fake' } }
@@ -104,7 +102,7 @@ describe('per-run generated cleanup ownership', () => {
   })
 
   it('also cleans the child after a successful run', async () => {
-    const workspace = await workspace()
+    const workspace = await makeWorkspace()
     const result = await runMeasurement(options(workspace), {
       replayRawBundle: async () => source,
       createMeasurementReport: async () => ({ metadata: { runId: 'fake' } }),
