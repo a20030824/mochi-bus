@@ -71,6 +71,29 @@ describe('executeRollback', () => {
     expect(options.validateVersion).toHaveBeenCalledWith('v1')
   })
 
+  it('supports consecutive rollback by swapping active and previous', async () => {
+    let activeVersion = 'v2'
+    let state = { schemaVersion: 2, version: 'v2', previousVersion: 'v1' }
+    const options = {
+      city: 'Taipei',
+      readAuthority: vi.fn(async () => ({ activeVersion, importedAt: '2026-07-21T00:00:00.000Z' })),
+      readState: vi.fn(async () => state),
+      validateVersion: vi.fn(async (version) => validated(version)),
+      transition: vi.fn(async ({ expectedVersion, targetVersion }) => {
+        if (activeVersion !== expectedVersion) return false
+        activeVersion = targetVersion
+        return true
+      }),
+      smoke: vi.fn(async () => undefined),
+      writeState: vi.fn(async (value) => { state = value }),
+      now: () => new Date('2026-07-22T00:00:00.000Z'),
+    }
+    await expect(executeRollback(options)).resolves.toMatchObject({ activeVersion: 'v1', previousVersion: 'v2' })
+    await expect(executeRollback(options)).resolves.toMatchObject({ activeVersion: 'v2', previousVersion: 'v1' })
+    expect(options.transition).toHaveBeenCalledTimes(2)
+    expect(state).toMatchObject({ version: 'v2', previousVersion: 'v1' })
+  })
+
   it('fails before mutation when D1 and R2 authority diverge', async () => {
     const { options } = rollbackHarness({ readState: vi.fn(async () => ({ schemaVersion: 2, version: 'v0', previousVersion: 'v1' })) })
     await expect(executeRollback(options)).rejects.toMatchObject({ code: 'authority_mismatch' })
@@ -161,6 +184,15 @@ describe('executeReconcile', () => {
     const options = reconcileHarness({ readState: vi.fn(async () => ({ schemaVersion: 2, version: 'v0', previousVersion: 'v9' })) })
     await expect(executeReconcile(options)).rejects.toMatchObject({ code: 'reconcile_previous_required' })
     expect(options.validateVersion).not.toHaveBeenCalled()
+  })
+
+  it('does not write when D1 authority changes after validation', async () => {
+    const readAuthority = vi.fn()
+      .mockResolvedValueOnce({ activeVersion: 'v2', importedAt: '2026-07-21T00:00:00.000Z' })
+      .mockResolvedValueOnce({ activeVersion: 'v3', importedAt: '2026-07-22T00:00:00.000Z' })
+    const options = reconcileHarness({ explicitPrevious: 'v1', readAuthority })
+    await expect(executeReconcile(options)).rejects.toMatchObject({ code: 'authority_mismatch' })
+    expect(options.writeState).not.toHaveBeenCalled()
   })
 
   it('is idempotent and skips an identical state write', async () => {
