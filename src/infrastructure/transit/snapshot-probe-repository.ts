@@ -78,7 +78,7 @@ export async function getPinnedSnapshotRouteVariants(
   `).bind(version, city, routeName).all<PatternRow>()
   if (!patterns.results.length) return []
 
-  return (await Promise.all(patterns.results.map(async (pattern) => {
+  const variants = await Promise.all(patterns.results.map(async (pattern): Promise<RouteMapVariant | null> => {
     const [stops, shapeObject] = await Promise.all([
       env.TRANSIT_DB.prepare(`
         SELECT s.stop_uid, s.stop_name, ps.stop_sequence, s.latitude, s.longitude
@@ -95,7 +95,7 @@ export async function getPinnedSnapshotRouteVariants(
       variantKey: pattern.pattern_id,
       routeName: pattern.route_name,
       routeUid: pattern.route_uid,
-      subRouteUid: pattern.subroute_uid ?? undefined,
+      ...(pattern.subroute_uid ? { subRouteUid: pattern.subroute_uid } : {}),
       direction: pattern.direction,
       label: `${pattern.departure_name} → ${pattern.destination_name}`,
       subRouteName: pattern.subroute_name,
@@ -116,8 +116,9 @@ export async function getPinnedSnapshotRouteVariants(
         })),
       },
       updatedAt: pattern.updated_at,
-    } satisfies RouteMapVariant
-  }))).filter((variant): variant is RouteMapVariant => variant !== null)
+    }
+  }))
+  return variants.filter((variant): variant is RouteMapVariant => variant !== null)
 }
 
 export async function getPinnedStopPlaceBundle(
