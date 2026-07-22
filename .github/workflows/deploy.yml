@@ -17,7 +17,7 @@ jobs:
   deploy:
     name: Deploy production
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -37,3 +37,22 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Install Chromium for post-deploy smoke
+        run: npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Run true post-deploy release smoke
+        run: npm run release:smoke
+        env:
+          EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SMOKE_ORIGIN: https://bus.moc96336.com
+          RELEASE_SMOKE_PROPAGATION_MS: '300000'
+          RELEASE_SMOKE_POLL_MS: '10000'
+          RELEASE_SMOKE_OBSERVATION_MS: '600000'
+          RELEASE_SMOKE_OBSERVATION_POLL_MS: '60000'
+      - name: Upload post-deploy smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-release-smoke
+          path: release-smoke-report.json
+          if-no-files-found: error
+          retention-days: 14
