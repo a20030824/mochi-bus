@@ -31,6 +31,7 @@ const bundle = (stopOfRoute = [pattern()], shapes = [shape()]) => ({
 function rejectionReasons(result, kind) {
   return result.rejected.filter((entry) => entry.kind === kind).map((entry) => entry.reason)
 }
+function allPatterns(result) { return result.partitions.flatMap((entry) => entry.patterns) }
 
 describe('strict raw TDX candidate boundary', () => {
   it.each([null, undefined, '', '0', '1', '2', false, true, NaN, Infinity, -1, 3, 0.5])(
@@ -85,8 +86,10 @@ describe('strict raw TDX candidate boundary', () => {
     [[{ ...stop(1, 1, 1), StopSequence: -1 }, stop(2, 2, 2)], 'non-positive-stop-sequence'],
   ])('fails closed when StopSequence cannot form a trusted total order', (Stops, reason) => {
     const result = buildCandidatePartitions(bundle([pattern({ Stops })]))
-    expect(result.partitions).toEqual([])
+    expect(allPatterns(result)).toEqual([])
+    expect(result.partitions.flatMap((entry) => entry.shapes)).toHaveLength(1)
     expect(rejectionReasons(result, 'pattern')).toEqual([reason])
+    expect(result.rejectionCounts[`pattern:${reason}`]).toBe(1)
   })
 
   it('is deterministic across source/record/stop permutations and does not mutate frozen input', () => {
@@ -106,10 +109,14 @@ describe('strict raw TDX candidate boundary', () => {
     for (const RouteUID of [undefined, null, '']) {
       const item = pattern({ RouteUID })
       if (RouteUID === undefined) delete item.RouteUID
-      expect(buildCandidatePartitions(bundle([item])).partitions).toEqual([])
+      const result = buildCandidatePartitions(bundle([item]))
+      expect(allPatterns(result)).toEqual([])
+      expect(rejectionReasons(result, 'pattern')).toHaveLength(1)
     }
-    expect(buildCandidatePartitions(bundle([pattern({ SubRouteUID: null })])).partitions).toHaveLength(1)
-    expect(buildCandidatePartitions(bundle([pattern({ SubRouteUID: '' })])).partitions).toEqual([])
+    expect(buildCandidatePartitions(bundle([pattern({ SubRouteUID: null })])).partitions[0].patterns).toHaveLength(1)
+    const empty = buildCandidatePartitions(bundle([pattern({ SubRouteUID: '' })]))
+    expect(allPatterns(empty)).toEqual([])
+    expect(rejectionReasons(empty, 'pattern')).toEqual(['invalid-sub-route-uid'])
   })
 
   it('rejects the whole direct Shape when any point is invalid', () => {
