@@ -50,6 +50,8 @@ describe('snapshot rollback authority', () => {
       .toThrowError(expect.objectContaining({ code: 'active_pointer_invalid' }))
     expect(() => resolveRollbackAuthority({ city: 'Taipei', state: null, d1ActiveVersion: 'v1' }))
       .toThrowError(expect.objectContaining({ code: 'state_invalid' }))
+    expect(() => resolveRollbackAuthority({ city: 'Taipei', state: { schemaVersion: 1, version: 'v1' }, d1ActiveVersion: 'v1' }))
+      .toThrowError(expect.objectContaining({ code: 'state_invalid' }))
     expect(() => resolveRollbackAuthority({ city: 'Taipei', state: { schemaVersion: 2, version: 'v0' }, d1ActiveVersion: 'v1' }))
       .toThrowError(expect.objectContaining({ code: 'authority_mismatch' }))
   })
