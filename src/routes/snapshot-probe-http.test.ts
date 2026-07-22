@@ -6,13 +6,14 @@ import { readPlaceArrivals } from './map-place-arrivals'
 import { readRouteCatalog } from './map-route-catalog'
 import { readRouteMap } from './map-route-reads'
 
-const candidateVersion = '20260722T101519183Z'
+const candidateVersion = '20260722T111540779Z'
 const previousVersion = '20260720T204419330Z'
 const windowId = 'v1:Hsinchu:2026-07-22:manual'
 
 const probeRepository = vi.hoisted(() => ({
   getAuthoritativeActiveSnapshotVersion: vi.fn(),
   getPinnedSnapshotRouteCatalog: vi.fn(),
+  getPinnedSnapshotRouteVariant: vi.fn(),
   getPinnedSnapshotRouteVariants: vi.fn(),
   getPinnedStopPlaceBundle: vi.fn(),
 }))
@@ -138,6 +139,10 @@ function pinned(path: string) {
   return `${path}${separator}snapshot=${candidateVersion}&probe=${encodeURIComponent(windowId)}`
 }
 
+function exactRoute(path = '/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80') {
+  return pinned(`${path}&routeUid=HSZ000701&patternId=${encodeURIComponent('HSZ000701:0:0')}`)
+}
+
 describe('snapshot-pinned public reads', () => {
   beforeEach(() => {
     Object.values(probeRepository).forEach((mock) => mock.mockReset())
@@ -148,6 +153,7 @@ describe('snapshot-pinned public reads', () => {
     Object.values(edge).forEach((mock) => mock.mockReset())
     probeRepository.getAuthoritativeActiveSnapshotVersion.mockResolvedValue(candidateVersion)
     probeRepository.getPinnedSnapshotRouteCatalog.mockResolvedValue([routeCatalogItem])
+    probeRepository.getPinnedSnapshotRouteVariant.mockResolvedValue(variant)
     probeRepository.getPinnedSnapshotRouteVariants.mockResolvedValue([variant])
     probeRepository.getPinnedStopPlaceBundle.mockResolvedValue(bundle)
     tdx.tdxCredentialScope.mockResolvedValue('shared-scope')
@@ -181,19 +187,87 @@ describe('snapshot-pinned public reads', () => {
     expect(tdx.getRouteCatalog).not.toHaveBeenCalled()
   })
 
-  it('serves route detail with exact snapshot evidence and never falls back to TDX', async () => {
-    const response = await request(pinned('/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80'))
+  it('serves only the exact route UID and pattern requested by the active probe', async () => {
+    const response = await request(exactRoute())
 
     expect(response.status).toBe(200)
     expect(response.headers.get('Cache-Control')).toBe('no-store')
     await expect(response.json()).resolves.toMatchObject({
       source: 'snapshot', snapshotVersion: candidateVersion,
-      variants: [{ variantKey: 'HSZ000701:0:0' }],
+      variants: [{ variantKey: 'HSZ000701:0:0', routeUid: 'HSZ000701' }],
     })
-    expect(probeRepository.getPinnedSnapshotRouteVariants)
-      .toHaveBeenCalledWith(bindings, 'Hsinchu', '藍1區', candidateVersion)
+    expect(probeRepository.getPinnedSnapshotRouteVariant)
+      .toHaveBeenCalledWith(bindings, 'Hsinchu', 'HSZ000701', 'HSZ000701:0:0', candidateVersion)
+    expect(probeRepository.getPinnedSnapshotRouteVariants).not.toHaveBeenCalled()
     expect(repository.getSnapshotRouteVariants).not.toHaveBeenCalled()
     expect(tdxMap.getRouteMapVariants).not.toHaveBeenCalled()
+  })
+
+  it('keeps snapshot-only publisher smoke on the grouped route-name path', async () => {
+    const response = await request(
+      `/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80&snapshot=${candidateVersion}`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(probeRepository.getPinnedSnapshotRouteVariants)
+      .toHaveBeenCalledWith(bindings, 'Hsinchu', '藍1區', candidateVersion)
+    expect(probeRepository.getPinnedSnapshotRouteVariant).not.toHaveBeenCalled()
+    expect(tdxMap.getRouteMapVariants).not.toHaveBeenCalled()
+  })
+
+  it('does not let another same-name RouteUID contaminate an exact healthy sample', async () => {
+    const unrelated: RouteMapVariant = { ...variant, routeUid: 'HSZ_OTHER', variantKey: 'HSZ_OTHER:0:0' }
+    probeRepository.getPinnedSnapshotRouteVariants.mockResolvedValue([variant, unrelated])
+
+    const response = await request(exactRoute())
+
+    expect(response.status).toBe(200)
+    const body = await response.json() as { variants: RouteMapVariant[] }
+    expect(body.variants).toEqual([variant])
+    expect(probeRepository.getPinnedSnapshotRouteVariants).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when route UID and pattern ID do not resolve to the requested route', async () => {
+    probeRepository.getPinnedSnapshotRouteVariant.mockResolvedValue(null)
+
+    const response = await request(exactRoute())
+
+    expect(response.status).toBe(404)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(repository.getSnapshotRouteVariants).not.toHaveBeenCalled()
+    expect(tdxMap.getRouteMapVariants).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when exact identity resolves to a different route name', async () => {
+    probeRepository.getPinnedSnapshotRouteVariant.mockResolvedValue({ ...variant, routeName: '另一條路線' })
+
+    const response = await request(exactRoute())
+
+    expect(response.status).toBe(404)
+    expect(tdxMap.getRouteMapVariants).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    '/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80&routeUid=HSZ000701',
+    '/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80&patternId=HSZ000701%3A0%3A0',
+    '/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80&routeUid=bad%20uid&patternId=HSZ000701%3A0%3A0',
+  ])('rejects incomplete or invalid exact identity before data access', async (path) => {
+    const response = await request(pinned(path))
+
+    expect(response.status).toBe(400)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(probeRepository.getPinnedSnapshotRouteVariant).not.toHaveBeenCalled()
+    expect(probeRepository.getPinnedSnapshotRouteVariants).not.toHaveBeenCalled()
+  })
+
+  it('does not expose exact identity selectors without a validated probe window', async () => {
+    const response = await request(
+      `/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80&routeUid=HSZ000701&patternId=HSZ000701%3A0%3A0&snapshot=${candidateVersion}`,
+    )
+
+    expect(response.status).toBe(400)
+    expect(probeRepository.getPinnedSnapshotRouteVariant).not.toHaveBeenCalled()
   })
 
   it('serves the requested place bundle without realtime, fallback objects, or shared caches', async () => {
@@ -220,13 +294,14 @@ describe('snapshot-pinned public reads', () => {
   it('fails closed before data access when the requested version is not D1 active', async () => {
     probeRepository.getAuthoritativeActiveSnapshotVersion.mockResolvedValue(previousVersion)
 
-    const response = await request(pinned('/api/v1/map/route?city=Hsinchu&route=%E8%97%8D1%E5%8D%80'))
+    const response = await request(exactRoute())
 
     expect(response.status).toBe(400)
     expect(response.headers.get('Cache-Control')).toBe('no-store')
     await expect(response.json()).resolves.toEqual({
       error: '指定快照目前不可用', code: 'INVALID_QUERY',
     })
+    expect(probeRepository.getPinnedSnapshotRouteVariant).not.toHaveBeenCalled()
     expect(probeRepository.getPinnedSnapshotRouteVariants).not.toHaveBeenCalled()
     expect(repository.getSnapshotRouteVariants).not.toHaveBeenCalled()
     expect(tdxMap.getRouteMapVariants).not.toHaveBeenCalled()

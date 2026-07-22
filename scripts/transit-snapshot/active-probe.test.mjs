@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   artifactHeadMatches,
+  classifyProbeRequestFailure,
   createSnapshotProbeDiagnostic,
   deterministicSampleCaseId,
   deterministicSampleIndex,
   networkPrefixMatches,
   probeActiveSnapshot,
+  readBoundedResponseJson,
   readBoundedResponseText,
 } from './active-probe.mjs'
 
@@ -74,11 +76,15 @@ function fixture(overrides = {}) {
       }
       if (path.includes('/map/route?')) return {
         schemaVersion: 1, source: 'snapshot', snapshotVersion: activeVersion,
-        variants: [{ variantKey: sample.pattern_id, stops: { features: [{}, {}] } }],
+        variants: [{
+          variantKey: sample.pattern_id,
+          routeUid: sample.route_uid,
+          stops: { features: [{}, {}] },
+        }],
       }
       if (path.includes('/arrivals?')) return {
         schemaVersion: 1, scheduleSource: 'place-bundle', snapshotVersion: activeVersion,
-        routes: [{ variantKey: sample.pattern_id }],
+        routes: [{ variantKey: sample.pattern_id, routeUid: sample.route_uid }],
       }
       throw new Error('unexpected public path')
     }),
@@ -90,6 +96,7 @@ function fixture(overrides = {}) {
     query,
     r2,
     publicApi,
+    sample,
     diagnosticSink: vi.fn(),
     now: () => new Date('2026-07-19T19:29:00.000Z'),
     ...overrides,
@@ -114,6 +121,11 @@ describe('active snapshot probe', () => {
       expect(path).toContain(`snapshot=${activeVersion}`)
       expect(path).toContain(`probe=${encodeURIComponent(windowId)}`)
     }
+    const routePath = options.publicApi.getJson.mock.calls
+      .map(([path]) => path)
+      .find((path) => path.includes('/map/route?'))
+    expect(routePath).toContain(`routeUid=${encodeURIComponent(options.sample.route_uid)}`)
+    expect(routePath).toContain(`patternId=${encodeURIComponent(options.sample.pattern_id)}`)
     expect(options.diagnosticSink).not.toHaveBeenCalled()
   })
 
@@ -235,7 +247,9 @@ describe('active snapshot probe', () => {
     ['route_stops', (path, original) => path.includes('/map/route?')
       ? {
           schemaVersion: 1, source: 'snapshot', snapshotVersion: activeVersion,
-          variants: [{ variantKey: 'PATTERN_PRIVATE', stops: { features: [{}] } }],
+          variants: [{
+            variantKey: 'PATTERN_PRIVATE', routeUid: 'ROUTE_PRIVATE', stops: { features: [{}] },
+          }],
         }
       : original(path)],
   ])('keeps genuine route defects as route_sample_failed at %s', async (failureStage, response) => {
@@ -255,7 +269,7 @@ describe('active snapshot probe', () => {
   it.each([
     ['place_version', {
       schemaVersion: 1, scheduleSource: 'place-bundle', snapshotVersion: previousVersion,
-      routes: [{ variantKey: 'PATTERN_PRIVATE' }],
+      routes: [{ variantKey: 'PATTERN_PRIVATE', routeUid: 'ROUTE_PRIVATE' }],
     }],
     ['place_pattern', {
       schemaVersion: 1, scheduleSource: 'place-bundle', snapshotVersion: activeVersion,
@@ -274,6 +288,41 @@ describe('active snapshot probe', () => {
     expect(options.diagnosticSink).toHaveBeenCalledWith(expect.objectContaining({ failureStage }))
   })
 
+  it.each([
+    ['http_error', new Error('Public snapshot probe request failed')],
+    ['timeout', Object.assign(new Error('timed out'), { name: 'TimeoutError' })],
+    ['network_failure', new TypeError('fetch failed')],
+  ])('keeps request failure reason allowlisted as %s', async (requestFailureReason, requestError) => {
+    const options = fixture()
+    const original = options.publicApi.getJson
+    options.publicApi.getJson = vi.fn(async (path) => {
+      if (path.includes('/map/route?')) throw requestError
+      return original(path)
+    })
+
+    await expect(probeActiveSnapshot(options)).resolves.toMatchObject({
+      activeProbeResult: 'error', probeFailureClass: 'route_sample_failed', hardChecksPassed: 9,
+    })
+    expect(options.diagnosticSink).toHaveBeenCalledWith(expect.objectContaining({
+      failureStage: 'route_request', requestFailureReason,
+    }))
+  })
+
+  it('classifies body-limit, JSON parse, and stream failures without exposing content', async () => {
+    const oversized = new Response('x'.repeat(32), { headers: { 'Content-Length': '32' } })
+    const bodyLimit = await readBoundedResponseJson(oversized, 16).catch((error) => error)
+    expect(classifyProbeRequestFailure(bodyLimit)).toBe('body_limit')
+
+    const invalidJson = await readBoundedResponseJson(new Response('{invalid'), 64).catch((error) => error)
+    expect(classifyProbeRequestFailure(invalidJson)).toBe('json_parse')
+
+    const stream = new ReadableStream({
+      pull(controller) { controller.error(new Error('private stream detail')) },
+    })
+    const streamFailure = await readBoundedResponseJson(new Response(stream), 64).catch((error) => error)
+    expect(classifyProbeRequestFailure(streamFailure)).toBe('stream_failure')
+  })
+
   it('emits an allowlisted bounded diagnostic without raw sample identity or errors', () => {
     const diagnostic = createSnapshotProbeDiagnostic({
       city,
@@ -282,20 +331,28 @@ describe('active snapshot probe', () => {
       samplePatternId: 'PATTERN_PRIVATE',
       sampleRouteUid: 'ROUTE_PRIVATE',
       expectedSnapshotVersion: activeVersion,
-      observedSnapshotVersion: previousVersion,
+      observedSnapshotVersion: null,
       attempt: 1,
-      failureStage: 'route_version',
+      failureStage: 'route_request',
       failureClass: 'route_sample_failed',
+      requestFailureReason: 'http_error',
       error: new Error('Bearer private-token'),
       url: 'https://private.example/path',
     })
 
     expect(Object.keys(diagnostic).sort()).toEqual([
       'attempt', 'city', 'event', 'expectedSnapshotVersion', 'failureClass', 'failureStage',
-      'observedSnapshotVersion', 'sampleCaseId', 'samplePatternHash', 'sampleRouteHash', 'windowId',
+      'observedSnapshotVersion', 'requestFailureReason', 'sampleCaseId', 'samplePatternHash',
+      'sampleRouteHash', 'windowId',
     ].sort())
     const serialized = JSON.stringify(diagnostic)
     expect(serialized).not.toMatch(/PATTERN_PRIVATE|ROUTE_PRIVATE|private-token|https?:\/\/|stack|message/)
+    expect(() => createSnapshotProbeDiagnostic({
+      ...diagnostic,
+      samplePatternId: 'PATTERN_PRIVATE',
+      sampleRouteUid: 'ROUTE_PRIVATE',
+      requestFailureReason: 'raw_error_message',
+    })).toThrow('Invalid snapshot probe request failure reason')
   })
 
   it('validates the bounded network metadata prefix', () => {
@@ -323,7 +380,8 @@ describe('active snapshot probe', () => {
     })
     const response = new Response(body)
 
-    await expect(readBoundedResponseText(response, 65_536)).rejects.toThrow('Bounded response is too large')
+    const error = await readBoundedResponseText(response, 65_536).catch((caught) => caught)
+    expect(classifyProbeRequestFailure(error)).toBe('body_limit')
     expect(pulls).toBeLessThan(256)
     expect(cancelled).toBe(true)
   })

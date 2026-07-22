@@ -4,7 +4,10 @@ import { QueryValidationError } from '../domain/bus-query'
 import type { RouteMapVariant } from '../domain/map/map-model'
 import { buildRouteTimetable } from '../domain/map/timetable'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
-import { getPinnedSnapshotRouteVariants } from '../infrastructure/transit/snapshot-probe-repository'
+import {
+  getPinnedSnapshotRouteVariant,
+  getPinnedSnapshotRouteVariants,
+} from '../infrastructure/transit/snapshot-probe-repository'
 import {
   getSnapshotRouteVariants,
   getSnapshotSchedule,
@@ -17,7 +20,11 @@ import {
 } from '../lib/api-input'
 import { logProductionError } from '../observability/production-log'
 import { mapJsonError, tdxEnv, type MapEnv } from './map-http-context'
-import { requestedProbeSnapshotVersion } from './snapshot-probe-read'
+import {
+  requestedProbeRouteIdentity,
+  requestedProbeSnapshotVersion,
+  type RequestedProbeRouteIdentity,
+} from './snapshot-probe-read'
 
 type RouteVariantSource = 'snapshot' | 'tdx'
 
@@ -39,8 +46,22 @@ async function loadRouteVariants(
   city: string,
   routeName: string,
   requestedVersion?: string,
+  requestedIdentity?: RequestedProbeRouteIdentity,
 ): Promise<LoadedRouteVariants> {
   if (requestedVersion) {
+    if (requestedIdentity) {
+      const variant = await getPinnedSnapshotRouteVariant(
+        c.env,
+        city,
+        requestedIdentity.routeUid,
+        requestedIdentity.patternId,
+        requestedVersion,
+      )
+      return {
+        variants: variant?.routeName === routeName ? [variant] : [],
+        source: 'snapshot',
+      }
+    }
     return {
       variants: await getPinnedSnapshotRouteVariants(c.env, city, routeName, requestedVersion),
       source: 'snapshot',
@@ -73,7 +94,14 @@ export async function readRouteMap(c: Context<MapEnv>) {
     if (!routeName || routeName.length > 40) throw new QueryValidationError('請選擇有效路線')
 
     const requestedVersion = await requestedProbeSnapshotVersion(c, city)
-    const { variants, source } = await loadRouteVariants(c, city, routeName, requestedVersion)
+    const requestedIdentity = requestedProbeRouteIdentity(c, requestedVersion)
+    const { variants, source } = await loadRouteVariants(
+      c,
+      city,
+      routeName,
+      requestedVersion,
+      requestedIdentity,
+    )
     if (!variants.length) {
       return c.json({ error: '這條路線目前沒有可用的地圖線型' }, 404, {
         ...(requestedVersion ? { 'Cache-Control': 'no-store' } : {}),
