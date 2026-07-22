@@ -20,6 +20,22 @@ const complete = {
   networkVerified: true, sampleArtifactsVerified: true,
 }
 
+function validated(version) {
+  const prefix = `snapshots/${version}/cities/Taipei/`
+  return {
+    ...complete, version,
+    manifest: {
+      ...manifest, version,
+      artifacts: [
+        { key: `${prefix}network.json` },
+        { key: `${prefix}shapes/p1.json` },
+        { key: `${prefix}schedules/r1.json` },
+        { key: `${prefix}places/x1.json` },
+      ],
+    },
+  }
+}
+
 function rollbackHarness(overrides = {}) {
   const calls = []
   const state = { schemaVersion: 2, version: 'v2', previousVersion: 'v1' }
@@ -29,7 +45,7 @@ function rollbackHarness(overrides = {}) {
       city: 'Taipei',
       readAuthority: vi.fn(async () => ({ activeVersion: 'v2', importedAt: '2026-07-21T00:00:00.000Z' })),
       readState: vi.fn(async () => state),
-      validateVersion: vi.fn(async (version) => ({ ...complete, version, manifest: { ...manifest, version } })),
+      validateVersion: vi.fn(async (version) => validated(version)),
       transition: vi.fn(async ({ expectedVersion, targetVersion }) => { calls.push(`transition:${expectedVersion}->${targetVersion}`); return true }),
       smoke: vi.fn(async ({ version }) => { calls.push(`smoke:${version}`) }),
       writeState: vi.fn(async (value) => { calls.push(`write:${value.version}`) }),
@@ -109,7 +125,7 @@ describe('executeReconcile', () => {
       city: 'Taipei',
       readAuthority: vi.fn(async () => ({ activeVersion: 'v2', importedAt: '2026-07-21T00:00:00.000Z' })),
       readState: vi.fn(async () => current),
-      validateVersion: vi.fn(async (version) => ({ ...complete, version, manifest: { ...manifest, version } })),
+      validateVersion: vi.fn(async (version) => validated(version)),
       writeState: vi.fn(async () => undefined),
       ...overrides,
     }
