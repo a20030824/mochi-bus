@@ -215,7 +215,7 @@ function straightResult(
   const routeUid = `ROUTE-${mode}-${distanceMeters}-${coordinate === meters ? 'base' : 'equator'}`
   const routeShape = shape('LINE', routeUid, 0, [coordinate(0, 0), coordinate(0, 100)])
   const stops = mode === 'max'
-    ? [coordinate(0, 0), coordinate(distanceMeters, 100)]
+    ? [coordinate(0, 0), coordinate(distanceMeters, 0)]
     : [coordinate(distanceMeters, 0), coordinate(distanceMeters, 100)]
   return matchShapesToPatterns([pattern('PATTERN', routeUid, 0, stops)], [routeShape], options)
 }
@@ -327,15 +327,35 @@ describe('third-round Direction 2 closure policy', () => {
       [shape('SHAPE', routeUid, 2, coordinates)],
     )
     const match = result.matches[0]
-    const diagnostics = match?.metrics as (ShapePatternGeometryMetrics & {
-      closureGapDistanceMeters?: number | null
-    }) | null
+    const diagnostics: ShapePatternGeometryMetrics | null | undefined = match?.metrics
 
     assert.equal(match?.basis, 'geometry')
     assert.equal(match?.costMeters, 0)
     assert.equal(diagnostics?.closureGapDistanceMeters, 0)
     assert(Math.abs(diagnostics!.shapeLengthMeters - 2_800) < 0.2)
     assert(diagnostics!.matchedSpanMeters <= diagnostics!.shapeLengthMeters + 1e-6)
+  })
+
+  it('allows exactly one actual lap but rejects a traversal beyond one lap', () => {
+    const routeUid = 'ROUTE-ONE-LAP-BOUNDARY'
+    const coordinates = trulyClosedCoordinates()
+    const exactLap = matchShapesToPatterns(
+      [pattern('EXACT-LAP', routeUid, 2, coordinates)],
+      [shape('SHAPE', routeUid, 2, coordinates)],
+    )
+    const beyondLap = matchShapesToPatterns(
+      [pattern('BEYOND-LAP', routeUid, 2, [...coordinates, coordinates[1]])],
+      [shape('SHAPE', routeUid, 2, coordinates)],
+      { maxMeanStopDistanceMeters: 1, maxStopDistanceMeters: 1 },
+    )
+
+    assert.equal(exactLap.matches[0]?.basis, 'geometry')
+    assert(Math.abs(
+      exactLap.matches[0]!.metrics!.matchedSpanMeters
+      - exactLap.matches[0]!.metrics!.shapeLengthMeters,
+    ) < 0.001)
+    assert.equal(beyondLap.matches.length, 0)
+    assert.equal(beyondLap.unresolved[0]?.reason, 'no-compatible-shape')
   })
 
   it('fails closed for multiple truly closed geometry-only candidates', () => {
@@ -434,14 +454,14 @@ describe('third-round floating distance threshold policy', () => {
       maxStopDistanceMeters: 1_000,
       maxEndpointDistanceMeters: 2_000,
     }
-    const floatingDistance = approximateDistanceMeters(meters(0, 100), meters(1_000, 100))
+    const floatingDistance = approximateDistanceMeters(meters(0, 0), meters(1_000, 0))
     assert(floatingDistance > 1_000)
     assert(oracleAtOrBelowThreshold(floatingDistance, 1_000))
 
     assertMatched(straightResult(999.999, meters, 'max', options), true)
     assertMatched(straightResult(1_000, equatorMeters, 'max', options), true)
     assertMatched(straightResult(1_000, meters, 'max', options), true)
-    assertMatched(straightResult(1_000.001, meters, 'max', options), false)
+    assertMatched(straightResult(1_000.01, meters, 'max', options), false)
   })
 
   it('accepts mean-stop-distance exact boundaries but rejects a real excess', () => {
@@ -457,7 +477,7 @@ describe('third-round floating distance threshold policy', () => {
     assertMatched(straightResult(999.999, meters, 'mean', options), true)
     assertMatched(straightResult(1_000, equatorMeters, 'mean', options), true)
     assertMatched(straightResult(1_000, meters, 'mean', options), true)
-    assertMatched(straightResult(1_000.001, meters, 'mean', options), false)
+    assertMatched(straightResult(1_000.01, meters, 'mean', options), false)
   })
 
   it('accepts endpoint exact boundaries but rejects a real excess', () => {
@@ -473,7 +493,7 @@ describe('third-round floating distance threshold policy', () => {
     assertMatched(endpointResult(1_499.999, meters, options), true)
     assertMatched(endpointResult(1_500, equatorMeters, options), true)
     assertMatched(endpointResult(1_500, meters, options), true)
-    assertMatched(endpointResult(1_500.001, meters, options), false)
+    assertMatched(endpointResult(1_500.01, meters, options), false)
   })
 
   it('keeps Direction 0 and 1 behavior unchanged', () => {

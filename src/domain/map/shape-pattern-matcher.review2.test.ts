@@ -10,7 +10,9 @@ const BASE_LONGITUDE = 121
 const BASE_LATITUDE = 25
 const LONGITUDE_METERS = 111_320 * Math.cos(BASE_LATITUDE * Math.PI / 180)
 const LATITUDE_METERS = 110_574
-const EPSILON = 1e-8
+const ORDERING_EPSILON = 1e-8
+const ORACLE_FLOATING_EPSILON_FACTOR = 64
+const ORACLE_NUMERIC_METERS_EPSILON = 1e-9
 
 function meters(x: number, y: number): ShapePatternCoordinate {
   return [BASE_LONGITUDE + x / LONGITUDE_METERS, BASE_LATITUDE + y / LATITUDE_METERS]
@@ -59,6 +61,18 @@ function approximateDistanceMeters(a: ShapePatternCoordinate, b: ShapePatternCoo
   )
 }
 
+function oracleFloatingEpsilon(limit: number): number {
+  return Math.max(
+    ORACLE_NUMERIC_METERS_EPSILON,
+    Number.EPSILON * ORACLE_FLOATING_EPSILON_FACTOR * Math.max(1, Math.abs(limit)),
+  )
+}
+
+/** Independent policy: deliberately does not call the production threshold helper. */
+function oracleAtOrBelowThreshold(value: number, limit: number): boolean {
+  return value <= limit + oracleFloatingEpsilon(limit)
+}
+
 type OracleProjection = {
   segmentIndex: number
   segmentFraction: number
@@ -103,9 +117,19 @@ function exhaustivePairOracle(
     let maxSpanMeters: number | null = null
     if (patternCandidate.direction === 2) {
       if (coordinates.length < 4) continue
-      if (approximateDistanceMeters(coordinates[0], coordinates.at(-1)!) > 500) continue
+      const closureGapDistanceMeters = approximateDistanceMeters(
+        coordinates[0],
+        coordinates.at(-1)!,
+      )
+      if (!oracleAtOrBelowThreshold(closureGapDistanceMeters, 500)) continue
+      // Near-closed Shapes are identity-only. The oracle never invents a missing
+      // endpoint-to-start segment as a projection candidate.
       if (!coordinatesEqual(coordinates[0], coordinates.at(-1)!)) {
-        coordinates = [...coordinates, copyCoordinate(coordinates[0])]
+        if (!oracleAtOrBelowThreshold(closureGapDistanceMeters, 0)) continue
+        coordinates = [
+          ...coordinates.slice(0, -1).map(copyCoordinate),
+          copyCoordinate(coordinates[0]),
+        ]
       }
       maxSpanMeters = polylineLengthMeters(coordinates)
       coordinates = [...coordinates, ...coordinates.slice(1).map(copyCoordinate)]
@@ -121,11 +145,13 @@ function exhaustivePairOracle(
     const visit = (stopIndex: number): void => {
       if (stopIndex === selected.length) {
         const spanMeters = selected.at(-1)!.progressMeters - selected[0].progressMeters
-        if (maxSpanMeters !== null && spanMeters > maxSpanMeters + EPSILON) return
+        if (maxSpanMeters !== null
+          && !oracleAtOrBelowThreshold(spanMeters, maxSpanMeters)) return
         const distanceSumMeters = selected.reduce((total, projection) => total + projection.distanceMeters, 0)
         const meanStopDistanceMeters = distanceSumMeters / selected.length
         const maxStopDistanceMeters = Math.max(...selected.map((projection) => projection.distanceMeters))
-        if (meanStopDistanceMeters > 250 || maxStopDistanceMeters > 1_000) return
+        if (!oracleAtOrBelowThreshold(meanStopDistanceMeters, 250)
+          || !oracleAtOrBelowThreshold(maxStopDistanceMeters, 1_000)) return
         legalPaths.push({
           projections: selected.map((projection) => ({ ...projection })),
           distanceSumMeters,
@@ -145,7 +171,7 @@ function exhaustivePairOracle(
           if (previous.segmentIndex > projection.segmentIndex) continue
           if (
             previous.segmentIndex === projection.segmentIndex
-            && previous.segmentFraction > projection.segmentFraction + EPSILON
+            && previous.segmentFraction > projection.segmentFraction + ORDERING_EPSILON
           ) continue
         }
         selected[stopIndex] = projection
@@ -169,7 +195,8 @@ function exhaustivePairOracle(
           approximateDistanceMeters(patternCandidate.stops[0].coordinate, coordinates[0]),
           approximateDistanceMeters(patternCandidate.stops.at(-1)!.coordinate, coordinates.at(-1)!),
         ])
-    if (endpointDistanceMeters !== null && endpointDistanceMeters > 1_500) continue
+    if (endpointDistanceMeters !== null
+      && !oracleAtOrBelowThreshold(endpointDistanceMeters, 1_500)) continue
     scores.push({
       costMeters: costPath.costMeters,
       meanStopDistanceMeters: costPath.meanStopDistanceMeters,
@@ -261,7 +288,7 @@ function compareOracleOrientation(a: OracleOrientation, b: OracleOrientation): n
 }
 
 function compareNumber(a: number, b: number): number {
-  if (Math.abs(a - b) <= EPSILON) return 0
+  if (Math.abs(a - b) <= ORDERING_EPSILON) return 0
   return a < b ? -1 : 1
 }
 

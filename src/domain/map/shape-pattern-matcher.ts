@@ -45,6 +45,8 @@ export type ShapePatternGeometryMetrics = {
   shapeLengthMeters: number
   matchedSpanRatio: number
   coverageDeficitMeters: number | null
+  /** Original normalized endpoint gap; separate from actual polyline length. */
+  closureGapDistanceMeters: number | null
 }
 
 export type ShapePatternMatch = {
@@ -64,6 +66,7 @@ export type UnresolvedShapePatternReason =
   | 'tolerance-equivalent-alternatives'
   | 'rejected-or-invalid-shapes'
   | 'contradictory-complete-identity'
+  | 'near-closed-geometry-disabled'
 
 export type UnresolvedShapePattern = {
   patternId: string
@@ -101,9 +104,13 @@ type ValidPattern = ShapePatternCandidate & {
   normalizedStops: ShapePatternStop[]
 }
 
+type Direction2ClosureKind = 'truly-closed' | 'near-closed'
+
 type ValidShape = RouteShapeCandidate & {
   normalizedSubRouteUid: string | null
   normalizedCoordinates: ShapePosition[]
+  direction2ClosureKind: Direction2ClosureKind | null
+  closureGapDistanceMeters: number | null
 }
 
 type RejectedShapeContext = {
@@ -233,24 +240,36 @@ export function matchShapesToPatterns(
       }
       continue
     }
-    const normalizedCoordinates = normalizeShapeCoordinates(shape.coordinates)
+    let normalizedCoordinates = normalizeShapeCoordinates(shape.coordinates)
     if (!shape.shapeId || !shape.routeUid || normalizedCoordinates === null) {
       rejectedContexts.push(context)
       rejectedShapes.push({ shapeId: shape.shapeId, reason: 'invalid-coordinates' })
       continue
     }
-    if (
-      shape.direction === 2
-      && !isCircularShape(normalizedCoordinates, options.circularShapeMaxGapMeters)
-    ) {
-      rejectedContexts.push(context)
-      rejectedShapes.push({ shapeId: shape.shapeId, reason: 'direction-2-not-closed' })
-      continue
+    let direction2ClosureKind: Direction2ClosureKind | null = null
+    let closureGapDistanceMeters: number | null = null
+    if (shape.direction === 2) {
+      const closure = classifyDirection2Closure(
+        normalizedCoordinates,
+        options.circularShapeMaxGapMeters,
+      )
+      if (closure.kind === 'open') {
+        rejectedContexts.push(context)
+        rejectedShapes.push({ shapeId: shape.shapeId, reason: 'direction-2-not-closed' })
+        continue
+      }
+      direction2ClosureKind = closure.kind
+      closureGapDistanceMeters = closure.gapDistanceMeters
+      if (closure.kind === 'truly-closed') {
+        normalizedCoordinates = normalizeTrulyClosedEndpoint(normalizedCoordinates)
+      }
     }
     validShapes.push({
       ...shape,
       normalizedSubRouteUid: normalizeIdentity(shape.subRouteUid),
       normalizedCoordinates,
+      direction2ClosureKind,
+      closureGapDistanceMeters,
     })
   }
 
@@ -322,10 +341,13 @@ export function matchShapesToPatterns(
         })
         continue
       }
+      const reason = noCandidateReason(pattern, originalPartitionShapes, rejectedContexts)
       unresolved.push({
         patternId: pattern.patternId,
-        reason: noCandidateReason(pattern, originalPartitionShapes, rejectedContexts),
-        candidateShapeIds: [],
+        reason,
+        candidateShapeIds: reason === 'near-closed-geometry-disabled'
+          ? nearClosedCandidateShapeIds(pattern, originalPartitionShapes)
+          : [],
       })
     }
 
@@ -538,6 +560,7 @@ function scorePairs(
   for (const pattern of patterns) {
     for (const shape of shapes) {
       if (!identitiesAreCompatible(pattern, shape)) continue
+      if (shape.direction2ClosureKind === 'near-closed') continue
       const geometry = scoreGeometry(pattern, shape, options)
       if (!geometry) continue
       pairs.push({ pattern, shape, ...geometry })
@@ -551,8 +574,19 @@ function scoreGeometry(
   shape: ValidShape,
   options: ResolvedOptions,
 ): Pick<ScoredPair, 'costMeters' | 'metrics'> | null {
-  const forward = scoreOrientation(pattern, shape.normalizedCoordinates, options)
-  const reverse = scoreOrientation(pattern, [...shape.normalizedCoordinates].reverse(), options)
+  if (pattern.direction === 2 && shape.direction2ClosureKind !== 'truly-closed') return null
+  const forward = scoreOrientation(
+    pattern,
+    shape.normalizedCoordinates,
+    options,
+    shape.closureGapDistanceMeters,
+  )
+  const reverse = scoreOrientation(
+    pattern,
+    [...shape.normalizedCoordinates].reverse(),
+    options,
+    shape.closureGapDistanceMeters,
+  )
   if (!forward) return reverse
   if (!reverse) return forward
   return compareGeometryScore(forward, reverse) <= 0 ? forward : reverse
@@ -562,13 +596,18 @@ function scoreOrientation(
   pattern: ValidPattern,
   orientedCoordinates: ShapePosition[],
   options: ResolvedOptions,
+  closureGapDistanceMeters: number | null,
 ): Pick<ScoredPair, 'costMeters' | 'metrics'> | null {
   if (pattern.direction === 2) {
-    const closed = closeLoopCoordinates(orientedCoordinates, options.circularShapeMaxGapMeters)
-    if (!closed) return null
-    const loopLengthMeters = polylineLengthMeters(closed)
+    if (!coordinatesEqual(orientedCoordinates[0], orientedCoordinates.at(-1)!)) return null
+    const loopLengthMeters = polylineLengthMeters(orientedCoordinates)
     if (!(loopLengthMeters > 0)) return null
-    const unwrapped = [...closed, ...closed.slice(1).map(copyPosition)]
+    // The second lap duplicates only upstream segments already present in the
+    // normalized truly closed Shape. No system-generated operational segment exists.
+    const unwrapped = [
+      ...orientedCoordinates,
+      ...orientedCoordinates.slice(1).map(copyPosition),
+    ]
     const projectionOptions = {
       maxSpanMeters: loopLengthMeters,
       maxMeanStopDistanceMeters: options.maxMeanStopDistanceMeters,
@@ -586,7 +625,7 @@ function scoreOrientation(
     const firstProgress = diagnosticPath.projections[0].progressMeters
     const lastProgress = diagnosticPath.projections.at(-1)!.progressMeters
     const matchedSpanMeters = lastProgress - firstProgress
-    if (matchedSpanMeters < 0 || matchedSpanMeters > loopLengthMeters + floatingCostEpsilon(loopLengthMeters)) {
+    if (matchedSpanMeters < 0 || !atOrBelowFloatingThreshold(matchedSpanMeters, loopLengthMeters)) {
       return null
     }
     const meanStopDistanceMeters = path.distanceSumMeters / path.projections.length
@@ -603,6 +642,7 @@ function scoreOrientation(
         shapeLengthMeters: loopLengthMeters,
         matchedSpanRatio: matchedSpanMeters / loopLengthMeters,
         coverageDeficitMeters,
+        closureGapDistanceMeters,
       },
     }
   }
@@ -620,7 +660,7 @@ function scoreOrientation(
     approximateDistanceMeters(pattern.normalizedStops[0].coordinate, orientedCoordinates[0]),
     approximateDistanceMeters(pattern.normalizedStops.at(-1)!.coordinate, orientedCoordinates.at(-1)!),
   ])
-  if (endpointDistanceMeters > options.maxEndpointDistanceMeters) return null
+  if (!atOrBelowFloatingThreshold(endpointDistanceMeters, options.maxEndpointDistanceMeters)) return null
   const shapeLengthMeters = polylineLengthMeters(orientedCoordinates)
   const matchedSpanMeters = path.projections.at(-1)!.progressMeters - path.projections[0].progressMeters
   return {
@@ -633,6 +673,7 @@ function scoreOrientation(
       shapeLengthMeters,
       matchedSpanRatio: shapeLengthMeters > 0 ? matchedSpanMeters / shapeLengthMeters : 0,
       coverageDeficitMeters: null,
+      closureGapDistanceMeters: null,
     },
   }
 }
@@ -687,8 +728,10 @@ function matchOrderedStopsToPolyline(
         const node = extendProjectionNode(parent, currentProjection)
         if (
           options.maxSpanMeters !== null
-          && currentProjection.progressMeters - node.firstProgressMeters
-            > options.maxSpanMeters + floatingCostEpsilon(options.maxSpanMeters)
+          && !atOrBelowFloatingThreshold(
+            currentProjection.progressMeters - node.firstProgressMeters,
+            options.maxSpanMeters,
+          )
         ) continue
         generated.push(node)
       }
@@ -700,8 +743,11 @@ function matchOrderedStopsToPolyline(
   }
 
   const finalNodes = previous.flat().filter((node) =>
-    node.maxDistanceMeters <= options.maxStopDistanceMeters
-    && node.distanceSumMeters / stops.length <= options.maxMeanStopDistanceMeters)
+    atOrBelowFloatingThreshold(node.maxDistanceMeters, options.maxStopDistanceMeters)
+    && atOrBelowFloatingThreshold(
+      node.distanceSumMeters / stops.length,
+      options.maxMeanStopDistanceMeters,
+    ))
   if (!finalNodes.length) return null
   finalNodes.sort((a, b) => compareFinalProjectionNode(
     a,
@@ -928,9 +974,20 @@ function noCandidateReason(
       shape.normalizedSubRouteUid !== null
       && shape.normalizedSubRouteUid !== pattern.normalizedSubRouteUid)
     && !partitionShapes.some((shape) => identitiesAreCompatible(pattern, shape))
+  const hasIdentityCompatibleNearClosedShape = partitionShapes.some((shape) =>
+    shape.direction2ClosureKind === 'near-closed' && identitiesAreCompatible(pattern, shape))
   if (hasContradictoryCompleteIdentity) return 'contradictory-complete-identity'
+  if (hasIdentityCompatibleNearClosedShape) return 'near-closed-geometry-disabled'
   if (hasIdentityCompatibleRejectedShape) return 'rejected-or-invalid-shapes'
   return 'no-compatible-shape'
+}
+
+function nearClosedCandidateShapeIds(pattern: ValidPattern, shapes: ValidShape[]): string[] {
+  return shapes
+    .filter((shape) =>
+      shape.direction2ClosureKind === 'near-closed' && identitiesAreCompatible(pattern, shape))
+    .map((shape) => shape.shapeId)
+    .sort()
 }
 
 function identitiesAreCompatible(pattern: ValidPattern, shape: ValidShape): boolean {
@@ -943,16 +1000,26 @@ function normalizedIdentitiesAreCompatible(patternIdentity: string | null, shape
   return !(patternIdentity && shapeIdentity && patternIdentity !== shapeIdentity)
 }
 
-function closeLoopCoordinates(shape: ShapePosition[], maxGapMeters: number): ShapePosition[] | null {
-  if (!isCircularShape(shape, maxGapMeters)) return null
-  const copied = shape.map(copyPosition)
-  if (!coordinatesEqual(copied[0], copied.at(-1)!)) copied.push(copyPosition(copied[0]))
-  return copied
+function classifyDirection2Closure(
+  shape: ShapePosition[],
+  maxGapMeters: number,
+): { kind: Direction2ClosureKind | 'open'; gapDistanceMeters: number } {
+  if (shape.length < 4) return { kind: 'open', gapDistanceMeters: Number.POSITIVE_INFINITY }
+  const gapDistanceMeters = approximateDistanceMeters(shape[0], shape.at(-1)!)
+  if (coordinatesEqual(shape[0], shape.at(-1)!)
+    || atOrBelowFloatingThreshold(gapDistanceMeters, 0)) {
+    return { kind: 'truly-closed', gapDistanceMeters }
+  }
+  if (atOrBelowFloatingThreshold(gapDistanceMeters, maxGapMeters)) {
+    return { kind: 'near-closed', gapDistanceMeters }
+  }
+  return { kind: 'open', gapDistanceMeters }
 }
 
-function isCircularShape(shape: ShapePosition[], maxGapMeters: number): boolean {
-  return shape.length >= 4
-    && approximateDistanceMeters(shape[0], shape.at(-1)!) <= maxGapMeters
+function normalizeTrulyClosedEndpoint(shape: ShapePosition[]): ShapePosition[] {
+  const copied = shape.map(copyPosition)
+  copied[copied.length - 1] = copyPosition(copied[0])
+  return copied
 }
 
 function normalizeStops(stops: readonly ShapePatternStop[]): ShapePatternStop[] | null {
@@ -1033,11 +1100,10 @@ function compareGeometryScore(
 function assignmentsAreExactlyEquivalent(best: AssignmentSolution, alternative: AssignmentSolution): boolean {
   if (alternative.cardinality !== best.cardinality) return false
   const differing = differingAssignmentCosts(best, alternative)
-  return differing.alternativeCostMeters
-    <= differing.bestCostMeters + floatingCostEpsilon(Math.max(
-      differing.bestCostMeters,
-      differing.alternativeCostMeters,
-    ))
+  return atOrBelowFloatingThreshold(
+    differing.alternativeCostMeters,
+    differing.bestCostMeters,
+  )
 }
 
 function assignmentsAreToleranceEquivalent(
@@ -1048,16 +1114,13 @@ function assignmentsAreToleranceEquivalent(
   if (alternative.cardinality !== best.cardinality) return false
   const differing = differingAssignmentCosts(best, alternative)
   const delta = differing.alternativeCostMeters - differing.bestCostMeters
-  if (delta <= floatingCostEpsilon(Math.max(
-    differing.bestCostMeters,
-    differing.alternativeCostMeters,
-  ))) return true
+  if (atOrBelowFloatingThreshold(delta, 0)) return true
   const toleranceMeters = Math.max(
     options.ambiguityAbsoluteMeters,
     Math.abs(differing.bestCostMeters) * options.ambiguityRelativeRatio,
   )
   // The exact boundary is inclusive. Common fixed edges have already been removed.
-  return delta <= toleranceMeters + floatingCostEpsilon(toleranceMeters)
+  return atOrBelowFloatingThreshold(delta, toleranceMeters)
 }
 
 function differingAssignmentCosts(
@@ -1124,6 +1187,11 @@ function floatingCostEpsilon(value: number): number {
     NUMERIC_METERS_EPSILON,
     Number.EPSILON * FLOATING_COST_EPSILON_FACTOR * Math.max(1, Math.abs(value)),
   )
+}
+
+/** Inclusive threshold comparison with only machine-scale floating tolerance. */
+function atOrBelowFloatingThreshold(value: number, limit: number): boolean {
+  return value <= limit + floatingCostEpsilon(limit)
 }
 
 function compareFloating(a: number, b: number): number {
@@ -1249,6 +1317,9 @@ function roundMetrics(metrics: ShapePatternGeometryMetrics): ShapePatternGeometr
     coverageDeficitMeters: metrics.coverageDeficitMeters === null
       ? null
       : roundMetric(metrics.coverageDeficitMeters),
+    closureGapDistanceMeters: metrics.closureGapDistanceMeters === null
+      ? null
+      : roundMetric(metrics.closureGapDistanceMeters),
   }
 }
 
