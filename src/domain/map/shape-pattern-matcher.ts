@@ -117,8 +117,6 @@ type ScoredPair = {
   shape: ValidShape
   costMeters: number
   metrics: ShapePatternGeometryMetrics
-  /** Structural safety signal; never exposed as confidence or added to pair cost. */
-  directionTwoProjectionConsistent: boolean
 }
 
 type AssignmentEdge = {
@@ -288,37 +286,32 @@ export function matchShapesToPatterns(
     const remainingShapeIds = new Set(partitionShapes.map((shape) => shape.shapeId))
     const rawAssignmentPairs = originalPairs.filter((pair) =>
       remainingPatternIds.has(pair.pattern.patternId) && remainingShapeIds.has(pair.shape.shapeId))
-    const rawAssignmentPairsByPattern = groupBy(rawAssignmentPairs, (pair) => pair.pattern.patternId)
-    const assignmentPairs = rawAssignmentPairs.filter((pair) => {
-      const originalCandidates = allPairsByPattern.get(pair.pattern.patternId) ?? []
-      return pair.pattern.direction !== 2
-        || originalCandidates.length <= 1
-        || pair.directionTwoProjectionConsistent
-    })
+    const assignmentPairs = rawAssignmentPairs
     const assignmentPairsByPattern = groupBy(assignmentPairs, (pair) => pair.pattern.patternId)
     const assignablePatterns: ValidPattern[] = []
 
     for (const pattern of partitionPatterns) {
       const originalCandidates = allPairsByPattern.get(pattern.patternId) ?? []
-      const rawRemainingCandidates = rawAssignmentPairsByPattern.get(pattern.patternId) ?? []
+      const rawRemainingCandidates = rawAssignmentPairs.filter((pair) =>
+        pair.pattern.patternId === pattern.patternId)
       const remainingCandidates = assignmentPairsByPattern.get(pattern.patternId) ?? []
-      if (remainingCandidates.length) {
-        assignablePatterns.push(pattern)
-        continue
-      }
       if (
         pattern.direction === 2
         && originalCandidates.length > 1
         && rawRemainingCandidates.length
       ) {
-        // Multiple closed-loop candidates exist, but none has a cost-optimal path
-        // consistent with the independent diagnostic-span path. This is a
-        // structural fail-closed gate, not a coverage ranking or threshold.
+        // Without calibrated real-TDX evidence, multiple geometry-only closed-loop
+        // candidates are deliberately not ranked. Unique exact identity remains the
+        // only direct multi-candidate Direction 2 resolution in this PR.
         unresolved.push({
           patternId: pattern.patternId,
           reason: 'tolerance-equivalent-alternatives',
           candidateShapeIds: candidateShapeIds(originalCandidates),
         })
+        continue
+      }
+      if (remainingCandidates.length) {
+        assignablePatterns.push(pattern)
         continue
       }
       if (originalCandidates.length) {
@@ -557,7 +550,7 @@ function scoreGeometry(
   pattern: ValidPattern,
   shape: ValidShape,
   options: ResolvedOptions,
-): Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'> | null {
+): Pick<ScoredPair, 'costMeters' | 'metrics'> | null {
   const forward = scoreOrientation(pattern, shape.normalizedCoordinates, options)
   const reverse = scoreOrientation(pattern, [...shape.normalizedCoordinates].reverse(), options)
   if (!forward) return reverse
@@ -569,7 +562,7 @@ function scoreOrientation(
   pattern: ValidPattern,
   orientedCoordinates: ShapePosition[],
   options: ResolvedOptions,
-): Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'> | null {
+): Pick<ScoredPair, 'costMeters' | 'metrics'> | null {
   if (pattern.direction === 2) {
     const closed = closeLoopCoordinates(orientedCoordinates, options.circularShapeMaxGapMeters)
     if (!closed) return null
@@ -599,16 +592,9 @@ function scoreOrientation(
     const meanStopDistanceMeters = path.distanceSumMeters / path.projections.length
     const maxStopDistanceMeters = path.maxDistanceMeters
     const coverageDeficitMeters = Math.max(0, loopLengthMeters - matchedSpanMeters)
-    const costPathSpanMeters = path.projections.at(-1)!.progressMeters
-      - path.projections[0].progressMeters
     return {
       // Coverage is intentionally excluded until real TDX distributions calibrate a bounded policy.
       costMeters: stopDistanceObjective(meanStopDistanceMeters, maxStopDistanceMeters),
-      // Exact path agreement is a structural feasibility signal only. It prevents
-      // an arbitrary zero-distance prefix from entering multi-candidate ranking;
-      // it never rewards shorter coverage or changes the numeric pair objective.
-      directionTwoProjectionConsistent:
-        compareFloating(costPathSpanMeters, matchedSpanMeters) === 0,
       metrics: {
         meanStopDistanceMeters,
         maxStopDistanceMeters,
@@ -639,7 +625,6 @@ function scoreOrientation(
   const matchedSpanMeters = path.projections.at(-1)!.progressMeters - path.projections[0].progressMeters
   return {
     costMeters: stopDistanceObjective(meanStopDistanceMeters, maxStopDistanceMeters),
-    directionTwoProjectionConsistent: true,
     metrics: {
       meanStopDistanceMeters,
       maxStopDistanceMeters,
@@ -984,7 +969,43 @@ function normalizeShapeCoordinates(
     const mutable: ShapePosition = [coordinate[0], coordinate[1]]
     if (!normalized.length || !coordinatesEqual(normalized.at(-1)!, mutable)) normalized.push(mutable)
   }
-  return normalized.length >= 2 ? normalized : null
+  const simplified = removeCollinearCoordinates(normalized)
+  return simplified.length >= 2 ? simplified : null
+}
+
+/** Remove exact geometric density points without changing the represented polyline. */
+function removeCollinearCoordinates(coordinates: ShapePosition[]): ShapePosition[] {
+  if (coordinates.length < 3) return coordinates
+  const simplified: ShapePosition[] = []
+  for (const coordinate of coordinates) {
+    simplified.push(coordinate)
+    while (simplified.length >= 3) {
+      const a = simplified[simplified.length - 3]
+      const b = simplified[simplified.length - 2]
+      const c = simplified[simplified.length - 1]
+      if (!isCoordinateBetweenOnStraightSegment(a, b, c)) break
+      simplified.splice(simplified.length - 2, 1)
+    }
+  }
+  return simplified
+}
+
+function isCoordinateBetweenOnStraightSegment(
+  a: ShapePatternCoordinate,
+  b: ShapePatternCoordinate,
+  c: ShapePatternCoordinate,
+): boolean {
+  const abX = b[0] - a[0]
+  const abY = b[1] - a[1]
+  const acX = c[0] - a[0]
+  const acY = c[1] - a[1]
+  const cross = abX * acY - abY * acX
+  const scale = Math.max(1, Math.abs(abX), Math.abs(abY), Math.abs(acX), Math.abs(acY))
+  if (Math.abs(cross) > Number.EPSILON * FLOATING_COST_EPSILON_FACTOR * scale * scale) return false
+  const dot = abX * acX + abY * acY
+  const squaredLength = acX * acX + acY * acY
+  if (squaredLength === 0) return false
+  return dot >= 0 && dot <= squaredLength
 }
 
 function isValidCoordinate(coordinate: ShapePatternCoordinate): boolean {
@@ -999,8 +1020,8 @@ function isValidCoordinate(coordinate: ShapePatternCoordinate): boolean {
 }
 
 function compareGeometryScore(
-  a: Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'>,
-  b: Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'>,
+  a: Pick<ScoredPair, 'costMeters' | 'metrics'>,
+  b: Pick<ScoredPair, 'costMeters' | 'metrics'>,
 ): number {
   return compareFloating(a.costMeters, b.costMeters)
     || compareFloating(nullableMetric(a.metrics.endpointDistanceMeters), nullableMetric(b.metrics.endpointDistanceMeters))
