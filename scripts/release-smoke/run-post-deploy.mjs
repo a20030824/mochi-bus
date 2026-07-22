@@ -24,6 +24,10 @@ const MAX_PAGE_BYTES = 1_048_576
 const MAX_ASSET_BYTES = 4_194_304
 const MAX_JSON_BYTES = 2_097_152
 const NETWORK_PREFIX_BYTES = 65_536
+const BROWSER_RELEASE_TIMEOUT_MS = 60_000
+const BROWSER_RELEASE_POLL_MS = 5_000
+const FULL_RELEASE_SHA = /^[0-9a-f]{40}$/
+const SAFE_RELEASE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const PAGES = Object.freeze([
   { path: '/', selector: '.eta-page' },
   { path: '/setup', selector: '.setup-page #board-list' },
@@ -103,6 +107,48 @@ export function validateCatalogueRouteContract(value, city, sample) {
     }
   }
   throw new ReleaseSmokeError('route_contract_invalid')
+}
+
+export async function waitForBrowserReleaseIdentity({
+  expectedSha,
+  expectedWorkerVersionId,
+  readRelease,
+  now = () => Date.now(),
+  sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  timeoutMs = BROWSER_RELEASE_TIMEOUT_MS,
+  pollIntervalMs = BROWSER_RELEASE_POLL_MS,
+}) {
+  if (!FULL_RELEASE_SHA.test(String(expectedSha ?? ''))
+    || typeof expectedWorkerVersionId !== 'string'
+    || !SAFE_RELEASE_IDENTIFIER.test(expectedWorkerVersionId)
+    || typeof readRelease !== 'function'
+    || typeof now !== 'function'
+    || typeof sleep !== 'function'
+    || !Number.isSafeInteger(timeoutMs) || timeoutMs < 0
+    || !Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1) {
+    throw new ReleaseSmokeError('release_identity_invalid')
+  }
+
+  const deadline = now() + timeoutMs
+  let mismatchObserved = false
+  while (true) {
+    try {
+      const identity = validateReleaseIdentity(await readRelease(), expectedSha)
+      if (identity.workerVersionId === expectedWorkerVersionId) return identity
+      mismatchObserved = true
+    } catch (error) {
+      if (error instanceof ReleaseSmokeError && error.code === 'release_not_observed') {
+        mismatchObserved = true
+      }
+    }
+
+    if (now() >= deadline) {
+      throw new ReleaseSmokeError(mismatchObserved
+        ? 'release_propagation_timeout'
+        : 'release_observation_failed')
+    }
+    await sleep(Math.min(pollIntervalMs, deadline - now()))
+  }
 }
 
 async function readRelease(origin, token) {
@@ -194,6 +240,7 @@ async function probeHttpSurface({ origin, token, phase }) {
 async function probeFreshBrowser({ origin, token, releaseSha, workerVersionId }) {
   let browser
   const totals = { pageErrors: 0, consoleErrors: 0, chunkFailures: 0 }
+  const browserReleasePath = addProbe('/api/v1/health/release', token, 'browser-release')
   try {
     browser = await chromium.launch({ headless: true })
     const context = await browser.newContext({
@@ -203,6 +250,23 @@ async function probeFreshBrowser({ origin, token, releaseSha, workerVersionId })
     })
     for (const target of PAGES) {
       const page = await context.newPage()
+      await waitForBrowserReleaseIdentity({
+        expectedSha: releaseSha,
+        expectedWorkerVersionId: workerVersionId,
+        readRelease: async () => {
+          try {
+            const response = await page.goto(browserReleasePath, {
+              waitUntil: 'commit',
+              timeout: 10_000,
+            })
+            if (!response || response.status() < 200 || response.status() >= 300) return null
+            return response.json()
+          } catch {
+            return null
+          }
+        },
+      })
+
       page.on('pageerror', () => { totals.pageErrors += 1 })
       page.on('console', (message) => {
         if (message.type() === 'error') totals.consoleErrors += 1
@@ -226,15 +290,6 @@ async function probeFreshBrowser({ origin, token, releaseSha, workerVersionId })
       await page.locator(target.selector).waitFor({ state: 'visible', timeout: 30_000 })
       if (target.bootSelector) {
         await page.locator(target.bootSelector).waitFor({ state: 'visible', timeout: 30_000 })
-      }
-      const observed = await page.evaluate(async () => {
-        const response = await fetch('/api/v1/health/release', { cache: 'no-store' })
-        if (!response.ok) return null
-        return response.json()
-      })
-      const identity = validateReleaseIdentity(observed, releaseSha)
-      if (identity.workerVersionId !== workerVersionId) {
-        throw new ReleaseSmokeError('release_changed_during_observation')
       }
       const ready = await page.evaluate(() => ({
         readyState: document.readyState,
