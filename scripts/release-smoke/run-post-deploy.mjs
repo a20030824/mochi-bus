@@ -11,7 +11,6 @@ import {
   discoverAssetGraph,
   runPostDeploySmoke,
   safeReleaseSmokeDiagnostic,
-  selectRepresentativeRoute,
   validateArrivalsContract,
   validateReleaseIdentity,
   validateRouteContract,
@@ -31,7 +30,7 @@ const PAGES = Object.freeze([
   { path: '/map?city=Chiayi', selector: '#map-app', bootSelector: '.leaflet-container' },
 ])
 const REPRESENTATIVE_CITIES = Object.freeze(['Taipei', 'Chiayi'])
-const TAIPEI_ROUTE_SAMPLE = Object.freeze({ routeName: '307', routeUid: 'TPE19108' })
+const TAIPEI_ROUTE_SAMPLE = '307'
 const HASHED_ASSET = /^\/assets\/[^/?]+-[A-Za-z0-9_-]{6,}\.(?:js|css)$/
 
 export async function main(env = process.env) {
@@ -76,6 +75,34 @@ export async function main(env = process.env) {
     console.error(JSON.stringify(event))
     process.exitCode = 1
   }
+}
+
+export function selectCatalogueRouteSample(routes, routeName) {
+  if (!routes || !Array.isArray(routes.routes)
+    || typeof routeName !== 'string' || routeName.length === 0) {
+    throw new ReleaseSmokeError('route_sample_missing')
+  }
+  const routeUids = [...new Set(routes.routes
+    .filter((candidate) => candidate?.routeName === routeName
+      && typeof candidate?.routeUid === 'string' && candidate.routeUid.length > 0)
+    .map((candidate) => candidate.routeUid))].sort()
+  if (routeUids.length === 0) throw new ReleaseSmokeError('route_sample_missing')
+  return Object.freeze({ routeName, routeUids: Object.freeze(routeUids) })
+}
+
+export function validateCatalogueRouteContract(value, city, sample) {
+  if (!sample || typeof sample.routeName !== 'string'
+    || !Array.isArray(sample.routeUids) || sample.routeUids.length === 0) {
+    throw new ReleaseSmokeError('route_contract_invalid')
+  }
+  for (const routeUid of sample.routeUids) {
+    try {
+      return validateRouteContract(value, city, { routeName: sample.routeName, routeUid })
+    } catch (error) {
+      if (!(error instanceof ReleaseSmokeError) || error.code !== 'route_contract_invalid') throw error
+    }
+  }
+  throw new ReleaseSmokeError('route_contract_invalid')
 }
 
 async function readRelease(origin, token) {
@@ -129,14 +156,14 @@ async function probeHttpSurface({ origin, token, phase }) {
   }
 
   const taipei = routesByCity.get('Taipei')
-  const route = selectRepresentativeRoute(taipei, TAIPEI_ROUTE_SAMPLE)
+  const route = selectCatalogueRouteSample(taipei, TAIPEI_ROUTE_SAMPLE)
   const detail = await readJson(
     origin,
-    addProbe(`/api/v1/map/route?city=Taipei&route=${encodeURIComponent(route.routeName)}&routeUid=${encodeURIComponent(route.routeUid)}`, token, `${phase}-route`),
+    addProbe(`/api/v1/map/route?city=Taipei&route=${encodeURIComponent(route.routeName)}`, token, `${phase}-route`),
     MAX_JSON_BYTES,
     'route_http_failed',
   )
-  const variant = validateRouteContract(detail, 'Taipei', route)
+  const variant = validateCatalogueRouteContract(detail, 'Taipei', route)
   const stopUid = variant.stops.features[0].properties.stopUid
   const place = await readJson(
     origin,
