@@ -220,6 +220,7 @@ export const telemetryVersionRoles = ['active', 'previous'] as const
 export const telemetryProbeGroups = ['active_snapshot'] as const
 export const telemetryWatchdogStatuses = [
   'published',
+  'published_rollback_degraded',
   'unchanged_healthy',
   'unchanged_rollback_degraded',
   'failed_active_healthy',
@@ -659,12 +660,18 @@ function validWatchdogFields(value: Record<string, unknown>): boolean {
 
   const status = value.watchdogStatus
   const healthy = status === 'published' || status === 'unchanged_healthy'
-  const degraded = status === 'unchanged_rollback_degraded' || status === 'failed_active_healthy'
+  const degraded = status === 'published_rollback_degraded'
+    || status === 'unchanged_rollback_degraded'
+    || status === 'failed_active_healthy'
   if (healthy && !(value.result === 'success' && value.failureClass === 'none')) return false
   if (degraded && !(value.result === 'degraded' && value.failureClass !== 'none')) return false
   if (!healthy && !degraded && !(value.result === 'error' && value.failureClass !== 'none')) return false
   if (status === 'published'
     && !(value.windowResult === 'published' && value.probeResult === 'success')) return false
+  if (status === 'published_rollback_degraded'
+    && !(value.windowResult === 'published'
+      && value.probeResult === 'degraded'
+      && value.rollbackAvailable === false)) return false
   if (status === 'unchanged_healthy'
     && !(value.windowResult === 'unchanged' && value.probeResult === 'success' && value.rollbackAvailable === true)) return false
   if (status === 'unchanged_rollback_degraded'

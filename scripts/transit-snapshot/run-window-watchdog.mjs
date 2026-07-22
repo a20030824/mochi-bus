@@ -98,8 +98,9 @@ export async function runWindowWatchdog({
 export function watchdogSummaryMarkdown(summary) {
   const groups = [
     ['Healthy published', 'published'],
+    ['Published rollback degraded', 'published_rollback_degraded'],
     ['Healthy unchanged', 'unchanged_healthy'],
-    ['Rollback degraded', 'unchanged_rollback_degraded'],
+    ['Unchanged rollback degraded', 'unchanged_rollback_degraded'],
     ['Window failed but active healthy', 'failed_active_healthy'],
     ['Active unhealthy', 'failed_active_unhealthy'],
     ['Missing window', 'missing'],

@@ -7,6 +7,7 @@ export const WATCHDOG_MAX_PROBE_WINDOW_DISTANCE = 1
 
 export const WATCHDOG_STATUSES = Object.freeze([
   'published',
+  'published_rollback_degraded',
   'unchanged_healthy',
   'unchanged_rollback_degraded',
   'failed_active_healthy',
@@ -117,6 +118,11 @@ export function evaluateWindowWatchdog({
     if (!sameWindowProbe) {
       return watchdogResult(base, { status: 'unknown', diagnosticClass: 'probe_record_missing', window })
     }
+    if (sameWindowProbe.activeProbeResult === 'degraded' && !sameWindowProbe.rollbackAvailable) {
+      return watchdogResult(base, {
+        status: 'published_rollback_degraded', diagnosticClass: 'rollback_unavailable', window, probe: sameWindowProbe,
+      })
+    }
     if (sameWindowProbe.activeProbeResult !== 'success') {
       return watchdogResult(base, {
         status: 'unknown', diagnosticClass: 'window_probe_conflict', window, probe: sameWindowProbe,
@@ -176,7 +182,9 @@ export function evaluateWindowWatchdog({
 export function createWindowWatchdogEvent(result, releaseSha = null) {
   const safe = validateWatchdogResult(result)
   const successful = safe.status === 'published' || safe.status === 'unchanged_healthy'
-  const degraded = safe.status === 'unchanged_rollback_degraded' || safe.status === 'failed_active_healthy'
+  const degraded = safe.status === 'published_rollback_degraded'
+    || safe.status === 'unchanged_rollback_degraded'
+    || safe.status === 'failed_active_healthy'
   return Object.freeze({
     eventSchema: WATCHDOG_EVENT_SCHEMA_VERSION,
     event: 'window_watchdog_completed',

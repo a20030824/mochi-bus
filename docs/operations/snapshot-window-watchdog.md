@@ -9,6 +9,7 @@
 | Status | 意義 | Job policy |
 | --- | --- | --- |
 | `published` | 本 window published，且同 window active probe success、版本符合 D1 active | success |
+| `published_rollback_degraded` | 本 window published，active hard checks 通過，但 previous/state/retain evidence 使 rollback unavailable | fail；summary 明示新 snapshot 可用但 rollback 降級 |
 | `unchanged_healthy` | source check 屬於本 window，active probe success，rollback available | success |
 | `unchanged_rollback_degraded` | current active 可用，但 previous/state/retain evidence 使 rollback unavailable | fail；summary 明示服務仍可用 |
 | `failed_active_healthy` | window failed，但同 window或上週可信 probe仍證明目前 D1 active 可用 | fail；summary 明示服務仍可用 |
@@ -43,7 +44,7 @@
 
 ## Rollback degraded reconciliation
 
-`unchanged_rollback_degraded` 不表示 current unavailable。依 publishing runbook 的 authority mismatch repair path：查 D1 active、驗證指定 previous、reconcile R2 state，再執行正常 rollback command。沒有跳過完整性驗證的 `--force`。
+`published_rollback_degraded` 與 `unchanged_rollback_degraded` 都不表示 current unavailable。前者表示本 window 的新 active snapshot 已發布並通過 hard checks；後者表示 source unchanged、既有 active 仍可用。兩者都依 publishing runbook 的 authority mismatch repair path：查 D1 active、驗證指定 previous、reconcile R2 state，再執行正常 rollback command。沒有跳過完整性驗證的 `--force`。
 
 ## Queries
 
