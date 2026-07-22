@@ -24,7 +24,7 @@ describe('snapshot probe repository', () => {
         } as D1PreparedStatement
         return statement
       },
-    } as D1Database
+    } as unknown as D1Database
     const env: TransitBindings = {
       TRANSIT_DB: database,
       TRANSIT_SHAPES: {} as R2Bucket,
@@ -76,7 +76,7 @@ describe('snapshot probe repository', () => {
         } as D1PreparedStatement
         return statement
       },
-    } as D1Database
+    } as unknown as D1Database
     const bundle = {
       version: candidateVersion,
       placeId: 'Hsinchu:1ifw3fu',
