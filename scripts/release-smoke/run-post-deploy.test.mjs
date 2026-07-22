@@ -133,9 +133,14 @@ describe('post-deploy smoke CLI adapter', () => {
     })).rejects.toMatchObject({ code: 'release_observation_failed' })
   })
 
-  it('uses a bounded browser-context release poll instead of one-shot identity validation', () => {
-    expect(source).toContain('waitForBrowserReleaseIdentity({')
+  it('observes the exact browser release before navigating each target page', () => {
+    const gate = source.indexOf('await waitForBrowserReleaseIdentity({')
+    const targetNavigation = source.indexOf('const response = await page.goto(addProbe(target.path')
+
+    expect(gate).toBeGreaterThan(-1)
+    expect(targetNavigation).toBeGreaterThan(gate)
     expect(source).toContain("addProbe('/api/v1/health/release', token, 'browser-release')")
+    expect(source).toContain('page.goto(browserReleasePath')
     expect(source).not.toContain("fetch('/api/v1/health/release', { cache: 'no-store' })")
   })
 })
