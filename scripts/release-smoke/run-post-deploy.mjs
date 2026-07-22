@@ -11,8 +11,10 @@ import {
   discoverAssetGraph,
   runPostDeploySmoke,
   safeReleaseSmokeDiagnostic,
+  selectRepresentativeRoute,
   validateArrivalsContract,
   validateReleaseIdentity,
+  validateRouteContract,
   validateRoutesContract,
 } from './post-deploy.mjs'
 
@@ -29,6 +31,7 @@ const PAGES = Object.freeze([
   { path: '/map?city=Chiayi', selector: '#map-app', bootSelector: '.leaflet-container' },
 ])
 const REPRESENTATIVE_CITIES = Object.freeze(['Taipei', 'Chiayi'])
+const TAIPEI_ROUTE_SAMPLE = Object.freeze({ routeName: '307', routeUid: 'TPE19108' })
 const HASHED_ASSET = /^\/assets\/[^/?]+-[A-Za-z0-9_-]{6,}\.(?:js|css)$/
 
 export async function main(env = process.env) {
@@ -126,14 +129,14 @@ async function probeHttpSurface({ origin, token, phase }) {
   }
 
   const taipei = routesByCity.get('Taipei')
-  const route = taipei.routes[0]
+  const route = selectRepresentativeRoute(taipei, TAIPEI_ROUTE_SAMPLE)
   const detail = await readJson(
     origin,
     addProbe(`/api/v1/map/route?city=Taipei&route=${encodeURIComponent(route.routeName)}&routeUid=${encodeURIComponent(route.routeUid)}`, token, `${phase}-route`),
     MAX_JSON_BYTES,
-    'route_contract_invalid',
+    'route_http_failed',
   )
-  const variant = selectRouteVariant(detail, route.routeUid)
+  const variant = validateRouteContract(detail, 'Taipei', route)
   const stopUid = variant.stops.features[0].properties.stopUid
   const place = await readJson(
     origin,
@@ -226,19 +229,6 @@ async function probeFreshBrowser({ origin, token, releaseSha, workerVersionId })
   if (totals.consoleErrors > 0) throw new ReleaseSmokeError('browser_console_error')
   if (totals.chunkFailures > 0) throw new ReleaseSmokeError('browser_chunk_load_failed')
   return Object.freeze({ pages: PAGES.length, ...totals })
-}
-
-function selectRouteVariant(value, routeUid) {
-  const variant = Array.isArray(value?.variants)
-    ? value.variants.find((candidate) => candidate?.routeUid === routeUid
-      && Array.isArray(candidate?.stops?.features)
-      && candidate.stops.features.length >= 2
-      && candidate.stops.features.every((feature) => typeof feature?.properties?.stopUid === 'string'))
-    : undefined
-  if (value?.schemaVersion !== 1 || value?.city !== 'Taipei' || value?.source !== 'snapshot' || !variant) {
-    throw new ReleaseSmokeError('route_contract_invalid')
-  }
-  return variant
 }
 
 async function readStaticAsset(origin, path) {
