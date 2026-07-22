@@ -36,6 +36,18 @@ export const SNAPSHOT_PROBE_DIAGNOSTIC_WARNINGS = Object.freeze([
   'schedule_sample_unavailable',
 ])
 
+export const SNAPSHOT_PROBE_FAILURE_STAGES = Object.freeze([
+  'route_request',
+  'route_schema',
+  'route_version',
+  'route_variant',
+  'route_stops',
+  'place_request',
+  'place_schema',
+  'place_version',
+  'place_pattern',
+])
+
 const SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const CORE_COUNT_FIELDS = ['routes', 'patterns', 'stops', 'places', 'patternStops']
 
@@ -94,6 +106,7 @@ export async function probeActiveSnapshot({
   publicApi,
   now = () => new Date(),
   probeCaseVersion = SNAPSHOT_PROBE_CASE_VERSION,
+  diagnosticSink = defaultDiagnosticSink,
 }) {
   const startedAt = now()
   const sampleCaseId = deterministicSampleCaseId(city, windowId, probeCaseVersion)
@@ -189,16 +202,43 @@ export async function probeActiveSnapshot({
     const sample = sampleRows[0]
     if (!validSample(sample)) throw probeFailure('route_sample_failed')
 
+    const emitSampleFailure = (failureStage, failureClass, observedSnapshotVersion = null) => {
+      emitProbeDiagnostic(diagnosticSink, {
+        city,
+        windowId,
+        sampleCaseId,
+        samplePatternId: sample.pattern_id,
+        sampleRouteUid: sample.route_uid,
+        expectedSnapshotVersion: activeVersion,
+        observedSnapshotVersion,
+        attempt: 1,
+        failureStage,
+        failureClass,
+      })
+    }
+
     let route
     try {
       route = await publicApi.getJson(`/api/v1/map/route?city=${encodeURIComponent(city)}&route=${encodeURIComponent(sample.route_name)}&snapshot=${encodeURIComponent(activeVersion)}&probe=${encodeURIComponent(windowId)}`)
     } catch {
+      emitSampleFailure('route_request', 'route_sample_failed')
       throw probeFailure('route_sample_failed')
     }
-    const variant = Array.isArray(route?.variants)
-      ? route.variants.find((candidate) => candidate?.variantKey === sample.pattern_id)
-      : undefined
-    if (route?.schemaVersion !== 1 || route?.source !== 'snapshot' || !variant || variant.stops?.features?.length < 2) {
+    if (route?.schemaVersion !== 1 || route?.source !== 'snapshot' || !Array.isArray(route.variants)) {
+      emitSampleFailure('route_schema', 'route_sample_failed', route?.snapshotVersion)
+      throw probeFailure('route_sample_failed')
+    }
+    if (route.snapshotVersion !== activeVersion) {
+      emitSampleFailure('route_version', 'route_sample_failed', route.snapshotVersion)
+      throw probeFailure('route_sample_failed')
+    }
+    const variant = route.variants.find((candidate) => candidate?.variantKey === sample.pattern_id)
+    if (!variant) {
+      emitSampleFailure('route_variant', 'route_sample_failed', route.snapshotVersion)
+      throw probeFailure('route_sample_failed')
+    }
+    if (!Array.isArray(variant.stops?.features) || variant.stops.features.length < 2) {
+      emitSampleFailure('route_stops', 'route_sample_failed', route.snapshotVersion)
       throw probeFailure('route_sample_failed')
     }
     hardChecksPassed += 1
@@ -207,13 +247,21 @@ export async function probeActiveSnapshot({
     try {
       place = await publicApi.getJson(`/api/v1/map/place/${encodeURIComponent(sample.place_id)}/arrivals?city=${encodeURIComponent(city)}&snapshot=${encodeURIComponent(activeVersion)}&probe=${encodeURIComponent(windowId)}`)
     } catch {
+      emitSampleFailure('place_request', 'place_bundle_sample_failed')
       throw probeFailure('place_bundle_sample_failed')
     }
     if (place?.schemaVersion !== 1
       || place?.scheduleSource !== 'place-bundle'
-      || place?.snapshotVersion !== activeVersion
-      || !Array.isArray(place.routes)
-      || !place.routes.some((candidate) => candidate?.variantKey === sample.pattern_id)) {
+      || !Array.isArray(place.routes)) {
+      emitSampleFailure('place_schema', 'place_bundle_sample_failed', place?.snapshotVersion)
+      throw probeFailure('place_bundle_sample_failed')
+    }
+    if (place.snapshotVersion !== activeVersion) {
+      emitSampleFailure('place_version', 'place_bundle_sample_failed', place.snapshotVersion)
+      throw probeFailure('place_bundle_sample_failed')
+    }
+    if (!place.routes.some((candidate) => candidate?.variantKey === sample.pattern_id)) {
+      emitSampleFailure('place_pattern', 'place_bundle_sample_failed', place.snapshotVersion)
       throw probeFailure('place_bundle_sample_failed')
     }
     hardChecksPassed += 1
@@ -260,14 +308,38 @@ export function deterministicSampleCaseId(city, windowId, probeCaseVersion) {
   return `case_${createHash('sha256').update(`${city}\n${windowId}\n${probeCaseVersion}`).digest('hex').slice(0, 12)}`
 }
 
+export function createSnapshotProbeDiagnostic(value) {
+  if (!value || typeof value !== 'object') throw new Error('Invalid snapshot probe diagnostic')
+  if (!SNAPSHOT_PROBE_FAILURE_STAGES.includes(value.failureStage)) {
+    throw new Error('Invalid snapshot probe diagnostic stage')
+  }
+  if (!SNAPSHOT_PROBE_FAILURE_CLASSES.includes(value.failureClass) || value.failureClass === 'none') {
+    throw new Error('Invalid snapshot probe diagnostic failure')
+  }
+  const attempt = Number(value.attempt)
+  if (!Number.isInteger(attempt) || attempt < 1 || attempt > 12) {
+    throw new Error('Invalid snapshot probe diagnostic attempt')
+  }
+  return Object.freeze({
+    event: 'snapshot_probe_diagnostic',
+    city: safeIdentifier(value.city),
+    windowId: safeIdentifier(value.windowId),
+    sampleCaseId: safeIdentifier(value.sampleCaseId),
+    samplePatternHash: boundedHash(value.samplePatternId),
+    sampleRouteHash: boundedHash(value.sampleRouteUid),
+    expectedSnapshotVersion: safeIdentifier(value.expectedSnapshotVersion),
+    observedSnapshotVersion: safeNullableIdentifier(value.observedSnapshotVersion),
+    attempt,
+    failureStage: value.failureStage,
+    failureClass: value.failureClass,
+  })
+}
+
 export function artifactHeadMatches(head, artifact) {
   if (!head || !artifact) return false
-
   const expectedBytes = Number(artifact.bytes)
   if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1) return false
-
   if (head.size === null || head.size === undefined) return true
-
   const observedBytes = Number(head.size)
   return Number.isSafeInteger(observedBytes) && observedBytes === expectedBytes
 }
@@ -453,6 +525,26 @@ class SnapshotProbeFailure extends Error {
 
 function probeFailure(failureClass) {
   return new SnapshotProbeFailure(SNAPSHOT_PROBE_FAILURE_CLASSES.includes(failureClass) ? failureClass : 'unknown')
+}
+
+function emitProbeDiagnostic(sink, value) {
+  try {
+    sink(createSnapshotProbeDiagnostic(value))
+  } catch {
+    // Probe diagnostics are fail-open and cannot change the hard-check result.
+  }
+}
+
+function defaultDiagnosticSink(record) {
+  console.log(JSON.stringify(record))
+}
+
+function boundedHash(value) {
+  return `sha256_${createHash('sha256').update(String(value)).digest('hex').slice(0, 16)}`
+}
+
+function safeNullableIdentifier(value) {
+  return typeof value === 'string' && SAFE_VERSION.test(value) ? value : null
 }
 
 function safeIdentifier(value) {
