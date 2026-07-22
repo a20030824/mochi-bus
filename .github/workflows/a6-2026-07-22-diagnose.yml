@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Read previous snapshot D1 counts
+      - name: Read latest probe status for every city
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -23,15 +23,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          query() {
-            local sql="$1"
-            curl --fail --silent --show-error \
-              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H 'Content-Type: application/json' \
-              --data "$(jq -nc --arg sql "$sql" '{sql:$sql,params:[]}')" \
-              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$DATABASE_ID/query" \
-              | jq -e -c '.result[0].results'
-          }
-
-          previous_targets="WITH targets(city_code,version) AS (VALUES ('KinmenCounty','20260714T203914746Z'),('LienchiangCounty','20260714T204009205Z'),('MiaoliCounty','20260714T203553785Z'),('NantouCounty','20260714T203709933Z'),('PenghuCounty','20260714T203833123Z'),('Tainan','20260719T215940346Z'))"
-          query "$previous_targets SELECT t.city_code,t.version,(SELECT COUNT(*) FROM routes r WHERE r.city_code=t.city_code AND r.version=t.version) AS routes,(SELECT COUNT(*) FROM patterns p WHERE p.city_code=t.city_code AND p.version=t.version) AS patterns,(SELECT COUNT(*) FROM stops s WHERE s.city_code=t.city_code AND s.version=t.version) AS stops,(SELECT COUNT(*) FROM stop_places sp WHERE sp.city_code=t.city_code AND sp.version=t.version) AS places,(SELECT COUNT(*) FROM pattern_stops ps JOIN patterns p ON p.version=ps.version AND p.pattern_id=ps.pattern_id WHERE p.city_code=t.city_code AND ps.version=t.version) AS pattern_stops,(SELECT COUNT(*) FROM routes r WHERE r.city_code=t.city_code AND r.version=t.version AND NOT EXISTS (SELECT 1 FROM patterns p WHERE p.version=r.version AND p.city_code=r.city_code AND p.route_uid=r.route_uid)) AS route_without_pattern FROM targets t ORDER BY t.city_code;"
+          sql="WITH latest AS (SELECT city_code,MAX(active_probe_at) AS active_probe_at FROM snapshot_active_probes GROUP BY city_code) SELECT p.city_code,p.window_id,p.active_probe_result,p.probe_failure_class,p.rollback_available,p.active_version,p.previous_version,p.hard_checks_passed,p.diagnostic_warnings,p.active_probe_at FROM snapshot_active_probes p JOIN latest l ON l.city_code=p.city_code AND l.active_probe_at=p.active_probe_at ORDER BY p.city_code;"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg sql "$sql" '{sql:$sql,params:[]}')" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$DATABASE_ID/query" \
+            | jq -e -c '.result[0].results'
