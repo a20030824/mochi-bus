@@ -239,7 +239,9 @@ async function waitForRelease({ expectedSha, readRelease, now, sleep, propagatio
     try {
       return validateReleaseIdentity(await readRelease(), expectedSha)
     } catch (error) {
-      if (!(error instanceof ReleaseSmokeError) || error.code !== 'release_not_observed') throw error
+      const retryable = error instanceof ReleaseSmokeError
+        && (error.code === 'release_not_observed' || error.code === 'release_observation_failed')
+      if (!retryable) throw error
     }
     if (now() >= deadline) throw new ReleaseSmokeError('release_propagation_timeout')
     await sleep(Math.min(pollIntervalMs, deadline - now()))
