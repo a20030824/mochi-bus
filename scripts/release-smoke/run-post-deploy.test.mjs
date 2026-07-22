@@ -1,12 +1,24 @@
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   main,
   selectCatalogueRouteSample,
   validateCatalogueRouteContract,
+  waitForBrowserReleaseIdentity,
 } from './run-post-deploy.mjs'
 
 const source = readFileSync(new URL('./run-post-deploy.mjs', import.meta.url), 'utf8')
+const expectedSha = '0123456789abcdef0123456789abcdef01234567'
+const expectedWorkerVersionId = 'worker-version-1'
+const release = (
+  releaseSha = expectedSha,
+  workerVersionId = expectedWorkerVersionId,
+) => ({
+  schemaVersion: 1,
+  releaseSha,
+  workerVersionId,
+  workerCreatedAt: '2026-07-22T16:30:00.000Z',
+})
 
 describe('post-deploy smoke CLI adapter', () => {
   it('loads without running production traffic during import', () => {
@@ -72,5 +84,58 @@ describe('post-deploy smoke CLI adapter', () => {
     expect(source).not.toMatch(/routeUid=\$\{encodeURIComponent\(route\./)
     expect(source).toContain("'route_http_failed'")
     expect(source).toContain("validateCatalogueRouteContract(detail, 'Taipei', route)")
+  })
+
+  it('waits for the expected release inside the fresh browser context', async () => {
+    let clock = 0
+    const readRelease = vi.fn()
+      .mockResolvedValueOnce(release('f'.repeat(40)))
+      .mockResolvedValueOnce(release(expectedSha, 'worker-version-old'))
+      .mockResolvedValueOnce(release())
+
+    await expect(waitForBrowserReleaseIdentity({
+      expectedSha,
+      expectedWorkerVersionId,
+      readRelease,
+      now: () => clock,
+      sleep: async (milliseconds) => { clock += milliseconds },
+      timeoutMs: 5_000,
+      pollIntervalMs: 1_000,
+    })).resolves.toEqual(release())
+
+    expect(readRelease).toHaveBeenCalledTimes(3)
+    expect(clock).toBe(2_000)
+  })
+
+  it('classifies persistent browser edge mismatch without leaking release_not_observed', async () => {
+    let clock = 0
+    await expect(waitForBrowserReleaseIdentity({
+      expectedSha,
+      expectedWorkerVersionId,
+      readRelease: vi.fn(async () => release('f'.repeat(40))),
+      now: () => clock,
+      sleep: async (milliseconds) => { clock += milliseconds },
+      timeoutMs: 2_000,
+      pollIntervalMs: 1_000,
+    })).rejects.toMatchObject({ code: 'release_propagation_timeout' })
+  })
+
+  it('classifies a persistently unreadable browser release endpoint as observation failure', async () => {
+    let clock = 0
+    await expect(waitForBrowserReleaseIdentity({
+      expectedSha,
+      expectedWorkerVersionId,
+      readRelease: vi.fn(async () => null),
+      now: () => clock,
+      sleep: async (milliseconds) => { clock += milliseconds },
+      timeoutMs: 2_000,
+      pollIntervalMs: 1_000,
+    })).rejects.toMatchObject({ code: 'release_observation_failed' })
+  })
+
+  it('uses a bounded browser-context release poll instead of one-shot identity validation', () => {
+    expect(source).toContain('waitForBrowserReleaseIdentity({')
+    expect(source).toContain("addProbe('/api/v1/health/release', token, 'browser-release')")
+    expect(source).not.toContain("fetch('/api/v1/health/release', { cache: 'no-store' })")
   })
 })
