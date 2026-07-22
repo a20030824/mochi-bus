@@ -98,7 +98,7 @@ describe('strict raw TDX candidate boundary', () => {
     const secondBundle = deepFreeze({
       sources: [{ scope: 'city', city: 'Taipei', stopOfRoute: [secondPattern, duplicatePattern, duplicatePattern], shapes: [shape({ SubRouteUID: 'SR2' }), shape(), shape()] }],
     })
-    expect(buildCandidatePartitions(firstBundle)).toEqual(buildCandidatePartions(secondBundle))
+    expect(buildCandidatePartitions(firstBundle)).toEqual(buildCandidatePartitions(secondBundle))
     expect(buildCandidatePartitions(firstBundle).partitions[0].patterns).toHaveLength(3)
   })
 
