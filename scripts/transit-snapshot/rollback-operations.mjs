@@ -74,6 +74,11 @@ export async function executeRollback(options) {
     })
   }
 
+  const confirmed = await readAuthority(options, city)
+  if (confirmed.activeVersion !== targetVersion) {
+    throw operationFailure('activation_conflict', { city, activeVersion: confirmed.activeVersion, targetVersion })
+  }
+
   const nextState = buildRollbackState({
     currentVersion,
     targetVersion,
@@ -120,6 +125,10 @@ export async function executeReconcile(options) {
     importedAt: authority.importedAt,
     existingState: state,
   })
+  const confirmed = await readAuthority(options, city)
+  if (confirmed.activeVersion !== activeVersion) {
+    throw operationFailure('authority_mismatch', { city, activeVersion: confirmed.activeVersion, previousVersion })
+  }
   if (sameSnapshotState(state, nextState)) {
     return Object.freeze({
       operation: 'reconcile', outcome: 'already_reconciled', city,
