@@ -40,6 +40,7 @@ jobs:
       - name: Install Chromium for post-deploy smoke
         run: npx playwright install --with-deps chromium >/dev/null 2>&1
       - name: Run true post-deploy release smoke
+        id: release_smoke
         run: npm run release:smoke
         env:
           EXPECTED_RELEASE_SHA: ${{ github.sha }}
@@ -49,7 +50,7 @@ jobs:
           RELEASE_SMOKE_OBSERVATION_MS: '600000'
           RELEASE_SMOKE_OBSERVATION_POLL_MS: '60000'
       - name: Upload post-deploy smoke evidence
-        if: always()
+        if: ${{ always() && steps.release_smoke.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: post-deploy-release-smoke
