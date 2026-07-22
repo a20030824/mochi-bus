@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "fetchedAt": "2026-07-23T00:00:00.000Z",
+  "sources": [
+    {
+      "scope": "city",
+      "city": "Taipei",
+      "stopOfRoute": [
+        {
+          "RouteUID": "TPE-TEST",
+          "SubRouteUID": "TPE-TEST-A",
+          "Direction": 0,
+          "Stops": [
+            {"StopUID": "A1", "StopPosition": {"PositionLon": 121, "PositionLat": 25}},
+            {"StopUID": "A2", "StopPosition": {"PositionLon": 121.001, "PositionLat": 25}}
+          ]
+        },
+        {
+          "RouteUID": "TPE-TEST",
+          "SubRouteUID": "TPE-TEST-B",
+          "Direction": 0,
+          "Stops": [
+            {"StopUID": "B1", "StopPosition": {"PositionLon": 121, "PositionLat": 25.001}},
+            {"StopUID": "B2", "StopPosition": {"PositionLon": 121.001, "PositionLat": 25.001}}
+          ]
+        },
+        {
+          "RouteUID": "TPE-LOOP",
+          "SubRouteUID": "TPE-LOOP-A",
+          "Direction": 2,
+          "Stops": [
+            {"StopUID": "L1", "StopPosition": {"PositionLon": 121, "PositionLat": 25}},
+            {"StopUID": "L2", "StopPosition": {"PositionLon": 121.001, "PositionLat": 25}},
+            {"StopUID": "L3", "StopPosition": {"PositionLon": 121.001, "PositionLat": 25.001}}
+          ]
+        }
+      ],
+      "shapes": [
+        {"RouteUID": "TPE-TEST", "SubRouteUID": "TPE-TEST-A", "Direction": 0, "Coordinates": [[121,25],[121.001,25]], "UpdateTime": "2026-07-20T00:00:00+08:00"},
+        {"RouteUID": "TPE-TEST", "SubRouteUID": "TPE-TEST-B", "Direction": 0, "Coordinates": [[121,25.001],[121.001,25.001]], "UpdateTime": "2026-07-21T00:00:00+08:00"},
+        {"RouteUID": "TPE-LOOP", "SubRouteUID": "TPE-LOOP-A", "Direction": 2, "Coordinates": [[121,25],[121.001,25],[121.001,25.001],[121,25.001],[121,25]], "UpdateTime": "2026-07-22T00:00:00+08:00"}
+      ]
+    },
+    {
+      "scope": "intercity",
+      "city": null,
+      "stopOfRoute": [
+        {
+          "RouteUID": "THB-TEST",
+          "SubRouteUID": null,
+          "Direction": 1,
+          "Stops": [
+            {"StopUID": "I1", "StopPosition": {"PositionLon": 120.9, "PositionLat": 24.9}},
+            {"StopUID": "I2", "StopPosition": {"PositionLon": 120.901, "PositionLat": 24.9}}
+          ]
+        }
+      ],
+      "shapes": [
+        {"RouteUID": "THB-TEST", "SubRouteUID": null, "Direction": 1, "Coordinates": [[120.9,24.9],[120.901,24.9]], "UpdateTime": "2026-07-19T00:00:00+08:00"}
+      ]
+    }
+  ]
+}
