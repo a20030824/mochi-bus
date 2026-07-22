@@ -9,6 +9,7 @@ import {
   isStopArrivalBatchPayload,
   STOP_ARRIVAL_MAX_RESPONSE_BYTES,
 } from '../infrastructure/tdx/stop-arrivals'
+import { getPinnedStopPlaceBundle } from '../infrastructure/transit/snapshot-probe-repository'
 import {
   getSnapshotSchedule,
   getStopPlaceBundle,
@@ -36,6 +37,7 @@ import {
   telemetryCity,
   type MapEnv,
 } from './map-http-context'
+import { requestedProbeSnapshotVersion } from './snapshot-probe-read'
 
 const REALTIME_COOLDOWN_SECONDS = 60
 const LAST_REALTIME_SECONDS = 120
@@ -121,7 +123,10 @@ export async function readPlaceArrivals(c: Context<MapEnv>) {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇城市')
     const placeId = requiredQueryString(c.req.param('placeId'), '站牌識別碼', 100)
-    const bundle = await getStopPlaceBundle(env, city, placeId)
+    const requestedVersion = await requestedProbeSnapshotVersion(c, city)
+    const bundle = requestedVersion
+      ? await getPinnedStopPlaceBundle(env, city, placeId, requestedVersion)
+      : await getStopPlaceBundle(env, city, placeId)
     const now = new Date()
     const scheduledRoutes = bundle ? bundle.routes.map(({ schedules, ...route }) => ({
       ...route,
@@ -130,7 +135,7 @@ export async function readPlaceArrivals(c: Context<MapEnv>) {
         direction: route.direction,
         subRouteUid: route.subRouteUid,
       }, now),
-    })) : await (async () => {
+    })) : requestedVersion ? [] : await (async () => {
       const routes = await getStopPlaceRoutes(env, city, placeId)
       const routeNames = [...new Set(routes.map((route) => route.routeName))]
       const schedulesByRoute = new Map((await Promise.all(routeNames.map(async (routeName) => [
@@ -154,7 +159,11 @@ export async function readPlaceArrivals(c: Context<MapEnv>) {
       && (focusDirection === undefined || route.direction === focusDirection)
       && (!focusSubRouteUid || route.subRouteUid === focusSubRouteUid),
     ) : undefined
-    const candidates = includeFocusedCandidate(selectRealtimeCandidates(scheduledRoutes), focused)
+    // Snapshot publication probes verify the pinned bundle itself. They do not
+    // contact TDX or replay realtime state, so source health cannot mask bundle identity.
+    const candidates = requestedVersion
+      ? []
+      : includeFocusedCandidate(selectRealtimeCandidates(scheduledRoutes), focused)
     const batches = buildStopArrivalBatches(city, candidates.map((route) => ({
       routeUid: route.routeUid,
       routeName: route.routeName,
@@ -162,7 +171,7 @@ export async function readPlaceArrivals(c: Context<MapEnv>) {
     })))
     const etaItems: BusETAItem[] = []
     const staleRouteIdentities = new Set<string>()
-    let rateLimited = await hasRealtimeCooldown(env, city, scope)
+    let rateLimited = requestedVersion ? false : await hasRealtimeCooldown(env, city, scope)
     let warning: TDXWarning | undefined = rateLimited ? 'tdx-rate-limit' : undefined
     let realtimeQueries = 0
     for (const batch of batches) {
@@ -240,7 +249,11 @@ export async function readPlaceArrivals(c: Context<MapEnv>) {
       snapshotVersion: bundle?.version ?? null,
       warning,
       realtime: { candidates: candidates.length, queries: realtimeQueries, rateLimited },
-    }, 200, { 'Cache-Control': warning || c.req.header('Authorization') ? 'no-store' : 'public, max-age=15' })
+    }, 200, {
+      'Cache-Control': requestedVersion || warning || c.req.header('Authorization')
+        ? 'no-store'
+        : 'public, max-age=15',
+    })
     tracker.complete({
       ...placeArrivalsOutcome({
         bundleUsed: Boolean(bundle),

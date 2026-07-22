@@ -4,6 +4,7 @@ import { QueryValidationError } from '../domain/bus-query'
 import type { RouteMapVariant } from '../domain/map/map-model'
 import { buildRouteTimetable } from '../domain/map/timetable'
 import { getRouteMapVariants } from '../infrastructure/tdx/map'
+import { getPinnedSnapshotRouteVariants } from '../infrastructure/transit/snapshot-probe-repository'
 import {
   getSnapshotRouteVariants,
   getSnapshotSchedule,
@@ -16,6 +17,7 @@ import {
 } from '../lib/api-input'
 import { logProductionError } from '../observability/production-log'
 import { mapJsonError, tdxEnv, type MapEnv } from './map-http-context'
+import { requestedProbeSnapshotVersion } from './snapshot-probe-read'
 
 type RouteVariantSource = 'snapshot' | 'tdx'
 
@@ -36,7 +38,14 @@ async function loadRouteVariants(
   c: Context<MapEnv>,
   city: string,
   routeName: string,
+  requestedVersion?: string,
 ): Promise<LoadedRouteVariants> {
+  if (requestedVersion) {
+    return {
+      variants: await getPinnedSnapshotRouteVariants(c.env, city, routeName, requestedVersion),
+      source: 'snapshot',
+    }
+  }
   const snapshotVariants = await getSnapshotRouteVariants(c.env, city, routeName)
   if (snapshotVariants.length) return { variants: snapshotVariants, source: 'snapshot' }
   return {
@@ -63,12 +72,24 @@ export async function readRouteMap(c: Context<MapEnv>) {
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇有效縣市')
     if (!routeName || routeName.length > 40) throw new QueryValidationError('請選擇有效路線')
 
-    const { variants, source } = await loadRouteVariants(c, city, routeName)
+    const requestedVersion = await requestedProbeSnapshotVersion(c, city)
+    const { variants, source } = await loadRouteVariants(c, city, routeName, requestedVersion)
     if (!variants.length) {
-      return c.json({ error: '這條路線目前沒有可用的地圖線型' }, 404)
+      return c.json({ error: '這條路線目前沒有可用的地圖線型' }, 404, {
+        ...(requestedVersion ? { 'Cache-Control': 'no-store' } : {}),
+      })
     }
-    return c.json({ schemaVersion: 1, city, routeName, source, variants }, 200, {
-      'Cache-Control': `public, max-age=${source === 'snapshot' ? 86400 : 300}`,
+    return c.json({
+      schemaVersion: 1,
+      city,
+      routeName,
+      source,
+      ...(requestedVersion ? { snapshotVersion: requestedVersion } : {}),
+      variants,
+    }, 200, {
+      'Cache-Control': requestedVersion
+        ? 'no-store'
+        : `public, max-age=${source === 'snapshot' ? 86400 : 300}`,
     })
   } catch (error) {
     if (!(error instanceof QueryValidationError || error instanceof ApiInputError)) {

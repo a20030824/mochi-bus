@@ -30,15 +30,16 @@ describe('snapshot window workflow summary', () => {
 
     expect(summaries).toHaveLength(2)
     expect(summaries[0]).toMatchObject({ city: 'Taipei', result: 'unchanged', durableRecordWrite: 'success' })
-    expect(summaries[1]).toMatchObject({ city: 'NewTaipei', result: 'failed', durableRecordWrite: 'failed' })
+    expect(summaries[1]).toMatchObject({ city: 'NewTaipei', result: 'failed', failureClass: 'unknown', durableRecordWrite: 'failed' })
     expect(snapshotWindowMarkdown(summaries)).toContain('- unchanged: Taipei')
     expect(snapshotWindowMarkdown(summaries)).toContain('- failed: NewTaipei')
   })
 
-  it('renders only the strict summary contract', () => {
+  it('renders only the strict summary contract including failure class', () => {
     const markdown = snapshotWindowMarkdown([successfulSummary])
 
-    expect(markdown).toContain('| Taipei | v1:Taipei:2026-07-20:0317 | unchanged | unchanged |')
+    expect(markdown).toContain('| City | Window | Source | Result | Failure class |')
+    expect(markdown).toContain('| Taipei | v1:Taipei:2026-07-20:0317 | unchanged | unchanged | none |')
     expect(markdown).toContain('- unchanged-healthy: Taipei')
     expect(markdown).toContain('- window-record-write-failed: none')
     expect(markdown).not.toMatch(/authorization|client[_ -]?secret|access[_ -]?token|https?:\/\//i)
@@ -57,14 +58,15 @@ describe('snapshot window workflow summary', () => {
       ...successfulSummary,
       city: 'Taoyuan',
       result: 'failed',
-      failureClass: 'network_missing',
+      failureClass: 'route_sample_failed',
       activeProbeResult: 'error',
       rollbackAvailable: false,
-      probeFailureClass: 'network_missing',
+      probeFailureClass: 'route_sample_failed',
       diagnosticWarnings: [],
     }
 
     const markdown = snapshotWindowMarkdown([successfulSummary, degraded, failed])
+    expect(markdown).toContain('| Taoyuan | v1:Taipei:2026-07-20:0317 | checked | failed | route_sample_failed |')
     expect(markdown).toContain('- unchanged-healthy: Taipei')
     expect(markdown).toContain('- unchanged-rollback-degraded: NewTaipei')
     expect(markdown).toContain('- active-probe-failed: Taoyuan')

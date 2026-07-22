@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { supportedCityCodes } from '../config'
 import { QueryValidationError } from '../domain/bus-query'
+import { getPinnedSnapshotRouteCatalog } from '../infrastructure/transit/snapshot-probe-repository'
 import {
   getActiveSnapshotVersion,
   getSnapshotRouteCatalog,
@@ -14,6 +15,7 @@ import {
   telemetryCity,
   type MapEnv,
 } from './map-http-context'
+import { requestedProbeSnapshotVersion } from './snapshot-probe-read'
 
 // Own the route-catalog fallback, response, cache, and telemetry contract here;
 // snapshot persistence and TDX transport stay behind their infrastructure boundaries.
@@ -23,17 +25,24 @@ export async function readRouteCatalog(c: Context<MapEnv>) {
     const city = c.req.query('city')?.trim()
     if (!city || !supportedCityCodes.has(city)) throw new QueryValidationError('請選擇縣市')
 
-    const snapshotRoutes = await getSnapshotRouteCatalog(c.env, city)
-    const routes = snapshotRoutes.length ? snapshotRoutes : await getRouteCatalog(tdxEnv(c), city)
-    const snapshotVersion = snapshotRoutes.length ? await getActiveSnapshotVersion(c.env, city) : null
+    const requestedVersion = await requestedProbeSnapshotVersion(c, city)
+    const snapshotRoutes = requestedVersion
+      ? await getPinnedSnapshotRouteCatalog(c.env, city, requestedVersion)
+      : await getSnapshotRouteCatalog(c.env, city)
+    const usesSnapshot = requestedVersion !== undefined || snapshotRoutes.length > 0
+    const routes = usesSnapshot ? snapshotRoutes : await getRouteCatalog(tdxEnv(c), city)
+    const snapshotVersion = requestedVersion
+      ?? (snapshotRoutes.length ? await getActiveSnapshotVersion(c.env, city) : null)
     const response = c.json({
       schemaVersion: 2,
       city,
-      source: snapshotRoutes.length ? 'snapshot' : 'tdx',
+      source: usesSnapshot ? 'snapshot' : 'tdx',
       snapshotVersion,
       routes,
     }, 200, {
-      'Cache-Control': `public, max-age=${snapshotRoutes.length ? 86400 : 300}`,
+      'Cache-Control': requestedVersion
+        ? 'no-store'
+        : `public, max-age=${usesSnapshot ? 86400 : 300}`,
     })
     tracker.complete({
       ...mapRoutesOutcome({
