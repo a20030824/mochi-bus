@@ -279,7 +279,7 @@ async function smokeVersion({ city, version, evidence, baseUrl = 'https://bus.mo
       if (routes?.source !== 'snapshot' || routes?.snapshotVersion !== version
         || !Array.isArray(routes.routes) || routes.routes.length !== evidence.counts.routes) throw new Error('routes')
       const route = await fetchPublicJson(baseUrl,
-        `/api/v1/map/route?city=${encodeURIComponent(city)}&route=${encodeURIComponent(evidence.sample.routeName)}&${cacheBust}`)
+        `/api/v1/map/route?city=${encodeURIComponent(city)}&route=${encodeURIComponent(evidence.sample.routeName)}&routeUid=${encodeURIComponent(evidence.sample.routeUid)}&patternId=${encodeURIComponent(evidence.sample.patternId)}&${cacheBust}`)
       const variant = Array.isArray(route?.variants)
         ? route.variants.find((item) => item?.variantKey === evidence.sample.patternId
           && item?.routeUid === evidence.sample.routeUid) : null
