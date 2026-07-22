@@ -48,6 +48,16 @@ export const SNAPSHOT_PROBE_FAILURE_STAGES = Object.freeze([
   'place_pattern',
 ])
 
+export const SNAPSHOT_PROBE_REQUEST_FAILURE_REASONS = Object.freeze([
+  'http_error',
+  'timeout',
+  'body_limit',
+  'json_parse',
+  'stream_failure',
+  'network_failure',
+  'unknown',
+])
+
 const SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const CORE_COUNT_FIELDS = ['routes', 'patterns', 'stops', 'places', 'patternStops']
 
@@ -202,7 +212,12 @@ export async function probeActiveSnapshot({
     const sample = sampleRows[0]
     if (!validSample(sample)) throw probeFailure('route_sample_failed')
 
-    const emitSampleFailure = (failureStage, failureClass, observedSnapshotVersion = null) => {
+    const emitSampleFailure = (
+      failureStage,
+      failureClass,
+      observedSnapshotVersion = null,
+      requestFailureReason = null,
+    ) => {
       emitProbeDiagnostic(diagnosticSink, {
         city,
         windowId,
@@ -214,14 +229,20 @@ export async function probeActiveSnapshot({
         attempt: 1,
         failureStage,
         failureClass,
+        requestFailureReason,
       })
     }
 
     let route
     try {
-      route = await publicApi.getJson(`/api/v1/map/route?city=${encodeURIComponent(city)}&route=${encodeURIComponent(sample.route_name)}&snapshot=${encodeURIComponent(activeVersion)}&probe=${encodeURIComponent(windowId)}`)
-    } catch {
-      emitSampleFailure('route_request', 'route_sample_failed')
+      route = await publicApi.getJson(`/api/v1/map/route?city=${encodeURIComponent(city)}&route=${encodeURIComponent(sample.route_name)}&routeUid=${encodeURIComponent(sample.route_uid)}&patternId=${encodeURIComponent(sample.pattern_id)}&snapshot=${encodeURIComponent(activeVersion)}&probe=${encodeURIComponent(windowId)}`)
+    } catch (error) {
+      emitSampleFailure(
+        'route_request',
+        'route_sample_failed',
+        null,
+        classifyProbeRequestFailure(error),
+      )
       throw probeFailure('route_sample_failed')
     }
     if (route?.schemaVersion !== 1 || route?.source !== 'snapshot' || !Array.isArray(route.variants)) {
@@ -233,7 +254,7 @@ export async function probeActiveSnapshot({
       throw probeFailure('route_sample_failed')
     }
     const variant = route.variants.find((candidate) => candidate?.variantKey === sample.pattern_id)
-    if (!variant) {
+    if (!variant || variant.routeUid !== sample.route_uid) {
       emitSampleFailure('route_variant', 'route_sample_failed', route.snapshotVersion)
       throw probeFailure('route_sample_failed')
     }
@@ -246,8 +267,13 @@ export async function probeActiveSnapshot({
     let place
     try {
       place = await publicApi.getJson(`/api/v1/map/place/${encodeURIComponent(sample.place_id)}/arrivals?city=${encodeURIComponent(city)}&snapshot=${encodeURIComponent(activeVersion)}&probe=${encodeURIComponent(windowId)}`)
-    } catch {
-      emitSampleFailure('place_request', 'place_bundle_sample_failed')
+    } catch (error) {
+      emitSampleFailure(
+        'place_request',
+        'place_bundle_sample_failed',
+        null,
+        classifyProbeRequestFailure(error),
+      )
       throw probeFailure('place_bundle_sample_failed')
     }
     if (place?.schemaVersion !== 1
@@ -260,7 +286,8 @@ export async function probeActiveSnapshot({
       emitSampleFailure('place_version', 'place_bundle_sample_failed', place.snapshotVersion)
       throw probeFailure('place_bundle_sample_failed')
     }
-    if (!place.routes.some((candidate) => candidate?.variantKey === sample.pattern_id)) {
+    if (!place.routes.some((candidate) =>
+      candidate?.variantKey === sample.pattern_id && candidate?.routeUid === sample.route_uid)) {
       emitSampleFailure('place_pattern', 'place_bundle_sample_failed', place.snapshotVersion)
       throw probeFailure('place_bundle_sample_failed')
     }
@@ -308,6 +335,19 @@ export function deterministicSampleCaseId(city, windowId, probeCaseVersion) {
   return `case_${createHash('sha256').update(`${city}\n${windowId}\n${probeCaseVersion}`).digest('hex').slice(0, 12)}`
 }
 
+export function classifyProbeRequestFailure(error) {
+  if (error instanceof ProbeResponseReadError) return error.reason
+  if (error instanceof SyntaxError) return 'json_parse'
+  const name = error instanceof Error ? error.name : ''
+  if (name === 'AbortError' || name === 'TimeoutError') return 'timeout'
+  const message = error instanceof Error ? error.message : ''
+  if (message === 'Public snapshot probe request failed') return 'http_error'
+  if (message === 'Bounded response is too large') return 'body_limit'
+  if (message === 'Bounded response has no body') return 'stream_failure'
+  if (error instanceof TypeError) return 'network_failure'
+  return 'unknown'
+}
+
 export function createSnapshotProbeDiagnostic(value) {
   if (!value || typeof value !== 'object') throw new Error('Invalid snapshot probe diagnostic')
   if (!SNAPSHOT_PROBE_FAILURE_STAGES.includes(value.failureStage)) {
@@ -319,6 +359,11 @@ export function createSnapshotProbeDiagnostic(value) {
   const attempt = Number(value.attempt)
   if (!Number.isInteger(attempt) || attempt < 1 || attempt > 12) {
     throw new Error('Invalid snapshot probe diagnostic attempt')
+  }
+  const requestFailureReason = value.requestFailureReason ?? null
+  if (requestFailureReason !== null
+    && !SNAPSHOT_PROBE_REQUEST_FAILURE_REASONS.includes(requestFailureReason)) {
+    throw new Error('Invalid snapshot probe request failure reason')
   }
   return Object.freeze({
     event: 'snapshot_probe_diagnostic',
@@ -332,6 +377,7 @@ export function createSnapshotProbeDiagnostic(value) {
     attempt,
     failureStage: value.failureStage,
     failureClass: value.failureClass,
+    requestFailureReason,
   })
 }
 
@@ -351,25 +397,36 @@ export function networkPrefixMatches(prefix, city, version) {
 }
 
 export async function readBoundedResponseJson(response, maximumBytes) {
-  return JSON.parse(await readBoundedResponseText(response, maximumBytes))
+  const text = await readBoundedResponseText(response, maximumBytes)
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new ProbeResponseReadError('json_parse')
+  }
 }
 
 export async function readBoundedResponseText(response, maximumBytes) {
-  if (!response.body) throw new Error('Bounded response has no body')
+  if (!response.body) throw new ProbeResponseReadError('stream_failure')
   const declaredLength = Number(response.headers.get('Content-Length'))
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
     await response.body.cancel().catch(() => undefined)
-    throw new Error('Bounded response is too large')
+    throw new ProbeResponseReadError('body_limit')
   }
   const reader = response.body.getReader()
   const chunks = []
   let bytes = 0
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      let result
+      try {
+        result = await reader.read()
+      } catch {
+        throw new ProbeResponseReadError('stream_failure')
+      }
+      const { done, value } = result
       if (done) break
       bytes += value.byteLength
-      if (bytes > maximumBytes) throw new Error('Bounded response is too large')
+      if (bytes > maximumBytes) throw new ProbeResponseReadError('body_limit')
       chunks.push(value)
     }
   } finally {
@@ -520,6 +577,13 @@ class SnapshotProbeFailure extends Error {
   constructor(failureClass) {
     super('Snapshot active probe failed')
     this.failureClass = failureClass
+  }
+}
+
+class ProbeResponseReadError extends Error {
+  constructor(reason) {
+    super('Snapshot probe response read failed')
+    this.reason = reason
   }
 }
 
