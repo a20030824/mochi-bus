@@ -140,7 +140,7 @@ describe('window watchdog runner', () => {
     })
     const markdown = watchdogSummaryMarkdown(result.summary)
     expect(result.ok).toBe(false)
-    expect(markdown).toContain('- Rollback degraded: Taipei, NewTaipei')
+    expect(markdown).toContain('- Unchanged rollback degraded: Taipei, NewTaipei')
     expect(markdown).toContain('unchanged_rollback_degraded')
   })
 
