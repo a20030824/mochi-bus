@@ -250,6 +250,23 @@ async function probeFreshBrowser({ origin, token, releaseSha, workerVersionId })
     })
     for (const target of PAGES) {
       const page = await context.newPage()
+      await waitForBrowserReleaseIdentity({
+        expectedSha: releaseSha,
+        expectedWorkerVersionId: workerVersionId,
+        readRelease: async () => {
+          try {
+            const response = await page.goto(browserReleasePath, {
+              waitUntil: 'commit',
+              timeout: 10_000,
+            })
+            if (!response || response.status() < 200 || response.status() >= 300) return null
+            return response.json()
+          } catch {
+            return null
+          }
+        },
+      })
+
       page.on('pageerror', () => { totals.pageErrors += 1 })
       page.on('console', (message) => {
         if (message.type() === 'error') totals.consoleErrors += 1
@@ -274,22 +291,6 @@ async function probeFreshBrowser({ origin, token, releaseSha, workerVersionId })
       if (target.bootSelector) {
         await page.locator(target.bootSelector).waitFor({ state: 'visible', timeout: 30_000 })
       }
-      await waitForBrowserReleaseIdentity({
-        expectedSha: releaseSha,
-        expectedWorkerVersionId: workerVersionId,
-        readRelease: () => page.evaluate(async (path) => {
-          try {
-            const response = await fetch(path, {
-              cache: 'no-store',
-              signal: AbortSignal.timeout(10_000),
-            })
-            if (!response.ok) return null
-            return response.json()
-          } catch {
-            return null
-          }
-        }, browserReleasePath),
-      })
       const ready = await page.evaluate(() => ({
         readyState: document.readyState,
         title: document.title,
