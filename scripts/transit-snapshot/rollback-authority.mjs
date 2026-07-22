@@ -73,6 +73,8 @@ export function assertSnapshotEvidence(value) {
     manifest: Object.freeze({ ...manifest, artifacts: Object.freeze([...manifest.artifacts]) }),
     networkVerified: true,
     sampleArtifactsVerified: true,
+    ...(value.sample && typeof value.sample === 'object'
+      ? { sample: Object.freeze({ ...value.sample }) } : {}),
   })
 }
 
