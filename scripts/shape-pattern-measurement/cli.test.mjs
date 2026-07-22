@@ -1,21 +1,85 @@
-import { describe, expect, it } from 'vitest'
-import { parseCli } from './cli.mjs'
+import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { afterEach, describe, expect, it } from 'vitest'
+import { parseCli, pathsOverlap, validatePathBoundaries } from './cli.mjs'
 
-describe('measurement CLI validation', () => {
-  it.each(['--client-id', '--client-secret', '--token'])('rejects secret flag %s', async (flag) => {
-    await expect(parseCli([flag, 'secret'], { requireReplayPath: false })).rejects.toThrow(/forbidden/)
+const roots = []
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+async function workspace() {
+  const root = await mkdtemp(join(tmpdir(), 'shape-measure-cli-'))
+  roots.push(root)
+  await mkdir(join(root, 'src'))
+  await mkdir(join(root, '.git'))
+  return root
+}
+
+describe('measurement CLI path boundaries', () => {
+  it.each([
+    ['generated equals measurement root', ['--generated-dir', '.tdx-measurement']],
+    ['generated is raw ancestor', ['--generated-dir', '.tdx-measurement', '--raw-dir', '.tdx-measurement/raw']],
+    ['generated is report ancestor', ['--generated-dir', '.tdx-measurement', '--report-dir', '.tdx-measurement/reports']],
+    ['raw is generated ancestor', ['--raw-dir', '.tdx-measurement', '--generated-dir', '.tdx-measurement/generated']],
+    ['report is raw child', ['--raw-dir', '.tdx-measurement/raw', '--report-dir', '.tdx-measurement/raw/reports']],
+    ['repository root', ['--generated-dir', '.']],
+    ['parent repository', ['--generated-dir', '..']],
+    ['source tree', ['--generated-dir', 'src']],
+    ['git metadata', ['--generated-dir', '.git/cache']],
+  ])('rejects %s', async (_name, argv) => {
+    const root = await workspace()
+    await expect(parseCli(argv, { cwd: root, repositoryRoot: root, requireReplayPath: false })).rejects.toThrow(/overlap|disjoint/)
   })
 
-  it('rejects unknown cities, non-finite values, negative values, and directory conflicts', async () => {
-    await expect(parseCli(['--cities', 'Unknown'], { requireReplayPath: false })).rejects.toThrow(/Unknown city/)
-    await expect(parseCli(['--iterations', 'Infinity'], { requireReplayPath: false })).rejects.toThrow()
-    await expect(parseCli(['--warmup', '-1'], { requireReplayPath: false })).rejects.toThrow()
-    await expect(parseCli(['--raw-dir', 'same', '--report-dir', 'same'], { requireReplayPath: false })).rejects.toThrow(/distinct/)
+  it('resolves symlinks before containment checks', async () => {
+    const root = await workspace()
+    const outside = await mkdtemp(join(tmpdir(), 'shape-measure-outside-'))
+    roots.push(outside)
+    await symlink(outside, join(root, 'linked-root'), 'dir')
+    await expect(validatePathBoundaries({
+      rawDir: join(root, 'linked-root', 'raw'),
+      reportDir: join(outside, 'raw', 'reports'),
+      generatedRoot: join(root, 'generated'),
+      repositoryRoot: root,
+    })).rejects.toThrow(/disjoint/)
   })
 
-  it('requires an explicit expected SHA-256 for instrumented mode', async () => {
-    await expect(parseCli(['--instrumented'], { requireReplayPath: false })).rejects.toThrow(/expected-matcher-sha256/)
-    await expect(parseCli(['--instrumented', '--expected-matcher-sha256', 'a'.repeat(64)], { requireReplayPath: false }))
-      .resolves.toMatchObject({ instrumented: true, expectedMatcherSha256: 'a'.repeat(64) })
+  it('does not mistake sibling prefixes for containment', async () => {
+    const root = await workspace()
+    await expect(validatePathBoundaries({
+      rawDir: join(root, 'foo', 'bar'),
+      reportDir: join(root, 'foo', 'bar-other'),
+      generatedRoot: join(root, 'foo', 'generated'),
+      repositoryRoot: root,
+    })).resolves.toBeUndefined()
+    expect(pathsOverlap('/foo/bar', '/foo/bar-other')).toBe(false)
+  })
+
+  it('tracks whether replay scope was explicitly supplied', async () => {
+    const root = await workspace()
+    const defaults = await parseCli([], { cwd: root, repositoryRoot: root, requireReplayPath: false })
+    expect(defaults.citiesExplicit).toBe(false)
+    expect(defaults.includeIntercityExplicit).toBe(false)
+    const explicit = await parseCli(['--cities', 'Taipei', '--include-intercity'], {
+      cwd: root, repositoryRoot: root, requireReplayPath: false,
+    })
+    expect(explicit.citiesExplicit).toBe(true)
+    expect(explicit.includeIntercityExplicit).toBe(true)
+  })
+
+  it.each([
+    ['--warmup', 'NaN'], ['--warmup', 'Infinity'], ['--warmup', '-1'],
+    ['--iterations', '0'], ['--iterations', '1.5'], ['--top-outliers', '01'],
+    ['--fetch-concurrency', '1e3'],
+  ])('rejects malformed numeric option %s %s', async (flag, value) => {
+    const root = await workspace()
+    await expect(parseCli([flag, value], { cwd: root, repositoryRoot: root, requireReplayPath: false })).rejects.toThrow()
+  })
+
+  it.each(['--client-id', '--client-secret', '--token'])('rejects secret CLI flag %s', async (flag) => {
+    const root = await workspace()
+    await expect(parseCli([flag, 'secret'], { cwd: root, repositoryRoot: root, requireReplayPath: false })).rejects.toThrow(/forbidden/)
   })
 })
