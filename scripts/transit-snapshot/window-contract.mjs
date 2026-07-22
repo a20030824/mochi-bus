@@ -28,6 +28,7 @@ export const SNAPSHOT_WINDOW_FAILURE_CLASSES = Object.freeze([
   'snapshot_smoke',
   'snapshot_rollback',
   'snapshot_finalize',
+  'snapshot_cleanup',
   'snapshot_window_record_write',
   ...SNAPSHOT_PROBE_FAILURE_CLASSES.filter((value) => value !== 'none' && value !== 'unknown'),
   'unknown',
@@ -72,7 +73,7 @@ export function snapshotProgressMarker(city, phase, fields = {}, now = new Date(
   assertCity(city)
   const allowedPhases = new Set([
     'source_fetch', 'source_compare', 'active_pointer_read', 'local_validation',
-    'stage', 'remote_validation', 'activate', 'smoke', 'rollback', 'finalize',
+    'stage', 'remote_validation', 'activate', 'smoke', 'rollback', 'finalize', 'cleanup',
   ])
   if (!allowedPhases.has(phase)) throw new Error('Invalid snapshot progress phase')
   return Object.freeze({

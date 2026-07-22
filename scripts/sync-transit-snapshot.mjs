@@ -544,6 +544,7 @@ try {
       }), 'application/json')
     },
     cleanup: async () => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'cleanup', { lastSourceCheckAt, previousVersion })))
       if (cleanupFile) await runD1(cleanupFile)
       await deleteObjects(obsoleteObjectKeys)
     },

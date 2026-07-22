@@ -117,6 +117,7 @@ describe('snapshot window contract', () => {
   it('maps fixed failure classes without preserving raw errors', () => {
     expect(snapshotFailureClass('source_fetch')).toBe('snapshot_source_fetch')
     expect(snapshotFailureClass('remote_validation')).toBe('snapshot_remote_validation')
+    expect(snapshotFailureClass('cleanup')).toBe('snapshot_cleanup')
     expect(snapshotFailureClass('raw https://private.example')).toBe('unknown')
   })
 
