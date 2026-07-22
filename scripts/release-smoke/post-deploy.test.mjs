@@ -87,7 +87,8 @@ describe('representative public API contracts', () => {
     snapshotVersion: 'v1',
     routes: [
       { routeUid: 'TPE-FIRST', routeName: '0東' },
-      { routeUid: 'TPE19108', routeName: '307' },
+      { routeUid: 'TPE307-B', routeName: '307' },
+      { routeUid: 'TPE307-A', routeName: '307' },
     ],
   }, 'Taipei')
 
@@ -98,21 +99,32 @@ describe('representative public API contracts', () => {
     }, 'Taipei')).toThrowError(expect.objectContaining({ code: 'routes_contract_invalid' }))
   })
 
-  it('selects the fixed product-default route instead of whichever catalogue row sorts first', () => {
-    expect(selectRepresentativeRoute(taipeiRoutes, {
-      routeName: '307', routeUid: 'TPE19108',
-    })).toEqual({ routeName: '307', routeUid: 'TPE19108' })
-    expect(() => selectRepresentativeRoute(taipeiRoutes, {
-      routeName: 'missing', routeUid: 'TPE-MISSING',
-    })).toThrowError(expect.objectContaining({ code: 'route_sample_missing' }))
+  it('derives every current identity for the fixed route name instead of hardcoding a RouteUID', () => {
+    expect(selectRepresentativeRoute(taipeiRoutes, '307')).toEqual({
+      routeName: '307',
+      routeUids: ['TPE307-A', 'TPE307-B'],
+    })
+    expect(() => selectRepresentativeRoute(taipeiRoutes, 'missing'))
+      .toThrowError(expect.objectContaining({ code: 'route_sample_missing' }))
   })
 
-  it('requires the route detail to preserve the exact snapshot identity and usable stop sequence', () => {
-    const route = { routeName: '307', routeUid: 'TPE19108' }
-    const variant = {
-      variantKey: 'TPE19108-0:0:0',
+  it('requires route detail to intersect the validated catalogue identities and expose usable stops', () => {
+    const route = { routeName: '307', routeUids: ['TPE307-A', 'TPE307-B'] }
+    const invalidVariant = {
+      variantKey: 'OTHER-0:0:0',
       routeName: '307',
-      routeUid: 'TPE19108',
+      routeUid: 'TPE-OTHER',
+      stops: {
+        features: [
+          { properties: { stopUid: 'TPE000' } },
+          { properties: { stopUid: 'TPE001' } },
+        ],
+      },
+    }
+    const validVariant = {
+      variantKey: 'TPE307-B-0:0:0',
+      routeName: '307',
+      routeUid: 'TPE307-B',
       stops: {
         features: [
           { properties: { stopUid: 'TPE100' } },
@@ -125,14 +137,14 @@ describe('representative public API contracts', () => {
       city: 'Taipei',
       routeName: '307',
       source: 'snapshot',
-      variants: [variant],
-    }, 'Taipei', route)).toBe(variant)
+      variants: [invalidVariant, validVariant],
+    }, 'Taipei', route)).toBe(validVariant)
     expect(() => validateRouteContract({
       schemaVersion: 1,
       city: 'Taipei',
       routeName: '307',
       source: 'snapshot',
-      variants: [{ ...variant, routeUid: 'TPE-OTHER' }],
+      variants: [invalidVariant],
     }, 'Taipei', route)).toThrowError(expect.objectContaining({ code: 'route_contract_invalid' }))
   })
 
