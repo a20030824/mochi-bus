@@ -106,16 +106,20 @@ describe('shape-to-pattern segment projection', () => {
 })
 
 describe('Direction 2 arclength coverage', () => {
-  it('rejects a partial exact long loop in favor of the complete slightly offset short loop', () => {
+  it('fails closed instead of using coverage to choose between closed loops', () => {
     const result = matchShapesToPatterns(
       [correctLoopPattern],
       [wrongLongDetourLoop, correctShortLoop],
     )
 
-    expect(result.matches).toEqual([expect.objectContaining({ shapeId: 'CORRECT-SHORT-LOOP' })])
-    expect(singlePairCost(correctLoopPattern, wrongLongDetourLoop))
-      .toBeGreaterThan(singlePairCost(correctLoopPattern, correctShortLoop))
-    expect(result.matches[0].metrics?.coverageDeficitMeters).toBeGreaterThan(0)
+    expect(result.matches).toEqual([])
+    expect(result.unresolved).toEqual([{
+      patternId: 'LOOP',
+      reason: 'tolerance-equivalent-alternatives',
+      candidateShapeIds: ['CORRECT-SHORT-LOOP', 'WRONG-LONG-DETOUR'],
+    }])
+    expect(singlePairCost(correctLoopPattern, wrongLongDetourLoop)).toBe(0)
+    expect(singlePairCost(correctLoopPattern, correctShortLoop)).toBeGreaterThan(0)
   })
 
   it('is invariant to loop start coordinate, reverse encoding, and coordinate density', () => {
