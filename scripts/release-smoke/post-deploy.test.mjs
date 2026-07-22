@@ -87,7 +87,7 @@ describe('representative public API contracts', () => {
     snapshotVersion: 'v1',
     routes: [
       { routeUid: 'TPE-FIRST', routeName: '0東' },
-      { routeUid: 'TPE19108', routeName: '307' },
+      { routeUid: 'TPE307-A', routeName: '307' },
     ],
   }, 'Taipei')
 
@@ -98,21 +98,21 @@ describe('representative public API contracts', () => {
     }, 'Taipei')).toThrowError(expect.objectContaining({ code: 'routes_contract_invalid' }))
   })
 
-  it('selects the fixed product-default route instead of whichever catalogue row sorts first', () => {
+  it('selects an exact identity supplied by the adapter instead of catalogue order', () => {
     expect(selectRepresentativeRoute(taipeiRoutes, {
-      routeName: '307', routeUid: 'TPE19108',
-    })).toEqual({ routeName: '307', routeUid: 'TPE19108' })
+      routeName: '307', routeUid: 'TPE307-A',
+    })).toEqual({ routeName: '307', routeUid: 'TPE307-A' })
     expect(() => selectRepresentativeRoute(taipeiRoutes, {
       routeName: 'missing', routeUid: 'TPE-MISSING',
     })).toThrowError(expect.objectContaining({ code: 'route_sample_missing' }))
   })
 
   it('requires the route detail to preserve the exact snapshot identity and usable stop sequence', () => {
-    const route = { routeName: '307', routeUid: 'TPE19108' }
+    const route = { routeName: '307', routeUid: 'TPE307-A' }
     const variant = {
-      variantKey: 'TPE19108-0:0:0',
+      variantKey: 'TPE307-A-0:0:0',
       routeName: '307',
-      routeUid: 'TPE19108',
+      routeUid: 'TPE307-A',
       stops: {
         features: [
           { properties: { stopUid: 'TPE100' } },
