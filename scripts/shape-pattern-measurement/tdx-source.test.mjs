@@ -139,8 +139,9 @@ describe('body-inclusive request timeout and bounded retry', () => {
       fetcher, random: () => 0, now: () => new Date('2026-07-22T00:00:00Z'),
       expectArray: true, maxAttempts: 1, timeoutMs: 10,
     })
+    const rejection = expect(promise).rejects.toMatchObject({ details: { failureClass: 'timeout', retryCount: 0 } })
     await vi.advanceTimersByTimeAsync(11)
-    await expect(promise).rejects.toMatchObject({ details: { failureClass: 'timeout', retryCount: 0 } })
+    await rejection
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
