@@ -26,7 +26,8 @@
     "snapshot:watchdog": "node scripts/transit-snapshot/run-window-watchdog.mjs",
     "snapshot:public-probe": "node scripts/transit-snapshot/run-public-probe.mjs",
     "snapshot:repair-legacy-previous": "node scripts/transit-snapshot/repair-legacy-previous.mjs",
-    "snapshot:rollback": "node scripts/transit-snapshot/rollback.mjs"
+    "snapshot:rollback": "node scripts/transit-snapshot/rollback.mjs",
+    "snapshot:reconcile": "node scripts/transit-snapshot/rollback.mjs reconcile"
   },
   "dependencies": {
     "hono": "^4.12.29",
