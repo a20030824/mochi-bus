@@ -463,9 +463,6 @@ function validSnapshotTimestamp(value) {
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString()
 }
-const activationFile = join(outputRoot, 'activate.sql')
-await writeFile(activationFile,
-  `INSERT INTO dataset_versions(city_code, active_version, source_updated_at, imported_at) VALUES (${values(CITY, version, importedAt, importedAt)}) ON CONFLICT(city_code) DO UPDATE SET active_version=excluded.active_version, source_updated_at=excluded.source_updated_at, imported_at=excluded.imported_at;`)
 const allVersions = [
   ...existingRows.routes, ...existingRows.patterns, ...existingRows.places,
 ].map((row) => row.version)
@@ -493,63 +490,70 @@ const obsoleteObjectKeys = [...new Set([
   ...[...versionsToDelete].map((oldVersion) => `snapshots/${oldVersion}/cities/${CITY}/manifest.json`),
 ])]
 let publishedProbe = null
-await publishWithRollback({
-  targetVersion: version,
-  previousVersion,
-  stage: async () => {
-    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'stage', { lastSourceCheckAt, previousVersion })))
-    await putObjects(artifactTasks)
-    for (const file of sqlFiles) await runD1(file)
-  },
-  validate: () => {
-    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'remote_validation', { lastSourceCheckAt, previousVersion })))
-    return validateRemoteSnapshot(version, validation.counts, validation.quality, manifestKey, manifest)
-  },
-  activate: () => {
-    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'activate', { lastSourceCheckAt, previousVersion })))
-    return runD1(activationFile)
-  },
-  smoke: async () => {
-    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'smoke', { lastSourceCheckAt, previousVersion })))
-    await smokePublishedSnapshot(version, smokeTarget)
-    publishedProbe = await probeActiveSnapshot({
-      city: CITY,
-      windowId: process.env.SNAPSHOT_WINDOW_ID ?? `local:${CITY}:${lastSourceCheckAt.slice(0, 10)}`,
-      state: publishedState,
-      query: queryActiveProbeD1,
-      r2: {
-        getManifest: s3GetManifest,
-        getJson: s3GetJson,
-        head: s3HeadObject,
-        readPrefix: s3ReadPrefix,
-      },
-      publicApi: { getJson: fetchProbePublicJson },
-    })
-    console.log(JSON.stringify(snapshotProbeMarker(publishedProbe)))
-    if (publishedProbe.activeProbeResult === 'error') throw new Error('Published active snapshot probe failed')
-  },
-  rollback: async (targetVersion) => {
-    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'rollback', { lastSourceCheckAt, previousVersion })))
-    const rollbackFile = join(outputRoot, 'rollback.sql')
-    await writeFile(rollbackFile,
-      `UPDATE dataset_versions SET active_version=${sqlValue(targetVersion)}, imported_at=${sqlValue(new Date().toISOString())} WHERE city_code=${sqlValue(CITY)};`)
-    await runD1(rollbackFile)
-    console.error(JSON.stringify({ city: CITY, version, phase: 'rollback', restoredVersion: targetVersion }))
-    // Rollback 成功後,terminal failure 的根因仍是 smoke,不是把恢復動作誤報成失敗原因。
-    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'smoke', { lastSourceCheckAt, previousVersion })))
-  },
-  cleanup: async () => {
-    console.log(JSON.stringify(snapshotProgressMarker(CITY, 'finalize', { lastSourceCheckAt, previousVersion })))
-    if (r2) {
+try {
+  await publishWithRollback({
+    targetVersion: version,
+    previousVersion,
+    stage: async () => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'stage', { lastSourceCheckAt, previousVersion })))
+      await putObjects(artifactTasks)
+      for (const file of sqlFiles) await runD1(file)
+    },
+    validate: () => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'remote_validation', { lastSourceCheckAt, previousVersion })))
+      return validateRemoteSnapshot(version, validation.counts, validation.quality, manifestKey, manifest)
+    },
+    activate: () => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'activate', { lastSourceCheckAt, previousVersion })))
+      return guardedActivateSnapshot(previousVersion, version, importedAt)
+    },
+    smoke: async () => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'smoke', { lastSourceCheckAt, previousVersion })))
+      await smokePublishedSnapshot(version, smokeTarget)
+      publishedProbe = await probeActiveSnapshot({
+        city: CITY,
+        windowId: process.env.SNAPSHOT_WINDOW_ID ?? `local:${CITY}:${lastSourceCheckAt.slice(0, 10)}`,
+        state: publishedState,
+        query: queryActiveProbeD1,
+        r2: {
+          getManifest: s3GetManifest,
+          getJson: s3GetJson,
+          head: s3HeadObject,
+          readPrefix: s3ReadPrefix,
+        },
+        publicApi: { getJson: fetchProbePublicJson },
+      })
+      console.log(JSON.stringify(snapshotProbeMarker(publishedProbe)))
+      if (publishedProbe.activeProbeResult === 'error') throw new Error('Published active snapshot probe failed')
+    },
+    rollback: async (targetVersion, rejectedVersion) => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'rollback', { lastSourceCheckAt, previousVersion })))
+      const restored = guardedActivateSnapshot(rejectedVersion, targetVersion, new Date().toISOString(), false)
+      if (!restored) return false
+      console.error(JSON.stringify({ city: CITY, version, phase: 'rollback', restoredVersion: targetVersion }))
+      // Rollback 成功後,terminal failure 的根因仍是 smoke,不是把恢復動作誤報成失敗原因。
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'smoke', { lastSourceCheckAt, previousVersion })))
+      return true
+    },
+    finalize: async () => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'finalize', { lastSourceCheckAt, previousVersion })))
+      if (!r2) throw new Error('Snapshot state writer unavailable')
       await s3Request('PUT', stateKey, JSON.stringify({
         ...publishedState,
         publishedAt: new Date().toISOString(),
       }), 'application/json')
-    }
-    if (cleanupFile) await runD1(cleanupFile)
-    await deleteObjects(obsoleteObjectKeys)
-  },
-})
+    },
+    cleanup: async () => {
+      console.log(JSON.stringify(snapshotProgressMarker(CITY, 'cleanup', { lastSourceCheckAt, previousVersion })))
+      if (cleanupFile) await runD1(cleanupFile)
+      await deleteObjects(obsoleteObjectKeys)
+    },
+  })
+} catch (error) {
+  const outcome = typeof error?.code === 'string' ? error.code : 'unknown'
+  console.error(JSON.stringify({ event: 'snapshot_publish_failure', city: CITY, version, outcome }))
+  process.exit(1)
+}
 if (!publishedProbe) throw new Error('Published active snapshot probe missing')
 console.log(JSON.stringify(snapshotTerminalMarker(CITY, 'published', {
   lastSourceCheckAt,
@@ -808,7 +812,7 @@ async function smokePublishedSnapshot(targetVersion, target) {
       if (attempt < 12) await new Promise((resolve) => setTimeout(resolve, 10_000))
     }
   }
-  throw new Error(`Public snapshot smoke failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
+  throw new Error('Public snapshot smoke failed')
 }
 
 async function fetchPublicJson(url) {
@@ -972,14 +976,28 @@ function queryExistingSnapshots() {
     active: payload[3]?.results ?? [],
   }
 }
+function guardedActivateSnapshot(expectedVersion, targetVersion, changedAt, updateSource = true) {
+  const assignments = updateSource
+    ? `active_version=${sqlValue(targetVersion)}, source_updated_at=${sqlValue(changedAt)}, imported_at=${sqlValue(changedAt)}`
+    : `active_version=${sqlValue(targetVersion)}, imported_at=${sqlValue(changedAt)}`
+  const statement = expectedVersion
+    ? `UPDATE dataset_versions SET ${assignments} WHERE city_code=${sqlValue(CITY)} AND active_version=${sqlValue(expectedVersion)} RETURNING active_version`
+    : `INSERT INTO dataset_versions(city_code, active_version, source_updated_at, imported_at) VALUES (${values(CITY, targetVersion, changedAt, changedAt)}) ON CONFLICT(city_code) DO NOTHING RETURNING active_version`
+  const result = queryRemoteD1(statement)
+  return result[0]?.results?.[0]?.active_version === targetVersion
+}
 function queryRemoteD1(sql) {
   const result = spawnSync(process.execPath, [
     'node_modules/wrangler/bin/wrangler.js', 'd1', 'execute', DATABASE,
     '--remote', '--json', '--command', sql,
   // 大城市的既有列表 JSON 會超過 spawnSync 預設 1MB 的 maxBuffer,截斷會讓 JSON.parse 爆掉
   ], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-  if (result.status !== 0) throw new Error(`Unable to query remote D1: ${result.stderr}`)
-  return JSON.parse(result.stdout)
+  if (result.status !== 0) throw new Error('Unable to query remote D1')
+  try {
+    return JSON.parse(result.stdout)
+  } catch {
+    throw new Error('Unable to parse remote D1 result')
+  }
 }
 async function queryActiveProbeD1(sql, params) {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? snapshotVars.CLOUDFLARE_ACCOUNT_ID ?? workerVars.CLOUDFLARE_ACCOUNT_ID
