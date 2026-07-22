@@ -1,204 +1,292 @@
 import { stableStringify } from './util.mjs'
 
+const PROJECTION_STATUSES = new Set(['success', 'no-path', 'frontier-empty', 'threshold-rejected', 'throw'])
+
 export function createInstrumentationCollector(partition) {
   const pairMap = new Map()
-  let currentPair = null
+  const shapeEvents = []
+  const openProjections = new Map()
+  let currentPairKey = null
   const assignment = {
-    bestCount: 0, forcedMatchCount: 0, forcedUnmatchedCount: 0,
-    bestTimeMs: 0, forcedMatchTimeMs: 0, forcedUnmatchedTimeMs: 0, activeMaskPeak: 0,
+    bestCount: 0,
+    forcedMatchCount: 0,
+    forcedUnmatchedCount: 0,
+    bestTimeSamplesMs: [],
+    forcedMatchTimeSamplesMs: [],
+    forcedUnmatchedTimeSamplesMs: [],
+    activeMaskPeak: null,
   }
+
   const observe = (event, payload = {}) => {
-    if (event === 'pair-start') {
-      currentPair = `${payload.patternId}\0${payload.shapeId}`
-      pairMap.set(currentPair, {
-        patternId: payload.patternId, shapeId: payload.shapeId,
-        projectionCandidateCount: 0, peakFrontierWidth: 0, retainedNodeCount: 0,
-        parentNodeCount: 0, pathKeyApproximateBytes: 0, forwardTimeMs: 0,
-        reverseTimeMs: 0, costObjectiveSolveTimeMs: 0, spanObjectiveSolveTimeMs: 0,
-        pairTimeMs: 0, compatible: false, instrumented: true,
-      })
-      return
+    if (event === 'shape-classified') return shapeClassified(payload)
+    if (event === 'pair-start') return pairStart(payload)
+    if (event === 'pair-end') return pairEnd(payload)
+    if (event === 'orientation-end') return orientationEnd(payload)
+    if (event === 'projection-start') return projectionStart(payload)
+    if (event === 'projection-layer') return projectionLayer(payload)
+    if (event === 'projection-end') return projectionEnd(payload)
+    if (event === 'assignment-solve-end') return assignmentEnd(payload)
+    if (event === 'assignment-state') return assignmentState(payload)
+    if (event === 'assignment-solve-start') return undefined
+    throw new Error(`Unknown instrumentation event: ${event}`)
+  }
+
+  function shapeClassified(payload) {
+    shapeEvents.push({
+      shapeId: requiredId(payload.shapeId, 'shapeId'),
+      direction: enumValue(payload.direction, [0, 1, 2], 'direction'),
+      rawCoordinateCount: nonNegativeInteger(payload.rawCoordinateCount, 'rawCoordinateCount'),
+      normalizedCoordinateCount: nullableNonNegativeInteger(payload.normalizedCoordinateCount, 'normalizedCoordinateCount'),
+      segmentCount: nullableNonNegativeInteger(payload.segmentCount, 'segmentCount'),
+      closureClassification: enumValue(payload.closureClassification, ['not-direction-2', 'truly-closed', 'near-closed', 'open-or-invalid'], 'closureClassification'),
+      closureGapDistanceMeters: nullableNonNegative(payload.closureGapDistanceMeters, 'closureGapDistanceMeters'),
+      accepted: payload.accepted === true,
+    })
+  }
+
+  function pairStart(payload) {
+    if (currentPairKey !== null) throw new Error(`Nested pair-start in ${partition.partitionId}`)
+    const key = pairKey(payload)
+    if (pairMap.has(key)) throw new Error(`Duplicate pair-start for ${key}`)
+    currentPairKey = key
+    pairMap.set(key, {
+      patternId: requiredId(payload.patternId, 'patternId'),
+      shapeId: requiredId(payload.shapeId, 'shapeId'),
+      stopCount: nonNegativeInteger(payload.stopCount, 'stopCount'),
+      rawCoordinateCount: nonNegativeInteger(payload.rawCoordinateCount, 'rawCoordinateCount'),
+      normalizedCoordinateCount: nonNegativeInteger(payload.normalizedCoordinateCount, 'normalizedCoordinateCount'),
+      segmentCount: nonNegativeInteger(payload.segmentCount, 'segmentCount'),
+      direction2UnwrappedSegmentCount: null,
+      duplicateCoordinateRemovalCount: null,
+      collinearCoordinateRemovalCount: null,
+      closureClassification: enumValue(payload.closureClassification, ['not-direction-2', 'truly-closed', 'near-closed'], 'closureClassification'),
+      closureGapDistanceMeters: nullableNonNegative(payload.closureGapDistanceMeters, 'closureGapDistanceMeters'),
+      projectionCandidateCount: null,
+      peakFrontierWidth: null,
+      retainedNodeCount: null,
+      parentNodeCount: null,
+      pathKeyApproximateBytes: null,
+      forwardTimeMs: null,
+      reverseTimeMs: null,
+      costObjectiveSolveTimeMs: null,
+      spanObjectiveSolveTimeMs: null,
+      projectionOutcomes: [],
+      pairTimeMs: null,
+      compatible: null,
+      status: null,
+      instrumented: true,
+    })
+  }
+
+  function pairEnd(payload) {
+    const key = pairKey(payload)
+    if (currentPairKey !== key) throw new Error(`pair-end without matching pair-start for ${key}`)
+    if ([...openProjections.keys()].some((projectionKey) => projectionKey.startsWith(`${key}\0`))) {
+      throw new Error(`pair-end with open projection for ${key}`)
     }
-    if (event === 'pair-end') {
-      const record = pairMap.get(currentPair)
-      if (record) {
-        record.pairTimeMs = payload.elapsedMs
-        record.compatible = payload.compatible
-      }
-      currentPair = null
-      return
+    const record = pairMap.get(key)
+    if (record.status !== null) throw new Error(`Duplicate pair-end for ${key}`)
+    record.pairTimeMs = finiteNonNegative(payload.elapsedMs, 'pair elapsedMs')
+    record.status = enumValue(payload.status, ['compatible', 'incompatible', 'throw'], 'pair status')
+    record.compatible = payload.compatible === null ? null : Boolean(payload.compatible)
+    if (record.status === 'compatible' && record.compatible !== true) throw new Error('Compatible pair status disagrees with compatible flag')
+    if (record.status === 'incompatible' && record.compatible !== false) throw new Error('Incompatible pair status disagrees with compatible flag')
+    currentPairKey = null
+  }
+
+  function orientationEnd(payload) {
+    const record = currentRecord(payload)
+    const orientation = enumValue(payload.orientation, ['forward', 'reverse'], 'orientation')
+    const field = orientation === 'forward' ? 'forwardTimeMs' : 'reverseTimeMs'
+    record[field] = addNullable(record[field], finiteNonNegative(payload.elapsedMs, `${orientation} elapsedMs`))
+  }
+
+  function projectionStart(payload) {
+    const record = currentRecord(payload)
+    const key = projectionKey(payload)
+    if (openProjections.has(key)) throw new Error(`Duplicate projection-start for ${key}`)
+    const segmentCount = nonNegativeInteger(payload.segmentCount, 'projection segmentCount')
+    const candidateCount = nonNegativeInteger(payload.candidateCount, 'projection candidateCount')
+    if (record.closureClassification === 'truly-closed') {
+      record.direction2UnwrappedSegmentCount = maxNullable(record.direction2UnwrappedSegmentCount, segmentCount)
+    } else if (record.segmentCount !== segmentCount) {
+      throw new Error(`Projection segment count disagrees for ${key}`)
     }
-    if (event === 'orientation-end' && currentPair) {
-      const record = pairMap.get(currentPair)
-      if (record) record[payload.orientation === 'forward' ? 'forwardTimeMs' : 'reverseTimeMs'] += payload.elapsedMs
-      return
-    }
-    if (event === 'projection-start' && currentPair) {
-      const record = pairMap.get(currentPair)
-      if (record) record.projectionCandidateCount += payload.candidateCount
-      return
-    }
-    if (event === 'projection-layer' && currentPair) {
-      const record = pairMap.get(currentPair)
-      if (record) {
-        record.peakFrontierWidth = Math.max(record.peakFrontierWidth, payload.frontierWidth)
-        record.retainedNodeCount += payload.retainedNodes
-        record.parentNodeCount += payload.parentNodeCount
-        record.pathKeyApproximateBytes += payload.pathKeyChars * 2
-      }
-      return
-    }
-    if (event === 'projection-end' && currentPair) {
-      const record = pairMap.get(currentPair)
-      if (record) {
-        const field = payload.objective === 'span' ? 'spanObjectiveSolveTimeMs' : 'costObjectiveSolveTimeMs'
-        record[field] += payload.elapsedMs
-      }
-      return
-    }
-    if (event === 'assignment-solve-end') {
-      if (payload.kind === 'best') {
-        assignment.bestCount += 1
-        assignment.bestTimeMs += payload.elapsedMs
-      } else if (payload.kind === 'forced-match') {
-        assignment.forcedMatchCount += 1
-        assignment.forcedMatchTimeMs += payload.elapsedMs
-      } else {
-        assignment.forcedUnmatchedCount += 1
-        assignment.forcedUnmatchedTimeMs += payload.elapsedMs
-      }
-      return
-    }
-    if (event === 'assignment-state') {
-      assignment.activeMaskPeak = Math.max(assignment.activeMaskPeak, payload.activeMaskCount)
+    record.projectionCandidateCount = addNullable(record.projectionCandidateCount, candidateCount)
+    openProjections.set(key, { record })
+  }
+
+  function projectionLayer(payload) {
+    const key = projectionKey(payload)
+    const state = openProjections.get(key)
+    if (!state) throw new Error(`projection-layer without start for ${key}`)
+    state.record.peakFrontierWidth = maxNullable(state.record.peakFrontierWidth, nonNegativeInteger(payload.frontierWidth, 'frontierWidth'))
+    state.record.retainedNodeCount = addNullable(state.record.retainedNodeCount, nonNegativeInteger(payload.retainedNodes, 'retainedNodes'))
+    state.record.parentNodeCount = addNullable(state.record.parentNodeCount, nonNegativeInteger(payload.parentNodeCount, 'parentNodeCount'))
+    state.record.pathKeyApproximateBytes = addNullable(state.record.pathKeyApproximateBytes, nonNegativeInteger(payload.pathKeyChars, 'pathKeyChars') * 2)
+  }
+
+  function projectionEnd(payload) {
+    const key = projectionKey(payload)
+    const state = openProjections.get(key)
+    if (!state) throw new Error(`projection-end without start for ${key}`)
+    openProjections.delete(key)
+    const status = enumValue(payload.status, [...PROJECTION_STATUSES], 'projection status')
+    const elapsedMs = finiteNonNegative(payload.elapsedMs, 'projection elapsedMs')
+    const objective = enumValue(payload.objective, ['cost', 'span'], 'objective')
+    const field = objective === 'span' ? 'spanObjectiveSolveTimeMs' : 'costObjectiveSolveTimeMs'
+    state.record[field] = addNullable(state.record[field], elapsedMs)
+    state.record.projectionOutcomes.push({
+      orientation: enumValue(payload.orientation, ['forward', 'reverse'], 'orientation'),
+      objective,
+      status,
+      elapsedMs,
+    })
+  }
+
+  function assignmentEnd(payload) {
+    const kind = enumValue(payload.kind, ['best', 'forced-match', 'forced-unmatched'], 'assignment kind')
+    const elapsedMs = finiteNonNegative(payload.elapsedMs, 'assignment elapsedMs')
+    if (payload.status !== 'success') throw new Error(`Assignment solve did not complete: ${kind}`)
+    if (kind === 'best') {
+      assignment.bestCount += 1
+      assignment.bestTimeSamplesMs.push(elapsedMs)
+    } else if (kind === 'forced-match') {
+      assignment.forcedMatchCount += 1
+      assignment.forcedMatchTimeSamplesMs.push(elapsedMs)
+    } else {
+      assignment.forcedUnmatchedCount += 1
+      assignment.forcedUnmatchedTimeSamplesMs.push(elapsedMs)
     }
   }
+
+  function assignmentState(payload) {
+    if (payload.kind === null) throw new Error('assignment-state is missing its solve kind')
+    assignment.activeMaskPeak = maxNullable(assignment.activeMaskPeak, nonNegativeInteger(payload.activeMaskCount, 'activeMaskCount'))
+  }
+
+  function currentRecord(payload) {
+    const key = pairKey(payload)
+    if (currentPairKey !== key) throw new Error(`Event is not associated with the current pair: ${key}`)
+    const record = pairMap.get(key)
+    if (!record) throw new Error(`Unknown pair: ${key}`)
+    return record
+  }
+
   return {
     observe,
     finish: () => {
-      if (currentPair) throw new Error(`Unclosed instrumentation pair in ${partition.partitionId}`)
+      if (currentPairKey !== null) throw new Error(`Unclosed instrumentation pair in ${partition.partitionId}`)
+      if (openProjections.size) throw new Error(`Unclosed projection solve in ${partition.partitionId}`)
+      for (const record of pairMap.values()) {
+        if (record.status === null) throw new Error(`Pair record has no end event: ${record.patternId}/${record.shapeId}`)
+      }
     },
     snapshot: () => ({
-      pairs: [...pairMap.values()].sort(comparePairRecord),
-      assignment: { ...assignment },
-      deterministic: {
-        pairs: [...pairMap.values()].map(({
-          pairTimeMs: _a, forwardTimeMs: _b, reverseTimeMs: _c,
-          costObjectiveSolveTimeMs: _d, spanObjectiveSolveTimeMs: _e, ...rest
-        }) => rest),
-        assignment: {
-          ...assignment,
-          bestTimeMs: 0,
-          forcedMatchTimeMs: 0,
-          forcedUnmatchedTimeMs: 0,
-        },
+      shapes: [...shapeEvents].sort((a, b) => stableStringify(a).localeCompare(stableStringify(b))),
+      pairs: [...pairMap.values()].map(finalizePair).sort(comparePairRecord),
+      assignment: {
+        bestCount: assignment.bestCount,
+        forcedMatchCount: assignment.forcedMatchCount,
+        forcedUnmatchedCount: assignment.forcedUnmatchedCount,
+        bestTimeSamplesMs: [...assignment.bestTimeSamplesMs],
+        forcedMatchTimeSamplesMs: [...assignment.forcedMatchTimeSamplesMs],
+        forcedUnmatchedTimeSamplesMs: [...assignment.forcedUnmatchedTimeSamplesMs],
+        activeMaskPeak: assignment.activeMaskPeak,
       },
     }),
   }
 }
 
-export function mergePairRecords(partition, measuredPairs) {
-  const measured = new Map(measuredPairs.map((pair) => [`${pair.patternId}\0${pair.shapeId}`, pair]))
-  const records = []
-  for (const pattern of partition.patterns) {
-    for (const shape of partition.shapes) {
-      const key = `${pattern.patternId}\0${shape.shapeId}`
-      const normalized = normalizeCoordinates(shape.coordinates)
-      const closure = classifyClosure(shape.direction, normalized)
-      const structurallyScoreable = pattern.stops.length > 0
-        && pattern.stops.every((stop) => Array.isArray(stop.coordinate) && stop.coordinate.every(Number.isFinite))
-        && normalized.length >= 2
-        && identitiesCompatible(pattern, shape)
-        && closure.classification !== 'near-closed'
-        && closure.classification !== 'open-or-invalid'
-      const metrics = measured.get(key) ?? (structurallyScoreable ? emptyPairMetrics(pattern, shape) : null)
-      if (!metrics) continue
-      records.push({
-        partitionId: partition.partitionId,
-        patternId: pattern.patternId,
-        shapeId: shape.shapeId,
-        stopCount: pattern.stops.length,
-        rawCoordinateCount: shape.measurement?.rawCoordinateCount ?? shape.coordinates.length,
-        normalizedCoordinateCount: normalized.length,
-        segmentCount: countSegments(normalized),
-        direction2UnwrappedSegmentCount: shape.direction === 2 && closure.classification === 'truly-closed'
-          ? countSegments(normalized) * 2 : 0,
-        duplicateCoordinateRemovalCount: Math.max(0, shape.coordinates.length - normalized.length),
-        closureClassification: closure.classification,
-        closureGapDistanceMeters: closure.gapDistanceMeters,
-        ...metrics,
-      })
-    }
-  }
-  return records.sort(comparePairRecord)
-}
-
-function emptyPairMetrics(pattern, shape) {
+function finalizePair(record) {
   return {
-    patternId: pattern.patternId,
-    shapeId: shape.shapeId,
-    projectionCandidateCount: 0,
-    peakFrontierWidth: 0,
-    retainedNodeCount: 0,
-    parentNodeCount: 0,
-    pathKeyApproximateBytes: 0,
-    forwardTimeMs: 0,
-    reverseTimeMs: 0,
-    costObjectiveSolveTimeMs: 0,
-    spanObjectiveSolveTimeMs: 0,
-    pairTimeMs: 0,
-    compatible: null,
-    instrumented: false,
+    ...record,
+    projectionOutcomes: [...record.projectionOutcomes].sort((a, b) =>
+      `${a.orientation}\0${a.objective}`.localeCompare(`${b.orientation}\0${b.objective}`)),
   }
 }
 
-function identitiesCompatible(pattern, shape) {
-  return pattern.routeUid === shape.routeUid
-    && pattern.direction === shape.direction
-    && !(pattern.subRouteUid && shape.subRouteUid && pattern.subRouteUid !== shape.subRouteUid)
-}
-
-export function normalizeCoordinates(coordinates) {
-  const result = []
-  for (const point of coordinates) {
-    if (!Array.isArray(point) || point.length < 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) continue
-    if (!result.length || result.at(-1)[0] !== point[0] || result.at(-1)[1] !== point[1]) {
-      result.push([point[0], point[1]])
-    }
+export function structuralCollectorSnapshot(snapshot) {
+  return {
+    shapes: snapshot.shapes,
+    pairs: snapshot.pairs.map((pair) => ({
+      ...pair,
+      pairTimeMs: null,
+      forwardTimeMs: null,
+      reverseTimeMs: null,
+      costObjectiveSolveTimeMs: null,
+      spanObjectiveSolveTimeMs: null,
+      projectionOutcomes: pair.projectionOutcomes.map(({ elapsedMs: _elapsedMs, ...outcome }) => outcome),
+    })),
+    assignment: {
+      bestCount: snapshot.assignment.bestCount,
+      forcedMatchCount: snapshot.assignment.forcedMatchCount,
+      forcedUnmatchedCount: snapshot.assignment.forcedUnmatchedCount,
+      activeMaskPeak: snapshot.assignment.activeMaskPeak,
+    },
   }
-  return result
-}
-
-export function classifyClosure(direction, coordinates) {
-  if (direction !== 2) return { classification: 'not-direction-2', gapDistanceMeters: null }
-  if (coordinates.length < 2) return { classification: 'open-or-invalid', gapDistanceMeters: 0 }
-  const gapDistanceMeters = distanceMeters(coordinates[0], coordinates.at(-1))
-  if (gapDistanceMeters <= 1e-9) return { classification: 'truly-closed', gapDistanceMeters }
-  if (gapDistanceMeters <= 500) return { classification: 'near-closed', gapDistanceMeters }
-  return { classification: 'open-or-invalid', gapDistanceMeters }
-}
-
-function countSegments(coordinates) {
-  return Math.max(0, coordinates.length - 1)
-}
-
-function distanceMeters(a, b) {
-  const latitude = (a[1] + b[1]) / 2 * Math.PI / 180
-  return Math.hypot(
-    (a[0] - b[0]) * Math.cos(latitude) * 111_320,
-    (a[1] - b[1]) * 110_574,
-  )
-}
-
-export function comparePairRecord(a, b) {
-  return `${a.partitionId ?? ''}\0${a.patternId}\0${a.shapeId}`
-    .localeCompare(`${b.partitionId ?? ''}\0${b.patternId}\0${b.shapeId}`)
 }
 
 export function assertCollectorsDeterministic(collectors, partitionId) {
+  if (!collectors.length) return
+  const expected = stableStringify(structuralCollectorSnapshot(collectors[0]))
   for (const collector of collectors.slice(1)) {
-    if (stableStringify(collector.deterministic) !== stableStringify(collectors[0].deterministic)) {
+    if (stableStringify(structuralCollectorSnapshot(collector)) !== expected) {
       throw new Error(`Instrumentation counters are not deterministic for partition ${partitionId}`)
     }
   }
+}
+
+export function aggregatePairIterations(collectors, partitionId) {
+  assertCollectorsDeterministic(collectors, partitionId)
+  if (!collectors.length) return []
+  return collectors[0].pairs.map((base, index) => {
+    const samples = collectors.map((collector) => collector.pairs[index])
+    return {
+      partitionId,
+      ...base,
+      pairTimeMs: medianFinite(samples.map((entry) => entry.pairTimeMs)),
+      forwardTimeMs: medianFinite(samples.map((entry) => entry.forwardTimeMs)),
+      reverseTimeMs: medianFinite(samples.map((entry) => entry.reverseTimeMs)),
+      costObjectiveSolveTimeMs: medianFinite(samples.map((entry) => entry.costObjectiveSolveTimeMs)),
+      spanObjectiveSolveTimeMs: medianFinite(samples.map((entry) => entry.spanObjectiveSolveTimeMs)),
+      projectionOutcomes: base.projectionOutcomes.map((outcome, outcomeIndex) => ({
+        ...outcome,
+        elapsedMs: medianFinite(samples.map((entry) => entry.projectionOutcomes[outcomeIndex]?.elapsedMs)),
+      })),
+    }
+  })
+}
+
+function pairKey(payload) { return `${requiredId(payload.patternId, 'patternId')}\0${requiredId(payload.shapeId, 'shapeId')}` }
+function projectionKey(payload) {
+  return `${pairKey(payload)}\0${enumValue(payload.orientation, ['forward', 'reverse'], 'orientation')}\0${enumValue(payload.objective, ['cost', 'span'], 'objective')}`
+}
+function requiredId(value, name) {
+  if (typeof value !== 'string' || !value) throw new TypeError(`${name} must be a non-empty string`)
+  return value
+}
+function nonNegativeInteger(value, name) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative safe integer`)
+  return value
+}
+function finiteNonNegative(value, name) {
+  if (!Number.isFinite(value) || value < 0) throw new TypeError(`${name} must be finite and non-negative`)
+  return value
+}
+function nullableNonNegative(value, name) { return value === null ? null : finiteNonNegative(value, name) }
+function enumValue(value, allowed, name) {
+  if (!allowed.includes(value)) throw new TypeError(`${name} is invalid`)
+  return value
+}
+function nullableNonNegativeInteger(value, name) { return value === null ? null : nonNegativeInteger(value, name) }
+function addNullable(current, value) { return current === null ? value : current + value }
+function maxNullable(current, value) { return current === null ? value : Math.max(current, value) }
+function medianFinite(values) {
+  const finite = values.filter(Number.isFinite).sort((a, b) => a - b)
+  if (!finite.length) return null
+  return finite[Math.ceil(finite.length * 0.5) - 1]
+}
+function comparePairRecord(a, b) {
+  return `${a.patternId}\0${a.shapeId}`.localeCompare(`${b.patternId}\0${b.shapeId}`)
 }
