@@ -25,7 +25,7 @@ const NETWORK_PREFIX_BYTES = 65_536
 const PAGES = Object.freeze([
   { path: '/', selector: '.eta-page' },
   { path: '/setup', selector: '.setup-page #board-list' },
-  { path: '/map?city=Taipei', selector: '#map-app', bootSelector: '.leaflet-container' },
+  { path: '/map?city=Chiayi', selector: '#map-app', bootSelector: '.leaflet-container' },
 ])
 const REPRESENTATIVE_CITIES = Object.freeze(['Taipei', 'Chiayi'])
 const HASHED_ASSET = /^\/assets\/[^/?]+-[A-Za-z0-9_-]{6,}\.(?:js|css)$/
