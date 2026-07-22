@@ -24,7 +24,7 @@ export type RouteShapeCandidate = {
   coordinates: readonly ShapePatternCoordinate[]
 }
 
-export type ShapePatternProjection = {
+type ShapePatternProjection = {
   point: ShapePatternCoordinate
   distanceMeters: number
   segmentIndex: number
@@ -32,6 +32,11 @@ export type ShapePatternProjection = {
   progressMeters: number
 }
 
+/**
+ * Diagnostic geometry only. These values are not a confidence score and are not a
+ * stable ranking contract for adapters. In particular, Direction 2 coverage fields
+ * are reported for later calibration but do not contribute to pair cost.
+ */
 export type ShapePatternGeometryMetrics = {
   meanStopDistanceMeters: number
   maxStopDistanceMeters: number
@@ -47,6 +52,7 @@ export type ShapePatternMatch = {
   shapeId: string
   basis: 'exact-identity' | 'geometry'
   costMeters: number | null
+  /** Diagnostic-only geometry; not a confidence or ranking API contract. */
   metrics: ShapePatternGeometryMetrics | null
 }
 
@@ -78,9 +84,9 @@ export type ShapePatternMatchResult = {
 }
 
 export type ShapePatternMatcherOptions = {
-  /** Applied to the total cost of a maximum-cardinality assignment, not to individual pairs. */
+  /** Absolute floor for assignment-outcome ambiguity. Exact boundary is inclusive. */
   ambiguityAbsoluteMeters?: number
-  /** Applied to the total cost of a maximum-cardinality assignment, not to individual pairs. */
+  /** Relative tolerance applied only to the best assignment's changed sub-assignment. */
   ambiguityRelativeRatio?: number
   maxMeanStopDistanceMeters?: number
   maxStopDistanceMeters?: number
@@ -111,21 +117,44 @@ type ScoredPair = {
   shape: ValidShape
   costMeters: number
   metrics: ShapePatternGeometryMetrics
+  /** Structural safety signal; never exposed as confidence or added to pair cost. */
+  directionTwoProjectionConsistent: boolean
 }
 
-type AssignmentObjective = {
-  cardinality: number
+type AssignmentEdge = {
+  patternIndex: number
+  shapeIndex: number
   costMeters: number
 }
+
+type AssignmentSolution = {
+  cardinality: number
+  costMeters: number
+  edges: AssignmentEdge[]
+  key: string
+}
+
+type AssignmentDpState = {
+  costMeters: number
+  parent: AssignmentDpState | null
+  edge: AssignmentEdge | null
+}
+
+type ProjectionObjective = 'cost' | 'span'
 
 type ProjectionPath = {
   projections: ShapePatternProjection[]
   distanceSumMeters: number
+  maxDistanceMeters: number
 }
 
-type ProjectionState = {
+type ProjectionNode = {
+  projection: ShapePatternProjection
   distanceSumMeters: number
+  maxDistanceMeters: number
   firstProgressMeters: number
+  parent: ProjectionNode | null
+  pathKey: string
 }
 
 type PolylineSegment = {
@@ -146,11 +175,14 @@ const DEFAULT_OPTIONS: ResolvedOptions = {
 }
 
 const FLOATING_COST_EPSILON_FACTOR = 64
+const NUMERIC_METERS_EPSILON = 1e-9
+const STOP_DISTANCE_MAX_WEIGHT = 0.25
 
 /**
  * Match route patterns to Shapes inside RouteUID + Direction partitions.
- * Unique complete identities are committed first. Remaining geometry uses a cached
- * compatibility/cost matrix and an exact maximum-cardinality, minimum-total-cost assignment.
+ * Every valid geometry pair is scored once before exact identities consume rows or
+ * columns. Unique complete identities are then committed, and remaining geometry
+ * uses exact maximum-cardinality, minimum-total-cost assignment.
  */
 export function matchShapesToPatterns(
   patterns: readonly ShapePatternCandidate[],
@@ -224,6 +256,13 @@ export function matchShapesToPatterns(
     })
   }
 
+  // M-1: score the complete original compatibility matrix exactly once, before
+  // unique exact identities consume any pattern or Shape.
+  const allPairs = scorePairs(validPatterns, validShapes, options)
+  const allPairsByPattern = groupBy(allPairs, (pair) => pair.pattern.patternId)
+  const allPairsByPartition = groupBy(allPairs, (pair) => partitionKey(pair.pattern))
+  const allShapesByPartition = groupBy(validShapes, partitionKey)
+
   const matches: ShapePatternMatch[] = []
   const matchedPatternIds = new Set<string>()
   const matchedShapeIds = new Set<string>()
@@ -238,26 +277,73 @@ export function matchShapesToPatterns(
   const remainingPatterns = validPatterns.filter((pattern) => !matchedPatternIds.has(pattern.patternId))
   const remainingShapes = validShapes.filter((shape) => !matchedShapeIds.has(shape.shapeId))
   const patternsByPartition = groupBy(remainingPatterns, partitionKey)
-  const shapesByPartition = groupBy(remainingShapes, partitionKey)
+  const remainingShapesByPartition = groupBy(remainingShapes, partitionKey)
 
   for (const key of [...patternsByPartition.keys()].sort()) {
     const partitionPatterns = patternsByPartition.get(key) ?? []
-    const partitionShapes = shapesByPartition.get(key) ?? []
-    const pairs = scorePairs(partitionPatterns, partitionShapes, options)
-    const pairsByPattern = groupBy(pairs, (pair) => pair.pattern.patternId)
-    const assignablePatterns = partitionPatterns.filter((pattern) => (pairsByPattern.get(pattern.patternId) ?? []).length)
+    const partitionShapes = remainingShapesByPartition.get(key) ?? []
+    const originalPartitionShapes = allShapesByPartition.get(key) ?? []
+    const originalPairs = allPairsByPartition.get(key) ?? []
+    const remainingPatternIds = new Set(partitionPatterns.map((pattern) => pattern.patternId))
+    const remainingShapeIds = new Set(partitionShapes.map((shape) => shape.shapeId))
+    const rawAssignmentPairs = originalPairs.filter((pair) =>
+      remainingPatternIds.has(pair.pattern.patternId) && remainingShapeIds.has(pair.shape.shapeId))
+    const rawAssignmentPairsByPattern = groupBy(rawAssignmentPairs, (pair) => pair.pattern.patternId)
+    const assignmentPairs = rawAssignmentPairs.filter((pair) => {
+      const originalCandidates = allPairsByPattern.get(pair.pattern.patternId) ?? []
+      return pair.pattern.direction !== 2
+        || originalCandidates.length <= 1
+        || pair.directionTwoProjectionConsistent
+    })
+    const assignmentPairsByPattern = groupBy(assignmentPairs, (pair) => pair.pattern.patternId)
+    const assignablePatterns: ValidPattern[] = []
 
     for (const pattern of partitionPatterns) {
-      if ((pairsByPattern.get(pattern.patternId) ?? []).length) continue
+      const originalCandidates = allPairsByPattern.get(pattern.patternId) ?? []
+      const rawRemainingCandidates = rawAssignmentPairsByPattern.get(pattern.patternId) ?? []
+      const remainingCandidates = assignmentPairsByPattern.get(pattern.patternId) ?? []
+      if (remainingCandidates.length) {
+        assignablePatterns.push(pattern)
+        continue
+      }
+      if (
+        pattern.direction === 2
+        && originalCandidates.length > 1
+        && rawRemainingCandidates.length
+      ) {
+        // Multiple closed-loop candidates exist, but none has a cost-optimal path
+        // consistent with the independent diagnostic-span path. This is a
+        // structural fail-closed gate, not a coverage ranking or threshold.
+        unresolved.push({
+          patternId: pattern.patternId,
+          reason: 'tolerance-equivalent-alternatives',
+          candidateShapeIds: candidateShapeIds(originalCandidates),
+        })
+        continue
+      }
+      if (originalCandidates.length) {
+        unresolved.push({
+          patternId: pattern.patternId,
+          reason: 'compatible-shape-assigned',
+          candidateShapeIds: candidateShapeIds(originalCandidates),
+        })
+        continue
+      }
       unresolved.push({
         patternId: pattern.patternId,
-        reason: noCandidateReason(pattern, partitionShapes, rejectedContexts),
+        reason: noCandidateReason(pattern, originalPartitionShapes, rejectedContexts),
         candidateShapeIds: [],
       })
     }
 
     if (!assignablePatterns.length || !partitionShapes.length) continue
-    const assignment = resolvePartitionAssignment(assignablePatterns, partitionShapes, pairs, options)
+    const assignment = resolvePartitionAssignment(
+      assignablePatterns,
+      partitionShapes,
+      assignmentPairs,
+      allPairsByPattern,
+      options,
+    )
     for (const match of assignment.matches) {
       matches.push(match)
       matchedPatternIds.add(match.patternId)
@@ -281,6 +367,7 @@ function resolvePartitionAssignment(
   patterns: ValidPattern[],
   shapes: ValidShape[],
   pairs: ScoredPair[],
+  allPairsByPattern: Map<string, ScoredPair[]>,
   options: ResolvedOptions,
 ): { matches: ShapePatternMatch[]; unresolved: UnresolvedShapePattern[] } {
   const orderedPatterns = [...patterns].sort(comparePattern)
@@ -288,15 +375,14 @@ function resolvePartitionAssignment(
   const pairByKey = new Map(pairs.map((pair) => [pairKey(pair.pattern.patternId, pair.shape.shapeId), pair]))
   const matrix = orderedPatterns.map((pattern) => orderedShapes.map((shape) =>
     pairByKey.get(pairKey(pattern.patternId, shape.shapeId))?.costMeters ?? null))
-  const best = solveAssignmentObjective(matrix)
-  const toleranceMeters = assignmentToleranceMeters(best.costMeters, options)
-  const acceptedMaxCost = best.costMeters + toleranceMeters
-  const exactMaxCost = best.costMeters + floatingCostEpsilon(best.costMeters)
+  const best = solveAssignment(matrix)
   const matches: ShapePatternMatch[] = []
   const unresolved: UnresolvedShapePattern[] = []
 
   for (let patternIndex = 0; patternIndex < orderedPatterns.length; patternIndex += 1) {
     const pattern = orderedPatterns[patternIndex]
+    const originalCandidates = allPairsByPattern.get(pattern.patternId) ?? []
+    const originalCandidateIds = candidateShapeIds(originalCandidates)
     const candidateShapeIndices = orderedShapes
       .map((_shape, shapeIndex) => shapeIndex)
       .filter((shapeIndex) => matrix[patternIndex][shapeIndex] !== null)
@@ -304,18 +390,19 @@ function resolvePartitionAssignment(
     const exactMatches: number[] = []
 
     for (const shapeIndex of candidateShapeIndices) {
-      const objective = solveWithForcedMatch(matrix, patternIndex, shapeIndex)
-      if (objectiveIsAccepted(objective, best.cardinality, acceptedMaxCost)) acceptedMatches.push(shapeIndex)
-      if (objectiveIsAccepted(objective, best.cardinality, exactMaxCost)) exactMatches.push(shapeIndex)
+      const solution = solveWithForcedMatch(matrix, patternIndex, shapeIndex)
+      if (assignmentsAreToleranceEquivalent(best, solution, options)) acceptedMatches.push(shapeIndex)
+      if (assignmentsAreExactlyEquivalent(best, solution)) exactMatches.push(shapeIndex)
     }
 
-    const unmatchedObjective = solveWithForcedUnmatched(matrix, patternIndex)
-    const acceptedUnmatched = objectiveIsAccepted(unmatchedObjective, best.cardinality, acceptedMaxCost)
-    const exactUnmatched = objectiveIsAccepted(unmatchedObjective, best.cardinality, exactMaxCost)
+    const unmatchedSolution = solveWithForcedUnmatched(matrix, patternIndex)
+    const acceptedUnmatched = assignmentsAreToleranceEquivalent(best, unmatchedSolution, options)
+    const exactUnmatched = assignmentsAreExactlyEquivalent(best, unmatchedSolution)
 
     if (acceptedMatches.length === 1 && !acceptedUnmatched) {
       const shape = orderedShapes[acceptedMatches[0]]
       const pair = pairByKey.get(pairKey(pattern.patternId, shape.shapeId))!
+
       matches.push({
         patternId: pattern.patternId,
         shapeId: shape.shapeId,
@@ -338,7 +425,7 @@ function resolvePartitionAssignment(
     unresolved.push({
       patternId: pattern.patternId,
       reason,
-      candidateShapeIds: candidateShapeIndices.map((index) => orderedShapes[index].shapeId).sort(),
+      candidateShapeIds: originalCandidateIds,
     })
   }
 
@@ -349,67 +436,104 @@ function solveWithForcedMatch(
   matrix: Array<Array<number | null>>,
   patternIndex: number,
   shapeIndex: number,
-): AssignmentObjective {
+): AssignmentSolution {
   const forcedCost = matrix[patternIndex]?.[shapeIndex]
-  if (forcedCost === null || forcedCost === undefined) {
-    return { cardinality: Number.NEGATIVE_INFINITY, costMeters: Number.POSITIVE_INFINITY }
-  }
-  const reduced = matrix
-    .filter((_row, index) => index !== patternIndex)
-    .map((row) => row.filter((_cost, index) => index !== shapeIndex))
-  const remainder = solveAssignmentObjective(reduced)
+  if (forcedCost === null || forcedCost === undefined) return impossibleAssignment()
+  const remainingPatterns = range(matrix.length).filter((index) => index !== patternIndex)
+  const remainingShapes = range(matrix[0]?.length ?? 0).filter((index) => index !== shapeIndex)
+  const remainder = solveAssignment(matrix, remainingPatterns, remainingShapes)
+  const edges = sortAssignmentEdges([
+    ...remainder.edges,
+    { patternIndex, shapeIndex, costMeters: forcedCost },
+  ])
   return {
     cardinality: remainder.cardinality + 1,
     costMeters: remainder.costMeters + forcedCost,
+    edges,
+    key: assignmentKey(edges),
   }
 }
 
 function solveWithForcedUnmatched(
   matrix: Array<Array<number | null>>,
   patternIndex: number,
-): AssignmentObjective {
-  return solveAssignmentObjective(matrix.filter((_row, index) => index !== patternIndex))
+): AssignmentSolution {
+  return solveAssignment(
+    matrix,
+    range(matrix.length).filter((index) => index !== patternIndex),
+    range(matrix[0]?.length ?? 0),
+  )
 }
 
-/** Exact bitmask DP. The bitmask is applied to the smaller side of the bipartite partition. */
-function solveAssignmentObjective(matrix: Array<Array<number | null>>): AssignmentObjective {
-  const patternCount = matrix.length
-  const shapeCount = matrix[0]?.length ?? 0
-  if (!patternCount || !shapeCount) return { cardinality: 0, costMeters: 0 }
+/** Exact bitmask DP. The bitmask is applied to the smaller side of the partition. */
+function solveAssignment(
+  matrix: Array<Array<number | null>>,
+  patternIndices: number[] = range(matrix.length),
+  shapeIndices: number[] = range(matrix[0]?.length ?? 0),
+): AssignmentSolution {
+  if (!patternIndices.length || !shapeIndices.length) return emptyAssignment()
 
-  const rows = shapeCount <= patternCount
-    ? matrix
-    : Array.from({ length: shapeCount }, (_unused, shapeIndex) =>
-      Array.from({ length: patternCount }, (_unusedPattern, patternIndex) => matrix[patternIndex][shapeIndex]))
-  const bitCount = rows[0].length
-  let states = new Map<bigint, number>([[0n, 0]])
+  const transpose = shapeIndices.length > patternIndices.length
+  const rowIndices = transpose ? shapeIndices : patternIndices
+  const bitIndices = transpose ? patternIndices : shapeIndices
+  let states = new Map<bigint, AssignmentDpState>([[0n, {
+    costMeters: 0,
+    parent: null,
+    edge: null,
+  }]])
 
-  for (const row of rows) {
+  for (const rowIndex of rowIndices) {
+    // Reusing the previous state is the exact "leave this row unmatched" transition.
     const next = new Map(states)
-    for (const [mask, currentCost] of states) {
-      for (let bitIndex = 0; bitIndex < bitCount; bitIndex += 1) {
-        const pairCost = row[bitIndex]
-        const bit = 1n << BigInt(bitIndex)
-        if (pairCost === null || (mask & bit) !== 0n) continue
+    for (const [mask, state] of states) {
+      for (let bitPosition = 0; bitPosition < bitIndices.length; bitPosition += 1) {
+        const bit = 1n << BigInt(bitPosition)
+        if ((mask & bit) !== 0n) continue
+        const bitIndex = bitIndices[bitPosition]
+        const patternIndex = transpose ? bitIndex : rowIndex
+        const shapeIndex = transpose ? rowIndex : bitIndex
+        const pairCost = matrix[patternIndex]?.[shapeIndex]
+        if (pairCost === null || pairCost === undefined) continue
         const nextMask = mask | bit
-        const nextCost = currentCost + pairCost
+        const nextCost = state.costMeters + pairCost
         const known = next.get(nextMask)
-        if (known === undefined || nextCost < known) next.set(nextMask, nextCost)
+        if (known && compareFloating(known.costMeters, nextCost) <= 0) continue
+        next.set(nextMask, {
+          costMeters: nextCost,
+          parent: state,
+          edge: { patternIndex, shapeIndex, costMeters: pairCost },
+        })
       }
     }
     states = next
   }
 
-  let cardinality = 0
-  let costMeters = 0
-  for (const [mask, cost] of states) {
-    const count = popcount(mask)
-    if (count > cardinality || (count === cardinality && cost < costMeters)) {
-      cardinality = count
-      costMeters = cost
+  let best = emptyAssignment()
+  for (const [mask, state] of states) {
+    const cardinality = popcount(mask)
+    if (cardinality < best.cardinality) continue
+    if (cardinality === best.cardinality
+      && compareFloating(state.costMeters, best.costMeters) > 0) continue
+    const edges = reconstructAssignmentEdges(state)
+    const candidate: AssignmentSolution = {
+      cardinality,
+      costMeters: state.costMeters,
+      edges,
+      key: assignmentKey(edges),
     }
+    if (compareAssignmentSolution(candidate, best) < 0) best = candidate
   }
-  return { cardinality, costMeters }
+  return best
+}
+
+function reconstructAssignmentEdges(state: AssignmentDpState): AssignmentEdge[] {
+  const edges: AssignmentEdge[] = []
+  let current: AssignmentDpState | null = state
+  while (current) {
+    if (current.edge) edges.push(current.edge)
+    current = current.parent
+  }
+  return sortAssignmentEdges(edges)
 }
 
 function scorePairs(
@@ -433,7 +557,7 @@ function scoreGeometry(
   pattern: ValidPattern,
   shape: ValidShape,
   options: ResolvedOptions,
-): Pick<ScoredPair, 'costMeters' | 'metrics'> | null {
+): Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'> | null {
   const forward = scoreOrientation(pattern, shape.normalizedCoordinates, options)
   const reverse = scoreOrientation(pattern, [...shape.normalizedCoordinates].reverse(), options)
   if (!forward) return reverse
@@ -445,31 +569,46 @@ function scoreOrientation(
   pattern: ValidPattern,
   orientedCoordinates: ShapePosition[],
   options: ResolvedOptions,
-): Pick<ScoredPair, 'costMeters' | 'metrics'> | null {
+): Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'> | null {
   if (pattern.direction === 2) {
     const closed = closeLoopCoordinates(orientedCoordinates, options.circularShapeMaxGapMeters)
     if (!closed) return null
     const loopLengthMeters = polylineLengthMeters(closed)
     if (!(loopLengthMeters > 0)) return null
     const unwrapped = [...closed, ...closed.slice(1).map(copyPosition)]
-    const path = matchOrderedStopsToPolyline(pattern.normalizedStops, unwrapped, loopLengthMeters)
+    const projectionOptions = {
+      maxSpanMeters: loopLengthMeters,
+      maxMeanStopDistanceMeters: options.maxMeanStopDistanceMeters,
+      maxStopDistanceMeters: options.maxStopDistanceMeters,
+    }
+    const path = matchOrderedStopsToPolyline(pattern.normalizedStops, unwrapped, {
+      ...projectionOptions,
+      objective: 'cost',
+    })
     if (!path) return null
-    const firstProgress = path.projections[0].progressMeters
-    const lastProgress = path.projections.at(-1)!.progressMeters
+    const diagnosticPath = matchOrderedStopsToPolyline(pattern.normalizedStops, unwrapped, {
+      ...projectionOptions,
+      objective: 'span',
+    }) ?? path
+    const firstProgress = diagnosticPath.projections[0].progressMeters
+    const lastProgress = diagnosticPath.projections.at(-1)!.progressMeters
     const matchedSpanMeters = lastProgress - firstProgress
     if (matchedSpanMeters < 0 || matchedSpanMeters > loopLengthMeters + floatingCostEpsilon(loopLengthMeters)) {
       return null
     }
-    const distances = path.projections.map((projection) => projection.distanceMeters)
-    const meanStopDistanceMeters = average(distances)
-    const maxStopDistanceMeters = Math.max(...distances)
-    if (
-      meanStopDistanceMeters > options.maxMeanStopDistanceMeters
-      || maxStopDistanceMeters > options.maxStopDistanceMeters
-    ) return null
+    const meanStopDistanceMeters = path.distanceSumMeters / path.projections.length
+    const maxStopDistanceMeters = path.maxDistanceMeters
     const coverageDeficitMeters = Math.max(0, loopLengthMeters - matchedSpanMeters)
+    const costPathSpanMeters = path.projections.at(-1)!.progressMeters
+      - path.projections[0].progressMeters
     return {
-      costMeters: meanStopDistanceMeters + maxStopDistanceMeters * 0.25 + coverageDeficitMeters,
+      // Coverage is intentionally excluded until real TDX distributions calibrate a bounded policy.
+      costMeters: stopDistanceObjective(meanStopDistanceMeters, maxStopDistanceMeters),
+      // Exact path agreement is a structural feasibility signal only. It prevents
+      // an arbitrary zero-distance prefix from entering multi-candidate ranking;
+      // it never rewards shorter coverage or changes the numeric pair objective.
+      directionTwoProjectionConsistent:
+        compareFloating(costPathSpanMeters, matchedSpanMeters) === 0,
       metrics: {
         meanStopDistanceMeters,
         maxStopDistanceMeters,
@@ -482,15 +621,15 @@ function scoreOrientation(
     }
   }
 
-  const path = matchOrderedStopsToPolyline(pattern.normalizedStops, orientedCoordinates)
+  const path = matchOrderedStopsToPolyline(pattern.normalizedStops, orientedCoordinates, {
+    objective: 'cost',
+    maxSpanMeters: null,
+    maxMeanStopDistanceMeters: options.maxMeanStopDistanceMeters,
+    maxStopDistanceMeters: options.maxStopDistanceMeters,
+  })
   if (!path) return null
-  const distances = path.projections.map((projection) => projection.distanceMeters)
-  const meanStopDistanceMeters = average(distances)
-  const maxStopDistanceMeters = Math.max(...distances)
-  if (
-    meanStopDistanceMeters > options.maxMeanStopDistanceMeters
-    || maxStopDistanceMeters > options.maxStopDistanceMeters
-  ) return null
+  const meanStopDistanceMeters = path.distanceSumMeters / path.projections.length
+  const maxStopDistanceMeters = path.maxDistanceMeters
   const endpointDistanceMeters = average([
     approximateDistanceMeters(pattern.normalizedStops[0].coordinate, orientedCoordinates[0]),
     approximateDistanceMeters(pattern.normalizedStops.at(-1)!.coordinate, orientedCoordinates.at(-1)!),
@@ -499,7 +638,8 @@ function scoreOrientation(
   const shapeLengthMeters = polylineLengthMeters(orientedCoordinates)
   const matchedSpanMeters = path.projections.at(-1)!.progressMeters - path.projections[0].progressMeters
   return {
-    costMeters: meanStopDistanceMeters + maxStopDistanceMeters * 0.25,
+    costMeters: stopDistanceObjective(meanStopDistanceMeters, maxStopDistanceMeters),
+    directionTwoProjectionConsistent: true,
     metrics: {
       meanStopDistanceMeters,
       maxStopDistanceMeters,
@@ -513,87 +653,205 @@ function scoreOrientation(
 }
 
 /**
- * Project every stop to every segment once, then solve the non-decreasing arclength path
- * with prefix minima. Time is O(stops × segments); path/projection storage is the same order.
+ * Exact nondominated-frontier projection solver.
+ *
+ * Each state retains cumulative distance, maximum stop distance, first and current
+ * progress, Direction 2 one-lap feasibility, and a complete parent chain. Cost and
+ * diagnostic-span objectives share the same exact frontier but are selected separately. A state
+ * is discarded only when another state is no worse in every cost component and
+ * has an equal-or-better future-feasibility/span relation. No cardinality cap,
+ * greedy fallback, or approximate beam pruning is used.
  */
 function matchOrderedStopsToPolyline(
   stops: ShapePatternStop[],
   coordinates: ShapePosition[],
-  maxSpanMeters: number | null = null,
+  options: {
+    objective: ProjectionObjective
+    maxSpanMeters: number | null
+    maxMeanStopDistanceMeters: number
+    maxStopDistanceMeters: number
+  },
 ): ProjectionPath | null {
   const segments = buildSegments(coordinates)
   if (!stops.length || !segments.length) return null
   const projections = stops.map((stop) => segments.map((segment) => projectStopToSegment(stop.coordinate, segment)))
-  const parentSegments = stops.map(() => new Int32Array(segments.length).fill(-1))
-  let previous = projections[0].map((projection): ProjectionState => ({
-    distanceSumMeters: projection.distanceMeters,
-    firstProgressMeters: projection.progressMeters,
-  }))
+  const spanConstrained = options.maxSpanMeters !== null
+  let previous = projections[0].map((projection) => [initialProjectionNode(projection)])
 
   for (let stopIndex = 1; stopIndex < stops.length; stopIndex += 1) {
-    const current = new Array<ProjectionState | null>(segments.length).fill(null)
-    let prefixBestIndex = -1
+    const current: ProjectionNode[][] = Array.from({ length: segments.length }, () => [])
+    let prefixParents: ProjectionNode[] = []
+
     for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
-      if (segmentIndex > 0 && betterProjectionState(
-        previous[segmentIndex - 1],
-        prefixBestIndex < 0 ? null : previous[prefixBestIndex],
-        maxSpanMeters !== null,
-      )) {
-        prefixBestIndex = segmentIndex - 1
+      if (segmentIndex > 0) {
+        prefixParents = pruneProjectionFrontier(
+          [...prefixParents, ...previous[segmentIndex - 1]],
+          spanConstrained,
+        )
       }
       const currentProjection = projections[stopIndex][segmentIndex]
-      let parentIndex = prefixBestIndex
-      const sameSegmentState = previous[segmentIndex]
-      const previousProjection = projections[stopIndex - 1][segmentIndex]
-      if (
-        previousProjection.segmentFraction <= currentProjection.segmentFraction
-        && betterProjectionState(
-          sameSegmentState,
-          parentIndex < 0 ? null : previous[parentIndex],
-          maxSpanMeters !== null,
-        )
-      ) {
-        parentIndex = segmentIndex
+      const sameSegmentParents = previous[segmentIndex].filter((node) =>
+        node.projection.segmentFraction
+          <= currentProjection.segmentFraction + floatingCostEpsilon(currentProjection.segmentFraction))
+      const parents = pruneProjectionFrontier(
+        [...prefixParents, ...sameSegmentParents],
+        spanConstrained,
+      )
+      const generated: ProjectionNode[] = []
+      for (const parent of parents) {
+        const node = extendProjectionNode(parent, currentProjection)
+        if (
+          options.maxSpanMeters !== null
+          && currentProjection.progressMeters - node.firstProgressMeters
+            > options.maxSpanMeters + floatingCostEpsilon(options.maxSpanMeters)
+        ) continue
+        generated.push(node)
       }
-      if (parentIndex < 0) continue
-      const parent = previous[parentIndex]
-      current[segmentIndex] = {
-        distanceSumMeters: parent.distanceSumMeters + currentProjection.distanceMeters,
-        firstProgressMeters: parent.firstProgressMeters,
-      }
-      parentSegments[stopIndex][segmentIndex] = parentIndex
+      current[segmentIndex] = pruneProjectionFrontier(generated, spanConstrained)
     }
-    if (current.every((state) => state === null)) return null
-    previous = current.map((state) => state ?? {
-      distanceSumMeters: Number.POSITIVE_INFINITY,
-      firstProgressMeters: Number.POSITIVE_INFINITY,
-    })
+
+    if (current.every((frontier) => frontier.length === 0)) return null
+    previous = current
   }
 
-  let finalSegment = -1
-  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
-    if (!Number.isFinite(previous[segmentIndex].distanceSumMeters)) continue
-    const spanMeters = projections.at(-1)![segmentIndex].progressMeters - previous[segmentIndex].firstProgressMeters
-    if (maxSpanMeters !== null && spanMeters > maxSpanMeters + floatingCostEpsilon(maxSpanMeters)) continue
-    if (finalSegment < 0 || betterFinalProjectionPath(
-      previous[segmentIndex],
-      projections.at(-1)![segmentIndex],
-      previous[finalSegment],
-      projections.at(-1)![finalSegment],
-    )) finalSegment = segmentIndex
-  }
-  if (finalSegment < 0) return null
-
-  const selected = new Array<ShapePatternProjection>(stops.length)
-  let segmentIndex = finalSegment
-  for (let stopIndex = stops.length - 1; stopIndex >= 0; stopIndex -= 1) {
-    selected[stopIndex] = projections[stopIndex][segmentIndex]
-    if (stopIndex > 0) segmentIndex = parentSegments[stopIndex][segmentIndex]
-  }
+  const finalNodes = previous.flat().filter((node) =>
+    node.maxDistanceMeters <= options.maxStopDistanceMeters
+    && node.distanceSumMeters / stops.length <= options.maxMeanStopDistanceMeters)
+  if (!finalNodes.length) return null
+  finalNodes.sort((a, b) => compareFinalProjectionNode(
+    a,
+    b,
+    stops.length,
+    options.objective,
+  ))
+  const best = finalNodes[0]
+  const selected = reconstructProjectionPath(best, stops.length)
+  if (!selected) return null
   return {
     projections: selected,
-    distanceSumMeters: previous[finalSegment].distanceSumMeters,
+    distanceSumMeters: best.distanceSumMeters,
+    maxDistanceMeters: best.maxDistanceMeters,
   }
+}
+
+function initialProjectionNode(projection: ShapePatternProjection): ProjectionNode {
+  return {
+    projection,
+    distanceSumMeters: projection.distanceMeters,
+    maxDistanceMeters: projection.distanceMeters,
+    firstProgressMeters: projection.progressMeters,
+    parent: null,
+    pathKey: projectionPathPart(projection),
+  }
+}
+
+function extendProjectionNode(parent: ProjectionNode, projection: ShapePatternProjection): ProjectionNode {
+  return {
+    projection,
+    distanceSumMeters: parent.distanceSumMeters + projection.distanceMeters,
+    maxDistanceMeters: Math.max(parent.maxDistanceMeters, projection.distanceMeters),
+    firstProgressMeters: parent.firstProgressMeters,
+    parent,
+    pathKey: `${parent.pathKey}|${projectionPathPart(projection)}`,
+  }
+}
+
+function pruneProjectionFrontier(
+  candidates: ProjectionNode[],
+  spanConstrained: boolean,
+): ProjectionNode[] {
+  if (candidates.length < 2) return candidates
+  const ordered = [...candidates].sort((a, b) => compareProjectionNodeCanonical(a, b, spanConstrained))
+  const frontier: ProjectionNode[] = []
+  for (const candidate of ordered) {
+    if (frontier.some((current) => projectionNodeDominates(current, candidate, spanConstrained))) continue
+    for (let index = frontier.length - 1; index >= 0; index -= 1) {
+      if (projectionNodeDominates(candidate, frontier[index], spanConstrained)) frontier.splice(index, 1)
+    }
+    frontier.push(candidate)
+  }
+  return frontier.sort((a, b) => compareProjectionNodeCanonical(a, b, spanConstrained))
+}
+
+function projectionNodeDominates(
+  candidate: ProjectionNode,
+  current: ProjectionNode,
+  spanConstrained: boolean,
+): boolean {
+  const sumComparison = compareFloating(candidate.distanceSumMeters, current.distanceSumMeters)
+  const maxComparison = compareFloating(candidate.maxDistanceMeters, current.maxDistanceMeters)
+  if (sumComparison > 0 || maxComparison > 0) return false
+
+  if (!spanConstrained) {
+    const firstComparison = compareFloating(candidate.firstProgressMeters, current.firstProgressMeters)
+    if (firstComparison > 0) return false
+    return sumComparison < 0
+      || maxComparison < 0
+      || firstComparison < 0
+      || candidate.pathKey <= current.pathKey
+  }
+
+  // Different Direction 2 starts trade diagnostic span against future seam
+  // feasibility, so exact pruning cannot compare them solely by accumulated cost.
+  const firstComparison = compareFloating(candidate.firstProgressMeters, current.firstProgressMeters)
+  if (firstComparison !== 0) return false
+  return sumComparison < 0
+    || maxComparison < 0
+    || candidate.pathKey <= current.pathKey
+}
+
+function compareProjectionNodeCanonical(
+  a: ProjectionNode,
+  b: ProjectionNode,
+  spanConstrained: boolean,
+): number {
+  return compareFloating(a.distanceSumMeters, b.distanceSumMeters)
+    || compareFloating(a.maxDistanceMeters, b.maxDistanceMeters)
+    || (spanConstrained
+      ? compareFloating(b.firstProgressMeters, a.firstProgressMeters)
+      : compareFloating(a.firstProgressMeters, b.firstProgressMeters))
+    || a.pathKey.localeCompare(b.pathKey)
+}
+
+function compareFinalProjectionNode(
+  a: ProjectionNode,
+  b: ProjectionNode,
+  stopCount: number,
+  objective: ProjectionObjective,
+): number {
+  const aMean = a.distanceSumMeters / stopCount
+  const bMean = b.distanceSumMeters / stopCount
+  const aCost = stopDistanceObjective(aMean, a.maxDistanceMeters)
+  const bCost = stopDistanceObjective(bMean, b.maxDistanceMeters)
+  const aSpan = a.projection.progressMeters - a.firstProgressMeters
+  const bSpan = b.projection.progressMeters - b.firstProgressMeters
+  if (objective === 'span') {
+    return compareFloating(bSpan, aSpan)
+      || compareFloating(aCost, bCost)
+      || compareFloating(aMean, bMean)
+      || compareFloating(a.maxDistanceMeters, b.maxDistanceMeters)
+      || a.pathKey.localeCompare(b.pathKey)
+  }
+  return compareFloating(aCost, bCost)
+    || compareFloating(bSpan, aSpan)
+    || compareFloating(aMean, bMean)
+    || compareFloating(a.maxDistanceMeters, b.maxDistanceMeters)
+    || a.pathKey.localeCompare(b.pathKey)
+}
+
+function reconstructProjectionPath(node: ProjectionNode, stopCount: number): ShapePatternProjection[] | null {
+  const selected = new Array<ShapePatternProjection>(stopCount)
+  let current: ProjectionNode | null = node
+  for (let index = stopCount - 1; index >= 0; index -= 1) {
+    if (!current) return null
+    selected[index] = current.projection
+    current = current.parent
+  }
+  return current === null ? selected : null
+}
+
+function projectionPathPart(projection: ShapePatternProjection): string {
+  return `${projection.segmentIndex.toString().padStart(8, '0')}:${projection.segmentFraction.toFixed(12)}`
 }
 
 function projectStopToSegment(
@@ -741,62 +999,117 @@ function isValidCoordinate(coordinate: ShapePatternCoordinate): boolean {
 }
 
 function compareGeometryScore(
-  a: Pick<ScoredPair, 'costMeters' | 'metrics'>,
-  b: Pick<ScoredPair, 'costMeters' | 'metrics'>,
+  a: Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'>,
+  b: Pick<ScoredPair, 'costMeters' | 'metrics' | 'directionTwoProjectionConsistent'>,
 ): number {
-  return a.costMeters - b.costMeters
-    || nullableMetric(a.metrics.endpointDistanceMeters) - nullableMetric(b.metrics.endpointDistanceMeters)
-    || b.metrics.matchedSpanMeters - a.metrics.matchedSpanMeters
-    || a.metrics.meanStopDistanceMeters - b.metrics.meanStopDistanceMeters
-    || a.metrics.maxStopDistanceMeters - b.metrics.maxStopDistanceMeters
+  return compareFloating(a.costMeters, b.costMeters)
+    || compareFloating(nullableMetric(a.metrics.endpointDistanceMeters), nullableMetric(b.metrics.endpointDistanceMeters))
+    || compareFloating(b.metrics.matchedSpanMeters, a.metrics.matchedSpanMeters)
+    || compareFloating(a.metrics.meanStopDistanceMeters, b.metrics.meanStopDistanceMeters)
+    || compareFloating(a.metrics.maxStopDistanceMeters, b.metrics.maxStopDistanceMeters)
 }
 
-function betterProjectionState(
-  candidate: ProjectionState,
-  current: ProjectionState | null,
-  preferLaterStart: boolean,
+function assignmentsAreExactlyEquivalent(best: AssignmentSolution, alternative: AssignmentSolution): boolean {
+  if (alternative.cardinality !== best.cardinality) return false
+  const differing = differingAssignmentCosts(best, alternative)
+  return differing.alternativeCostMeters
+    <= differing.bestCostMeters + floatingCostEpsilon(Math.max(
+      differing.bestCostMeters,
+      differing.alternativeCostMeters,
+    ))
+}
+
+function assignmentsAreToleranceEquivalent(
+  best: AssignmentSolution,
+  alternative: AssignmentSolution,
+  options: ResolvedOptions,
 ): boolean {
-  if (!current) return Number.isFinite(candidate.distanceSumMeters)
-  return candidate.distanceSumMeters < current.distanceSumMeters
-    || (candidate.distanceSumMeters === current.distanceSumMeters
-      && (preferLaterStart
-        ? candidate.firstProgressMeters > current.firstProgressMeters
-        : candidate.firstProgressMeters < current.firstProgressMeters))
-}
-
-function betterFinalProjectionPath(
-  candidateState: ProjectionState,
-  candidateProjection: ShapePatternProjection,
-  currentState: ProjectionState,
-  currentProjection: ShapePatternProjection,
-): boolean {
-  if (candidateState.distanceSumMeters !== currentState.distanceSumMeters) {
-    return candidateState.distanceSumMeters < currentState.distanceSumMeters
-  }
-  const candidateSpan = candidateProjection.progressMeters - candidateState.firstProgressMeters
-  const currentSpan = currentProjection.progressMeters - currentState.firstProgressMeters
-  return candidateSpan > currentSpan
-    || (candidateSpan === currentSpan && candidateProjection.progressMeters < currentProjection.progressMeters)
-}
-
-function objectiveIsAccepted(
-  objective: AssignmentObjective,
-  requiredCardinality: number,
-  maxCostMeters: number,
-): boolean {
-  return objective.cardinality === requiredCardinality
-    && objective.costMeters <= maxCostMeters + floatingCostEpsilon(maxCostMeters)
-}
-
-function assignmentToleranceMeters(bestCostMeters: number, options: ResolvedOptions): number {
-  return Math.max(
+  if (alternative.cardinality !== best.cardinality) return false
+  const differing = differingAssignmentCosts(best, alternative)
+  const delta = differing.alternativeCostMeters - differing.bestCostMeters
+  if (delta <= floatingCostEpsilon(Math.max(
+    differing.bestCostMeters,
+    differing.alternativeCostMeters,
+  ))) return true
+  const toleranceMeters = Math.max(
     options.ambiguityAbsoluteMeters,
-    Math.abs(bestCostMeters) * options.ambiguityRelativeRatio,
+    Math.abs(differing.bestCostMeters) * options.ambiguityRelativeRatio,
   )
+  // The exact boundary is inclusive. Common fixed edges have already been removed.
+  return delta <= toleranceMeters + floatingCostEpsilon(toleranceMeters)
+}
+
+function differingAssignmentCosts(
+  best: AssignmentSolution,
+  alternative: AssignmentSolution,
+): { bestCostMeters: number; alternativeCostMeters: number } {
+  const bestKeys = new Set(best.edges.map(assignmentEdgeKey))
+  const alternativeKeys = new Set(alternative.edges.map(assignmentEdgeKey))
+  return {
+    bestCostMeters: best.edges
+      .filter((edge) => !alternativeKeys.has(assignmentEdgeKey(edge)))
+      .reduce((total, edge) => total + edge.costMeters, 0),
+    alternativeCostMeters: alternative.edges
+      .filter((edge) => !bestKeys.has(assignmentEdgeKey(edge)))
+      .reduce((total, edge) => total + edge.costMeters, 0),
+  }
+}
+
+function compareAssignmentSolution(a: AssignmentSolution, b: AssignmentSolution): number {
+  if (a.cardinality !== b.cardinality) return b.cardinality - a.cardinality
+  return compareFloating(a.costMeters, b.costMeters) || a.key.localeCompare(b.key)
+}
+
+function emptyAssignment(): AssignmentSolution {
+  return { cardinality: 0, costMeters: 0, edges: [], key: '' }
+}
+
+function impossibleAssignment(): AssignmentSolution {
+  return {
+    cardinality: Number.NEGATIVE_INFINITY,
+    costMeters: Number.POSITIVE_INFINITY,
+    edges: [],
+    key: '~',
+  }
+}
+
+function insertAssignmentEdge(edges: AssignmentEdge[], edge: AssignmentEdge): AssignmentEdge[] {
+  return sortAssignmentEdges([...edges, edge])
+}
+
+function sortAssignmentEdges(edges: AssignmentEdge[]): AssignmentEdge[] {
+  return [...edges].sort((a, b) =>
+    a.patternIndex - b.patternIndex || a.shapeIndex - b.shapeIndex)
+}
+
+function assignmentKey(edges: AssignmentEdge[]): string {
+  return edges.map(assignmentEdgeKey).join('|')
+}
+
+function assignmentEdgeKey(edge: AssignmentEdge): string {
+  return `${edge.patternIndex.toString().padStart(8, '0')}:${edge.shapeIndex.toString().padStart(8, '0')}`
+}
+
+function stopDistanceObjective(meanStopDistanceMeters: number, maxStopDistanceMeters: number): number {
+  return meanStopDistanceMeters + maxStopDistanceMeters * STOP_DISTANCE_MAX_WEIGHT
+}
+
+function candidateShapeIds(pairs: ScoredPair[]): string[] {
+  return [...new Set(pairs.map((pair) => pair.shape.shapeId))].sort()
 }
 
 function floatingCostEpsilon(value: number): number {
-  return Number.EPSILON * FLOATING_COST_EPSILON_FACTOR * Math.max(1, Math.abs(value))
+  return Math.max(
+    NUMERIC_METERS_EPSILON,
+    Number.EPSILON * FLOATING_COST_EPSILON_FACTOR * Math.max(1, Math.abs(value)),
+  )
+}
+
+function compareFloating(a: number, b: number): number {
+  if (a === b) return 0
+  const epsilon = floatingCostEpsilon(Math.max(Math.abs(a), Math.abs(b)))
+  if (Math.abs(a - b) <= epsilon) return 0
+  return a < b ? -1 : 1
 }
 
 function popcount(value: bigint): number {
@@ -857,6 +1170,10 @@ function groupBy<T, K>(items: readonly T[], keyOf: (item: T) => K): Map<K, T[]> 
     grouped.set(key, values)
   }
   return grouped
+}
+
+function range(length: number): number[] {
+  return Array.from({ length }, (_unused, index) => index)
 }
 
 function polylineLengthMeters(coordinates: ShapePosition[]): number {
