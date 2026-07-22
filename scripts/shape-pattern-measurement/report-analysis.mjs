@@ -1,22 +1,24 @@
-import { classifyClosure, normalizeCoordinates } from './report-collector.mjs'
-import { contentHash, distribution, omitNondeterministic, stableStringify } from './util.mjs'
+import { contentHash, distribution, omitNondeterministic } from './util.mjs'
+
+const UNRESOLVED_REASON_FIELDS = Object.freeze({
+  'invalid-pattern': 'invalidPattern',
+  'no-compatible-shape': 'noCompatibleShape',
+  'compatible-shape-assigned': 'compatibleShapeAssigned',
+  'assignment-ambiguous': 'assignmentAmbiguous',
+  'tolerance-equivalent-alternatives': 'toleranceEquivalentAlternatives',
+  'contradictory-complete-identity': 'contradictoryCompleteIdentity',
+  'near-closed-geometry-disabled': 'nearClosedGeometryDisabled',
+  'rejected-or-invalid-shapes': 'rejectedOrInvalidShapes',
+})
+const REJECTED_SHAPE_REASONS = new Set(['duplicate-shape-id', 'invalid-coordinates', 'direction-2-not-closed'])
 
 export function deterministicContentHash(report) {
   return contentHash(omitNondeterministic({
-    schemaVersion: report.metadata.schemaVersion,
-    repositoryMainSha: report.metadata.repositoryMainSha,
-    matcherSourcePath: report.metadata.matcherSourcePath,
-    matcherSourceSha256: report.metadata.matcherSourceSha256,
-    matcherSourceGitBlobSha1: report.metadata.matcherSourceGitBlobSha1,
-    harnessVersion: report.metadata.harnessVersion,
-    selectedCities: report.metadata.selectedCities,
-    includeIntercity: report.metadata.includeIntercity,
-    endpointContentHashes: report.metadata.endpointContentHashes,
-    tdxPayloadMaxUpdateTime: report.metadata.tdxPayloadMaxUpdateTime,
-    mode: report.metadata.mode,
+    metadata: report.metadata,
     partitions: report.partitions,
     pairs: report.pairs,
     outcomes: report.outcomes,
+    summary: report.summary,
   }))
 }
 
@@ -34,38 +36,35 @@ export function buildSummary(partitions, pairs) {
     peakFrontierWidth: pairs.map((item) => item.peakFrontierWidth),
     retainedNodeCount: pairs.map((item) => item.retainedNodeCount),
     pairLatencyMs: pairs.map((item) => item.pairTimeMs),
-    partitionLatencyMs: partitions.map((item) => item.partitionWallTimeMs),
+    matcherLatencyMs: partitions.map((item) => item.matcherLatencyMs),
     assignmentLatencyMs: partitions.map((item) => item.bestAssignmentTimeMs),
     ambiguityProofLatencyMs: partitions.map((item) => item.ambiguityProofTimeMs),
-    rssBytes: partitions.map((item) => item.rssBytes),
-    heapUsedBytes: partitions.map((item) => item.heapUsedBytes),
+    rssDeltaBytes: partitions.map((item) => item.memoryObservation?.rssDeltaBytes),
+    heapDeltaBytes: partitions.map((item) => item.memoryObservation?.heapDeltaBytes),
   }
   return Object.fromEntries(Object.entries(fields).map(([key, values]) => [key, distribution(values)]))
 }
 
 export function buildOutliers(partitions, pairs, topN) {
   return {
-    largestPatternPartitions: top(partitions, 'patternCount', topN),
-    largestShapePartitions: top(partitions, 'shapeCount', topN),
-    largestMinSidePartitions: top(partitions, 'minSideCount', topN),
-    densestCompatibleMatrices: top(partitions, 'compatibleEdgeDensity', topN),
-    mostStopsPairs: top(pairs, 'stopCount', topN),
-    mostSegmentsPairs: top(pairs, 'segmentCount', topN),
-    widestFrontierPairs: top(pairs, 'peakFrontierWidth', topN),
-    mostRetainedNodesPairs: top(pairs, 'retainedNodeCount', topN),
-    slowestPairScoring: top(pairs, 'pairTimeMs', topN),
-    slowestAssignmentProofs: top(partitions, 'ambiguityProofTimeMs', topN),
-    slowestPartitions: top(partitions, 'partitionWallTimeMs', topN),
-    highestRssPartitions: top(partitions, 'rssBytes', topN),
-    highestHeapPartitions: top(partitions, 'heapUsedBytes', topN),
-    direction2MostSiblings: top(partitions.filter((item) => item.direction === 2), 'shapeCount', topN),
-    mixedClosedDirection2Partitions: partitions.filter((partition) => partition.direction === 2
-      && (partition.direction2ClosureCounts?.['truly-closed'] ?? 0) > 0
-      && (partition.direction2ClosureCounts?.['near-closed'] ?? 0) > 0).slice(0, topN),
+    largestPatternPartitions: top(partitions, 'patternCount', topN, (item) => item.partitionId),
+    largestShapePartitions: top(partitions, 'shapeCount', topN, (item) => item.partitionId),
+    largestMinSidePartitions: top(partitions, 'minSideCount', topN, (item) => item.partitionId),
+    densestCompatibleMatrices: top(partitions, 'compatibleEdgeDensity', topN, (item) => item.partitionId),
+    mostStopsPairs: top(pairs, 'stopCount', topN, pairIdentity),
+    mostSegmentsPairs: top(pairs, 'segmentCount', topN, pairIdentity),
+    widestFrontierPairs: top(pairs, 'peakFrontierWidth', topN, pairIdentity),
+    mostRetainedNodesPairs: top(pairs, 'retainedNodeCount', topN, pairIdentity),
+    slowestPairScoring: top(pairs, 'pairTimeMs', topN, pairIdentity),
+    slowestAssignmentProofs: top(partitions, 'ambiguityProofTimeMs', topN, (item) => item.partitionId),
+    slowestPartitions: top(partitions, 'matcherLatencyMs', topN, (item) => item.partitionId),
+    highestRssDeltaPartitions: top(partitions, ['memoryObservation', 'rssDeltaBytes'], topN, (item) => item.partitionId),
+    highestHeapDeltaPartitions: top(partitions, ['memoryObservation', 'heapDeltaBytes'], topN, (item) => item.partitionId),
+    direction2MostSiblings: top(partitions.filter((item) => item.direction === 2), 'shapeCount', topN, (item) => item.partitionId),
   }
 }
 
-export function createOutcomeCounts() {
+export function createOutcomeCounts(candidateBundle) {
   return {
     exactIdentity: 0,
     geometry: 0,
@@ -78,17 +77,19 @@ export function createOutcomeCounts() {
     nearClosedGeometryDisabled: 0,
     rejectedOrInvalidShapes: 0,
     rejectedShapeReasons: {},
+    sourceRejections: { ...(candidateBundle.rejectionCounts ?? {}) },
+    unusedShapes: 0,
   }
 }
 
-export function createDirection2Counts() {
+export function createDirection2Counts(pairMetricsAvailable) {
   return {
-    trulyClosed: 0,
-    nearClosed: 0,
-    openOrInvalid: 0,
+    pairMetricsAvailable,
+    trulyClosed: pairMetricsAvailable ? 0 : null,
+    nearClosed: pairMetricsAvailable ? 0 : null,
+    openOrInvalid: pairMetricsAvailable ? 0 : null,
     identitySuccess: 0,
     geometrySuccess: 0,
-    geometryOnlySiblingPartitionCount: 0,
     failClosedUnresolved: 0,
     rejectedCount: 0,
   }
@@ -97,49 +98,36 @@ export function createDirection2Counts() {
 export function accumulateOutcomes(target, result) {
   target.exactIdentity += result.matches.filter((entry) => entry.basis === 'exact-identity').length
   target.geometry += result.matches.filter((entry) => entry.basis === 'geometry').length
-  const mapping = {
-    'invalid-pattern': 'invalidPattern',
-    'no-compatible-shape': 'noCompatibleShape',
-    'compatible-shape-assigned': 'compatibleShapeAssigned',
-    'assignment-ambiguous': 'assignmentAmbiguous',
-    'tolerance-equivalent-alternatives': 'toleranceEquivalentAlternatives',
-    'contradictory-complete-identity': 'contradictoryCompleteIdentity',
-    'near-closed-geometry-disabled': 'nearClosedGeometryDisabled',
-    'rejected-or-invalid-shapes': 'rejectedOrInvalidShapes',
+  for (const entry of result.unresolved) {
+    const field = UNRESOLVED_REASON_FIELDS[entry.reason]
+    if (!field) throw new Error(`Unknown unresolved reason: ${entry.reason}`)
+    target[field] += 1
   }
-  for (const entry of result.unresolved) target[mapping[entry.reason]] += 1
   for (const entry of result.rejectedShapes) {
+    if (!REJECTED_SHAPE_REASONS.has(entry.reason)) throw new Error(`Unknown rejected Shape reason: ${entry.reason}`)
     target.rejectedShapeReasons[entry.reason] = (target.rejectedShapeReasons[entry.reason] ?? 0) + 1
   }
+  target.unusedShapes += result.unusedShapeIds.length
 }
 
-export function accumulateDirection2(target, partition, result) {
+export function accumulateDirection2(target, partition, result, collectorSnapshot) {
   if (partition.direction !== 2) return
-  const classifications = partition.shapes.map((shape) =>
-    classifyClosure(2, normalizeCoordinates(shape.coordinates)).classification)
-  target.trulyClosed += classifications.filter((entry) => entry === 'truly-closed').length
-  target.nearClosed += classifications.filter((entry) => entry === 'near-closed').length
-  target.openOrInvalid += classifications.filter((entry) => entry === 'open-or-invalid').length
   target.identitySuccess += result.matches.filter((entry) => entry.basis === 'exact-identity').length
   target.geometrySuccess += result.matches.filter((entry) => entry.basis === 'geometry').length
-  const hasCompleteIdentity = partition.patterns.some((entry) => entry.subRouteUid)
-    && partition.shapes.some((entry) => entry.subRouteUid)
-  if (!hasCompleteIdentity && partition.shapes.length > 1
-    && result.matches.some((entry) => entry.basis === 'geometry')) {
-    target.geometryOnlySiblingPartitionCount += 1
-  }
   target.failClosedUnresolved += result.unresolved.length
   target.rejectedCount += result.rejectedShapes.length
+  if (!target.pairMetricsAvailable) return
+  for (const shape of collectorSnapshot.shapes) {
+    if (shape.direction !== 2) continue
+    if (shape.closureClassification === 'truly-closed') target.trulyClosed += 1
+    else if (shape.closureClassification === 'near-closed') target.nearClosed += 1
+    else if (shape.closureClassification === 'open-or-invalid') target.openOrInvalid += 1
+    else throw new Error(`Unknown Direction 2 closure classification: ${shape.closureClassification}`)
+  }
 }
 
 export function maxRawUpdateTime(rawManifest) {
-  return (rawManifest.endpoints ?? []).map((entry) => entry.maxUpdateTime).filter(Boolean).sort().at(-1) ?? null
-}
-
-export function maxCandidateUpdateTime(candidateBundle) {
-  const values = candidateBundle.partitions.flatMap((partition) => partition.shapes
-    .map((shape) => shape.measurement?.updateTime).filter(Boolean)).sort()
-  return values.at(-1) ?? null
+  return rawManifest.endpoints.map((entry) => entry.maxUpdateTime).filter(Boolean).sort().at(-1) ?? null
 }
 
 export function countBy(records, selector) {
@@ -148,14 +136,22 @@ export function countBy(records, selector) {
     const key = selector(record)
     result[key] = (result[key] ?? 0) + 1
   }
-  return result
+  return Object.fromEntries(Object.entries(result).sort())
 }
 
-export function median(values) {
-  return distribution(values).median ?? 0
+function top(records, field, count, identity) {
+  const valueAt = Array.isArray(field)
+    ? (record) => field.reduce((value, key) => value?.[key], record)
+    : (record) => record[field]
+  const unique = new Map()
+  for (const record of records) {
+    const value = valueAt(record)
+    if (!Number.isFinite(value)) continue
+    const key = identity(record)
+    const previous = unique.get(key)
+    if (!previous || value > valueAt(previous)) unique.set(key, record)
+  }
+  return [...unique.values()].sort((a, b) => valueAt(b) - valueAt(a)
+    || identity(a).localeCompare(identity(b))).slice(0, count)
 }
-
-function top(records, field, count) {
-  return records.slice().sort((a, b) => (b[field] ?? -Infinity) - (a[field] ?? -Infinity)
-    || stableStringify(a).localeCompare(stableStringify(b))).slice(0, count)
-}
+function pairIdentity(item) { return `${item.partitionId}\0${item.patternId}\0${item.shapeId}` }
