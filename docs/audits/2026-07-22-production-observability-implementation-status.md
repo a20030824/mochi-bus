@@ -34,12 +34,12 @@
 | --- | --- | --- | --- |
 | #142 `fix(ci): verify production release before deploy` | `9c77506cf353a5cc60452532d32c626bf1bf05af` | Deploy workflow 在 `npm ci` 後執行完整 `npm run check`，阻止未通過 exact-release 驗證的 commit 發布。 | GitHub ruleset 的 strict up-to-date checks；真正 post-deploy smoke。 |
 | #143 `fix(map): keep failed timetable stop navigation consistent` | `6d2c318e40f6071b25924539687d12e7eae7d059` | 明確選取的 timetable stop 在 request 前寫入 session/URL；失敗、retry、reload 不再退回舊站牌。 | Timetable API/schema 或 rendering 重寫。 |
-| #144 `fix(observability): bound production error logs` | `3cef46289b76f1b25924539687d12e7eae7d059` | 三個高風險 Worker callsite 改用 bounded structured record，只允許 event、operation、city、failureClass、errorType。 | API response、fallback denominator、snapshot CLI diagnostics 或第三方 logging。 |
+| #144 `fix(observability): bound production error logs` | `3cef46289b76d8c15ad9e1430dcd49ea264e216e` | 三個高風險 Worker callsite 改用 bounded structured record，只允許 event、operation、city、failureClass、errorType。 | API response、fallback denominator、snapshot CLI diagnostics 或第三方 logging。 |
 | #145 `fix(e2e): isolate shared Worker state` | `c193779e0ac9a8bc101a59ab2d1976b1c029ffba` | 普通 UI 與 Worker-stateful suite 分開執行；stateful case 使用 fresh Wrangler、單 worker、逐案 reset，普通 UI API request 被 firewall。 | Production reset endpoint；test route 沒有明確 test binding 時回 404。 |
 | #146 `ci(visual): run screenshot regression on Linux` | `c76d75a454d1c552b90e31fa6cedb90df5805dbb` | 六張 reviewed Linux baseline 接入獨立 read-only visual job；差異失敗時保留 expected／actual／diff/report。 | 尚未加入 required-check ruleset；CI 不會自動更新或 push snapshot。 |
 | #155 `ci(snapshot): make manual city input a choice` | `fbb4a96b78b44f8e3e497cd89f11a73f6c2317e1` | Manual snapshot dispatch 使用與 `supportedCities` 精確一致的 22-city choice。 | Scheduled sharding、repair guards、snapshot algorithm。 |
 | #156 `fix(snapshot): enforce rollback authority` | `f3abd0ac0827f674fa34e93307416b2508d1b667` | A7 authority、reconcile、optimistic guard、完整 target evidence、failure semantics 與 runbook。 | Production rollback/reconcile、A8、A9。 |
-| #157 `feat(deploy): verify the deployed release` | PR 實作；production evidence 待 Deploy | A8 exact-release post-deploy HTTP/assets/API/browser/observation contract與 bounded report。 | 自動 rollback、Visual required check、organic frontend collector。 |
+| #157 `feat(deploy): verify the deployed release` | PR 實作；production evidence 待 Deploy | A8 exact-release post-deploy HTTP/assets/API/browser/observation contract 與 bounded report。 | 自動 rollback、Visual required check、organic frontend collector。 |
 
 ## 4. 目前仍需處理
 
