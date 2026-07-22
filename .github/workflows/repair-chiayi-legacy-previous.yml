@@ -1,12 +1,13 @@
 name: Repair Chiayi legacy rollback previous
-run-name: Repair Chiayi legacy previous from ${{ github.sha }}
+run-name: Repair Chiayi legacy previous by ${{ github.actor }}
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/repair-chiayi-legacy-previous.yml
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type repair-Chiayi-2026-07-22 to run the production repair
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ concurrency:
 
 jobs:
   repair:
-    if: github.repository == 'a20030824/mochi-bus'
+    if: github.repository == 'a20030824/mochi-bus' && inputs.confirm == 'repair-Chiayi-2026-07-22'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
