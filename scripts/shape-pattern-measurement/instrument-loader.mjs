@@ -60,14 +60,29 @@ export async function loadMatcherModule({
   try {
     module = await import(`${pathToFileURL(outputPath).href}?run=${randomUUID()}`)
   } catch (error) {
-    try { await rm(outputPath, { force: true }) } catch {}
+    try {
+      await rm(outputPath, { force: true })
+    } catch {
+      throw attachCleanupFailure(error, {
+        stage: 'matcher-import-temp-cleanup',
+        temporaryPath: outputPath,
+      })
+    }
     throw error
   }
   const importTimeMs = performance.now() - importStartedAt
   if (typeof module.matchShapesToPatterns !== 'function'
     || (instrumented && typeof module.__measurementProjectionProbe !== 'function')) {
-    await rm(outputPath, { force: true })
-    throw new TypeError('Compiled matcher does not expose required measurement functions')
+    const error = new TypeError('Compiled matcher does not expose required measurement functions')
+    try {
+      await rm(outputPath, { force: true })
+    } catch {
+      throw attachCleanupFailure(error, {
+        stage: 'matcher-interface-temp-cleanup',
+        temporaryPath: outputPath,
+      })
+    }
+    throw error
   }
 
   let firstCollectorFailure = null
@@ -243,7 +258,7 @@ let __measurementProjectionStatus: 'no-path' | 'frontier-empty' | 'threshold-rej
 let __measurementProjectionInjectedThrow = false
 let __measurementAssignmentKind: string | null = null
 const __measure = (event: string, payload: Record<string, unknown> = {}): void => {
-  try { const hook = globalThis.${HOOK_NAME}; if (typeof hook === 'function') hook(event, payload) } catch {}
+  try { const hook = globalThis.${HOOK_NAME}; if (typeof hook === 'function') hook(event, payload) } catch { /* Observer failures must not change matcher semantics. */ }
 }
 const __measureOrientation = <T>(orientation: 'forward' | 'reverse', run: () => T): T => {
   const startedAt = performance.now()
