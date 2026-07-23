@@ -1,10 +1,14 @@
-import { REPORT_FILES, REPORT_SCHEMA_VERSION } from './constants.mjs'
+import { HARNESS_VERSION, REPORT_FILES, REPORT_SCHEMA_VERSION } from './constants.mjs'
+import {
+  buildOutliers, buildSummary, deterministicContentHash, OUTLIER_FIELDS,
+  SUMMARY_METRIC_FIELDS,
+} from './report-analysis.mjs'
 import { assertFiniteTree, stableStringify } from './util.mjs'
 
 const TOP_LEVEL_KEYS = ['metadata', 'partitions', 'pairs', 'outcomes', 'outliers', 'summary']
 const DISTRIBUTION_KEYS = ['count', 'min', 'median', 'p75', 'p90', 'p95', 'p99', 'max']
 const PARTITION_KEYS = [
-  'partitionId', 'sourceScope', 'city', 'routeUid', 'direction',
+  'partitionId', 'sourceScope', 'city', 'routeUid', 'direction', 'patternIds', 'shapeIds',
   'patternCount', 'shapeCount', 'minSideCount', 'candidateMultiplicity',
   'completeIdentityCount', 'duplicateIdentityCount', 'contradictoryIdentityCount',
   'compatibleEdgeCount', 'compatibleEdgeDensity', 'pairMetricsAvailable',
@@ -32,7 +36,7 @@ const PAIR_KEYS = [
 const PROJECTION_KEYS = ['orientation', 'objective', 'status', 'elapsedMs']
 const METADATA_KEYS = [
   'schemaVersion', 'runId', 'repositoryMainSha', 'matcherSourcePath',
-  'matcherSourceSha256', 'matcherSourceGitBlobSha1', 'harnessVersion',
+  'matcherSourceSha256', 'matcherSourceGitBlobSha1', 'harnessVersion', 'topOutlierCount',
   'nodeVersion', 'os', 'cpuModel', 'logicalCpuCount', 'totalMemoryBytes',
   'startedAt', 'completedAt', 'provenance', 'mode', 'pairMetricsAvailable',
   'warmupCount', 'iterationCount', 'loaderTimings', 'memoryPolicy',
@@ -57,13 +61,6 @@ const OUTCOME_KEYS = [
 const DIRECTION2_KEYS = [
   'pairMetricsAvailable', 'trulyClosed', 'nearClosed', 'openOrInvalid',
   'identitySuccess', 'geometrySuccess', 'failClosedUnresolved', 'rejectedCount',
-]
-const OUTLIER_KEYS = [
-  'largestPatternPartitions', 'largestShapePartitions', 'largestMinSidePartitions',
-  'densestCompatibleMatrices', 'mostStopsPairs', 'mostSegmentsPairs',
-  'widestFrontierPairs', 'mostRetainedNodesPairs', 'slowestPairScoring',
-  'slowestAssignmentProofs', 'slowestPartitions', 'highestRssDeltaPartitions',
-  'highestHeapDeltaPartitions', 'direction2MostSiblings',
 ]
 const UNRESOLVED_REASONS = new Set([
   'invalid-pattern', 'no-compatible-shape', 'compatible-shape-assigned',
@@ -105,12 +102,13 @@ function validateMetadata(value) {
   object(value, 'report.metadata')
   exactKeys(value, METADATA_KEYS, 'report.metadata')
   integer(value.schemaVersion, 'report.metadata.schemaVersion', { minimum: REPORT_SCHEMA_VERSION, maximum: REPORT_SCHEMA_VERSION })
-  string(value.runId, 'report.metadata.runId')
+  canonicalRunId(value.runId, 'report.metadata.runId')
   hash(value.repositoryMainSha, 40, 'report.metadata.repositoryMainSha')
   string(value.matcherSourcePath, 'report.metadata.matcherSourcePath')
   hash(value.matcherSourceSha256, 64, 'report.metadata.matcherSourceSha256')
   hash(value.matcherSourceGitBlobSha1, 40, 'report.metadata.matcherSourceGitBlobSha1')
-  integer(value.harnessVersion, 'report.metadata.harnessVersion', { minimum: 1 })
+  integer(value.harnessVersion, 'report.metadata.harnessVersion', { minimum: HARNESS_VERSION, maximum: HARNESS_VERSION })
+  integer(value.topOutlierCount, 'report.metadata.topOutlierCount', { minimum: 1 })
   string(value.nodeVersion, 'report.metadata.nodeVersion')
   exactKeys(value.os, ['platform', 'release'], 'report.metadata.os')
   string(value.os.platform, 'report.metadata.os.platform')
@@ -176,13 +174,19 @@ function validatePartition(value, path) {
   string(value.partitionId, `${path}.partitionId`)
   enumValue(value.sourceScope, ['city', 'intercity'], `${path}.sourceScope`)
   nullableString(value.city, `${path}.city`)
+  if (value.sourceScope === 'city' && value.city === null) throw new TypeError(`${path}.city is required for city scope`)
+  if (value.sourceScope === 'intercity' && value.city !== null) throw new TypeError(`${path}.city must be null for InterCity scope`)
   string(value.routeUid, `${path}.routeUid`)
   enumValue(value.direction, [0, 1, 2], `${path}.direction`)
+  validateIdentityList(value.patternIds, `${path}.patternIds`)
+  validateIdentityList(value.shapeIds, `${path}.shapeIds`)
   for (const key of [
     'patternCount', 'shapeCount', 'minSideCount', 'candidateMultiplicity',
     'completeIdentityCount', 'duplicateIdentityCount', 'contradictoryIdentityCount',
     'matchedCount', 'unresolvedCount', 'unusedShapeCount',
   ]) integer(value[key], `${path}.${key}`, { minimum: 0 })
+  if (value.patternIds.length !== value.patternCount) throw new TypeError(`${path}.patternIds count mismatch`)
+  if (value.shapeIds.length !== value.shapeCount) throw new TypeError(`${path}.shapeIds count mismatch`)
   if (value.minSideCount !== Math.min(value.patternCount, value.shapeCount)) throw new TypeError(`${path}.minSideCount disagrees with candidate counts`)
   if (value.candidateMultiplicity !== value.patternCount * value.shapeCount) throw new TypeError(`${path}.candidateMultiplicity disagrees with candidate counts`)
   boolean(value.pairMetricsAvailable, `${path}.pairMetricsAvailable`)
@@ -209,9 +213,31 @@ function validatePartition(value, path) {
     for (const key of ['compatibleEdgeCount', 'compatibleEdgeDensity', 'bestAssignmentTimeMs', 'ambiguityProofTimeMs', 'assignmentBestSolveCount', 'forcedMatchSolveCount', 'forcedUnmatchedSolveCount', 'activeMaskPeak']) {
       if (value[key] !== null) throw new TypeError(`${path}.${key} must be null when pair metrics are unavailable`)
     }
-  } else if (value.compatibleEdgeCount === null || value.compatibleEdgeDensity === null) {
-    throw new TypeError(`${path} instrumented compatible-edge metrics are required`)
+    return
   }
+  if (value.compatibleEdgeCount === null || value.compatibleEdgeDensity === null
+    || value.assignmentBestSolveCount === null || value.forcedMatchSolveCount === null
+    || value.forcedUnmatchedSolveCount === null) {
+    throw new TypeError(`${path} instrumented metrics are required`)
+  }
+  if (value.compatibleEdgeCount > value.candidateMultiplicity) throw new TypeError(`${path}.compatibleEdgeCount exceeds candidate capacity`)
+  const expectedDensity = value.candidateMultiplicity === 0 ? 0 : value.compatibleEdgeCount / value.candidateMultiplicity
+  if (!sameNumber(value.compatibleEdgeDensity, expectedDensity)) throw new TypeError(`${path}.compatibleEdgeDensity disagrees with count/capacity`)
+  if ((value.assignmentBestSolveCount === 0) !== (value.bestAssignmentTimeMs === null)) {
+    throw new TypeError(`${path} best assignment timing/count null contract mismatch`)
+  }
+  const proofCount = value.forcedMatchSolveCount + value.forcedUnmatchedSolveCount
+  if ((proofCount === 0) !== (value.ambiguityProofTimeMs === null)) {
+    throw new TypeError(`${path} ambiguity proof timing/count null contract mismatch`)
+  }
+}
+
+function validateIdentityList(value, path) {
+  array(value, path)
+  value.forEach((id, index) => string(id, `${path}[${index}]`))
+  const ordered = [...value].sort()
+  if (new Set(value).size !== value.length) throw new TypeError(`${path} contains duplicate candidate identity`)
+  if (stableStringify(value) !== stableStringify(ordered)) throw new TypeError(`${path} must use deterministic ordering`)
 }
 
 function validateMemory(value, path) {
@@ -271,13 +297,15 @@ function validateOutcomes(value) {
 
 function validateOutliers(value) {
   object(value, 'report.outliers')
-  exactKeys(value, OUTLIER_KEYS, 'report.outliers')
-  for (const key of OUTLIER_KEYS) array(value[key], `report.outliers.${key}`)
+  exactKeys(value, OUTLIER_FIELDS, 'report.outliers')
+  for (const key of OUTLIER_FIELDS) array(value[key], `report.outliers.${key}`)
 }
 
 export function validateDistributionTree(summary) {
   object(summary, 'report.summary')
-  for (const [name, value] of Object.entries(summary)) {
+  exactKeys(summary, SUMMARY_METRIC_FIELDS, 'report.summary')
+  for (const name of SUMMARY_METRIC_FIELDS) {
+    const value = summary[name]
     object(value, `report.summary.${name}`)
     exactKeys(value, DISTRIBUTION_KEYS, `report.summary.${name}`)
     integer(value.count, `report.summary.${name}.count`, { minimum: 0 })
@@ -296,16 +324,23 @@ export function validateDistributionTree(summary) {
 
 function reconcileReport(report) {
   const partitionById = new Map()
+  const patternOwner = new Map()
+  const shapeOwner = new Map()
   for (const partition of report.partitions) {
     if (partitionById.has(partition.partitionId)) throw new TypeError(`duplicate partitionId ${partition.partitionId}`)
     partitionById.set(partition.partitionId, partition)
     if (partition.pairMetricsAvailable !== report.metadata.pairMetricsAvailable) throw new TypeError(`partition ${partition.partitionId} pairMetricsAvailable mismatch`)
+    for (const patternId of partition.patternIds) registerCandidate(patternOwner, patternId, partition.partitionId, 'pattern')
+    for (const shapeId of partition.shapeIds) registerCandidate(shapeOwner, shapeId, partition.partitionId, 'Shape')
   }
   if (!report.metadata.pairMetricsAvailable && report.pairs.length) throw new TypeError('uninstrumented reports must not contain pair rows')
   const pairKeys = new Set()
   const compatibleByPartition = new Map()
   for (const pair of report.pairs) {
-    if (!partitionById.has(pair.partitionId)) throw new TypeError(`pair references missing partition ${pair.partitionId}`)
+    const partition = partitionById.get(pair.partitionId)
+    if (!partition) throw new TypeError(`pair references missing partition ${pair.partitionId}`)
+    if (patternOwner.get(pair.patternId) !== pair.partitionId) throw new TypeError(`pair pattern is not a candidate in partition ${pair.partitionId}`)
+    if (shapeOwner.get(pair.shapeId) !== pair.partitionId) throw new TypeError(`pair Shape is not a candidate in partition ${pair.partitionId}`)
     const key = `${pair.partitionId}\0${pair.patternId}\0${pair.shapeId}`
     if (pairKeys.has(key)) throw new TypeError(`duplicate pair ${key}`)
     pairKeys.add(key)
@@ -330,16 +365,39 @@ function reconcileReport(report) {
   }
   if (report.partitions.reduce((sum, entry) => sum + entry.unusedShapeCount, 0) !== report.outcomes.unusedShapes) throw new TypeError('global unused Shape reconciliation mismatch')
   if (report.outcomes.direction2.pairMetricsAvailable !== report.metadata.pairMetricsAvailable) throw new TypeError('Direction 2 metrics availability mismatch')
+
+  const expectedSummary = buildSummary(report.partitions, report.pairs)
+  if (stableStringify(report.summary) !== stableStringify(expectedSummary)) throw new TypeError('summary does not reconcile with formal rows')
+  const expectedOutliers = buildOutliers(report.partitions, report.pairs, report.metadata.topOutlierCount)
+  if (stableStringify(report.outliers) !== stableStringify(expectedOutliers)) throw new TypeError('outliers do not reconcile with formal rows and ranking')
+  const expectedHash = deterministicContentHash(report)
+  if (report.metadata.deterministicContentHash !== expectedHash) throw new TypeError('deterministic content hash mismatch')
+}
+
+function registerCandidate(owners, id, partitionId, kind) {
+  if (owners.has(id)) throw new TypeError(`duplicate ${kind} candidate identity ${id}`)
+  owners.set(id, partitionId)
 }
 
 export function validateCompletionManifest(value) {
   object(value, 'completion')
-  exactKeys(value, ['schemaVersion', 'runId', 'mode', 'matcherSourceSha256', 'bundleContentHash', 'reportFiles', 'publishedAt'], 'completion')
+  const keys = [
+    'schemaVersion', 'runId', 'mode', 'matcherSourceSha256', 'matcherSourceGitBlobSha1',
+    'bundleContentHash', 'selectedCities', 'includeIntercity', 'harnessVersion',
+    'reportFiles', 'publishedAt',
+  ]
+  exactKeys(value, keys, 'completion')
   integer(value.schemaVersion, 'completion.schemaVersion', { minimum: REPORT_SCHEMA_VERSION, maximum: REPORT_SCHEMA_VERSION })
-  string(value.runId, 'completion.runId')
+  canonicalRunId(value.runId, 'completion.runId')
   enumValue(value.mode, ['instrumented', 'uninstrumented'], 'completion.mode')
   hash(value.matcherSourceSha256, 64, 'completion.matcherSourceSha256')
+  hash(value.matcherSourceGitBlobSha1, 40, 'completion.matcherSourceGitBlobSha1')
   hash(value.bundleContentHash, 64, 'completion.bundleContentHash')
+  array(value.selectedCities, 'completion.selectedCities')
+  value.selectedCities.forEach((city, index) => string(city, `completion.selectedCities[${index}]`))
+  if (new Set(value.selectedCities).size !== value.selectedCities.length) throw new TypeError('completion selectedCities contains duplicates')
+  boolean(value.includeIntercity, 'completion.includeIntercity')
+  integer(value.harnessVersion, 'completion.harnessVersion', { minimum: HARNESS_VERSION, maximum: HARNESS_VERSION })
   object(value.reportFiles, 'completion.reportFiles')
   exactKeys(value.reportFiles, REPORT_FILES, 'completion.reportFiles')
   for (const file of REPORT_FILES) hash(value.reportFiles[file], 64, `completion.reportFiles.${file}`)
@@ -377,6 +435,21 @@ function exactKeys(value, allowed, path) {
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
     throw new TypeError(`${path} fields mismatch; expected ${expected.join(', ')}`)
   }
+}
+function canonicalRunId(value, path) {
+  string(value, path)
+  if (value !== value.trim() || value.length > 128 || value === '.' || value === '..'
+    || /[\\/\0]/.test(value) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+    throw new TypeError(`${path} must be a bounded canonical path fragment`)
+  }
+  let decoded
+  try { decoded = decodeURIComponent(value) } catch { throw new TypeError(`${path} encoding is invalid`) }
+  if (decoded !== value) throw new TypeError(`${path} must not change after percent decoding`)
+}
+function sameNumber(left, right) {
+  if (Object.is(left, right)) return true
+  const tolerance = Number.EPSILON * 16 * Math.max(1, Math.abs(left), Math.abs(right))
+  return Math.abs(left - right) <= tolerance
 }
 function object(value, path) { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${path} must be an object`) }
 function array(value, path) { if (!Array.isArray(value)) throw new TypeError(`${path} must be an array`) }
