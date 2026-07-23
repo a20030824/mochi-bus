@@ -9,23 +9,25 @@ import {
 } from './report.mjs'
 import { atomicWrite } from './util.mjs'
 
+const PATTERN_ID = 'city-Taipei:pattern:p1'
+const SHAPE_ID = 'city-Taipei:shape:s1'
 const roots = []
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
 const result = {
-  matches: [{ patternId: 'p1', shapeId: 's1', basis: 'exact-identity', costMeters: null, metrics: null }],
+  matches: [{ patternId: PATTERN_ID, shapeId: SHAPE_ID, basis: 'exact-identity', costMeters: null, metrics: null }],
   unresolved: [], rejectedShapes: [], unusedShapeIds: [],
 }
 const candidateBundle = {
   partitions: [{
     partitionId: 'a'.repeat(24), key: 'city\u0000Taipei\u0000R1\u00000',
     sourceScope: 'city', city: 'Taipei', routeUid: 'R1', direction: 0,
-    patterns: [{ patternId: 'p1', routeUid: 'R1', subRouteUid: 'SR1', direction: 0, stops: [
+    patterns: [{ patternId: PATTERN_ID, routeUid: 'R1', subRouteUid: 'SR1', direction: 0, stops: [
       { stopUid: 'A', coordinate: [121, 25] }, { stopUid: 'B', coordinate: [121.01, 25.01] },
     ] }],
-    shapes: [{ shapeId: 's1', routeUid: 'R1', subRouteUid: 'SR1', direction: 0, coordinates: [[121, 25], [121.01, 25.01]] }],
+    shapes: [{ shapeId: SHAPE_ID, routeUid: 'R1', subRouteUid: 'SR1', direction: 0, coordinates: [[121, 25], [121.01, 25.01]] }],
     stats: {
       patternCount: 1, shapeCount: 1, minSideCount: 1, completeIdentityCount: 2,
       duplicateIdentityCount: 0, contradictoryIdentityCount: 0, candidateMultiplicity: 1,
@@ -70,22 +72,22 @@ function fakeLoader({ delayMs = 0, collectorError = null, disposeFailure = false
 
 function emitPair(observe) {
   observe('shape-classified', {
-    shapeId: 's1', direction: 0, rawCoordinateCount: 2, normalizedCoordinateCount: 2,
+    shapeId: SHAPE_ID, direction: 0, rawCoordinateCount: 2, normalizedCoordinateCount: 2,
     segmentCount: 1, closureClassification: 'not-direction-2', closureGapDistanceMeters: null, accepted: true,
   })
   observe('pair-start', {
-    patternId: 'p1', shapeId: 's1', stopCount: 2, rawCoordinateCount: 2,
+    patternId: PATTERN_ID, shapeId: SHAPE_ID, stopCount: 2, rawCoordinateCount: 2,
     normalizedCoordinateCount: 2, segmentCount: 1,
     closureClassification: 'not-direction-2', closureGapDistanceMeters: null,
   })
   for (const orientation of ['forward', 'reverse']) {
-    observe('orientation-start', { patternId: 'p1', shapeId: 's1', orientation })
-    observe('projection-start', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', stopCount: 2, segmentCount: 1, candidateCount: 2 })
-    observe('projection-layer', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', layer: 0, frontierWidth: 1, retainedNodes: 1, parentNodeCount: 0, pathKeyChars: 4 })
-    observe('projection-end', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', status: 'success', elapsedMs: 0 })
-    observe('orientation-end', { patternId: 'p1', shapeId: 's1', orientation, status: 'success', elapsedMs: 0 })
+    observe('orientation-start', { patternId: PATTERN_ID, shapeId: SHAPE_ID, orientation })
+    observe('projection-start', { patternId: PATTERN_ID, shapeId: SHAPE_ID, orientation, objective: 'cost', stopCount: 2, segmentCount: 1, candidateCount: 2 })
+    observe('projection-layer', { patternId: PATTERN_ID, shapeId: SHAPE_ID, orientation, objective: 'cost', layer: 0, frontierWidth: 1, retainedNodes: 1, parentNodeCount: 0, pathKeyChars: 4 })
+    observe('projection-end', { patternId: PATTERN_ID, shapeId: SHAPE_ID, orientation, objective: 'cost', status: 'success', elapsedMs: 0 })
+    observe('orientation-end', { patternId: PATTERN_ID, shapeId: SHAPE_ID, orientation, status: 'success', elapsedMs: 0 })
   }
-  observe('pair-end', { patternId: 'p1', shapeId: 's1', status: 'compatible', compatible: true, elapsedMs: 0 })
+  observe('pair-end', { patternId: PATTERN_ID, shapeId: SHAPE_ID, status: 'compatible', compatible: true, elapsedMs: 0 })
 }
 
 async function makeReport({ instrumented = false, loader = fakeLoader() } = {}) {
