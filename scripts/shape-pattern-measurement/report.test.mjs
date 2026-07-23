@@ -61,6 +61,7 @@ function fakeLoader({ delayMs = 0, collectorError = null } = {}) {
       },
       takeCollectorError: () => instrumented ? collectorError : null,
       dispose: vi.fn(async () => undefined),
+      outputPath: join(process.cwd(), 'generated-test-module.mjs'),
     }
   }
 }
@@ -76,6 +77,7 @@ function emitPair(observe) {
     closureClassification: 'not-direction-2', closureGapDistanceMeters: null,
   })
   for (const orientation of ['forward', 'reverse']) {
+    observe('orientation-start', { patternId: 'p1', shapeId: 's1', orientation })
     observe('projection-start', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', stopCount: 2, segmentCount: 1, candidateCount: 2 })
     observe('projection-layer', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', layer: 0, frontierWidth: 1, retainedNodes: 1, parentNodeCount: 0, pathKeyChars: 4 })
     observe('projection-end', { patternId: 'p1', shapeId: 's1', orientation, objective: 'cost', status: 'success', elapsedMs: 0 })
@@ -116,7 +118,7 @@ describe('load once, measure matcher only', () => {
     const loader = async () => ({
       sourceSha256: '2'.repeat(64), sourceGitBlobSha1: '3'.repeat(40),
       loaderTimings: { sourceVerificationTimeMs: 0, transpileTimeMs: 0, importTimeMs: 0 },
-      invoke, takeCollectorError: () => null, dispose: vi.fn(async () => undefined),
+      invoke, takeCollectorError: () => null, dispose: vi.fn(async () => undefined), outputPath: 'test.mjs',
     })
     const root = await tempRoot()
     await createMeasurementReport({
@@ -130,7 +132,7 @@ describe('load once, measure matcher only', () => {
   it('compares semantics, then fails clearly when the collector callback failed', async () => {
     await expect(makeReport({
       instrumented: true,
-      loader: fakeLoader({ collectorError: new Error('collector secret payload') }),
+      loader: fakeLoader({ collectorError: { event: 'pair-end' } }),
     })).rejects.toMatchObject({ code: 'MEASUREMENT_COLLECTOR_ERROR' })
   })
 })
