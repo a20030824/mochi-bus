@@ -64,32 +64,42 @@ export async function loadMatcherModule({
     throw error
   }
   const importTimeMs = performance.now() - importStartedAt
-  if (typeof module.matchShapesToPatterns !== 'function') {
+  if (typeof module.matchShapesToPatterns !== 'function'
+    || (instrumented && typeof module.__measurementProjectionProbe !== 'function')) {
     await rm(outputPath, { force: true })
-    throw new TypeError('Compiled matcher does not export matchShapesToPatterns')
+    throw new TypeError('Compiled matcher does not expose required measurement functions')
   }
 
   let firstCollectorFailure = null
   let disposed = false
-  const invoke = (patterns, shapes, options = {}) => {
-    if (disposed) throw new Error('Matcher module has been disposed')
+  const withObserverHook = (run) => {
     const previousHook = globalThis[HOOK_NAME]
-    if (instrumented) {
-      globalThis[HOOK_NAME] = (event, payload) => {
-        try { onMeasurement(event, payload) } catch {
-          firstCollectorFailure ??= { event: boundedEventType(event) }
-        }
+    globalThis[HOOK_NAME] = (event, payload) => {
+      try { onMeasurement(event, payload) } catch {
+        firstCollectorFailure ??= { event: boundedEventType(event) }
       }
     }
     try {
-      return module.matchShapesToPatterns(patterns, shapes, options)
+      return run()
     } finally {
-      if (instrumented) {
-        if (previousHook === undefined) delete globalThis[HOOK_NAME]
-        else globalThis[HOOK_NAME] = previousHook
-      }
+      if (previousHook === undefined) delete globalThis[HOOK_NAME]
+      else globalThis[HOOK_NAME] = previousHook
     }
   }
+  const invoke = (patterns, shapes, options = {}) => {
+    if (disposed) throw new Error('Matcher module has been disposed')
+    return instrumented
+      ? withObserverHook(() => module.matchShapesToPatterns(patterns, shapes, options))
+      : module.matchShapesToPatterns(patterns, shapes, options)
+  }
+  const invokeProjectionProbe = instrumented
+    ? (stops, coordinates, options, { injectThrow = false } = {}) => {
+        if (disposed) throw new Error('Matcher module has been disposed')
+        return withObserverHook(() => module.__measurementProjectionProbe(
+          stops, coordinates, options, injectThrow,
+        ))
+      }
+    : null
   const dispose = async () => {
     if (disposed) return
     disposed = true
@@ -97,6 +107,7 @@ export async function loadMatcherModule({
   }
   return {
     invoke,
+    invokeProjectionProbe,
     dispose,
     takeCollectorError: () => firstCollectorFailure,
     sourceSha256,
@@ -202,6 +213,11 @@ export function instrumentSource(source) {
     'projection threshold status')
 
   next = replaceExactlyOnce(next,
+    `  return {\n    projections: selected,\n    distanceSumMeters: best.distanceSumMeters,\n    maxDistanceMeters: best.maxDistanceMeters,\n  }\n}\n\nfunction initialProjectionNode(`,
+    `  return {\n    projections: selected,\n    distanceSumMeters: best.distanceSumMeters,\n    maxDistanceMeters: best.maxDistanceMeters,\n  }\n}\n\nexport function __measurementProjectionProbe(\n  stops: ShapePatternStop[],\n  coordinates: ShapePosition[],\n  options: { objective: ProjectionObjective; maxSpanMeters: number | null; maxMeanStopDistanceMeters: number; maxStopDistanceMeters: number },\n  injectThrow = false,\n): ProjectionPath | null {\n  const previousPair = __measurementPair\n  const previousInjectedThrow = __measurementProjectionInjectedThrow\n  __measurementPair = { patternId: 'measurement-probe-pattern', shapeId: 'measurement-probe-shape' }\n  __measurementProjectionInjectedThrow = injectThrow\n  try {\n    return __measureOrientation('forward', () => __measureProjection<ProjectionPath | null>(stops, coordinates, options))\n  } finally {\n    __measurementProjectionInjectedThrow = previousInjectedThrow\n    __measurementPair = previousPair\n  }\n}\n\nfunction initialProjectionNode(`,
+    'projection lifecycle probe')
+
+  next = replaceExactlyOnce(next,
     `  const best = solveAssignment(matrix)`,
     `  const best = __measureAssignment('best', () => solveAssignment(matrix))`,
     'best assignment observer')
@@ -224,6 +240,7 @@ function observerPrelude() {
   return `let __measurementPair: Record<string, unknown> | null = null
 let __measurementOrientation: 'forward' | 'reverse' | null = null
 let __measurementProjectionStatus: 'no-path' | 'frontier-empty' | 'threshold-rejected' | 'success' | 'throw' = 'no-path'
+let __measurementProjectionInjectedThrow = false
 let __measurementAssignmentKind: string | null = null
 const __measure = (event: string, payload: Record<string, unknown> = {}): void => {
   try { const hook = globalThis.${HOOK_NAME}; if (typeof hook === 'function') hook(event, payload) } catch {}
@@ -243,6 +260,7 @@ const __measureProjection = <T>(stops: ShapePatternStop[], coordinates: ShapePos
   __measurementProjectionStatus = 'no-path'
   __measure('projection-start', { ...(__measurementPair ?? {}), orientation: __measurementOrientation, objective: options.objective, stopCount: stops.length, segmentCount, candidateCount: stops.length * segmentCount })
   try {
+    if (__measurementProjectionInjectedThrow) throw new Error('Injected projection measurement failure')
     const value = matchOrderedStopsToPolyline(stops, coordinates, options) as T
     if (value !== null) __measurementProjectionStatus = 'success'
     return value
