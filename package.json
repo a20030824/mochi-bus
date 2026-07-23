@@ -24,6 +24,7 @@
     "cf-typegen": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example",
     "cf-typegen:check": "wrangler types --env-interface CloudflareBindings --env-file .dev.vars.example --check",
     "measure:shape-pattern": "node scripts/shape-pattern-measurement/run.mjs",
+    "verify:shape-pattern-report": "node scripts/shape-pattern-measurement/verify-report.mjs",
     "snapshot:city": "node scripts/sync-transit-snapshot.mjs",
     "snapshot:window": "node scripts/transit-snapshot/run-snapshot-window.mjs",
     "snapshot:watchdog": "node scripts/transit-snapshot/run-window-watchdog.mjs",
