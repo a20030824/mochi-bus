@@ -9,7 +9,7 @@ import { finiteNonNegative, positiveInteger } from './util.mjs'
 const SECRET_FLAGS = new Set(['--client-id', '--client-secret', '--token'])
 const VALUE_FLAGS = new Set([
   '--cities', '--raw-dir', '--report-dir', '--generated-dir', '--warmup', '--iterations',
-  '--top-outliers', '--fetch-concurrency', '--expected-matcher-sha256',
+  '--top-outliers', '--fetch-concurrency', '--expected-matcher-sha256', '--matcher-sha',
 ])
 const BOOLEAN_FLAGS = new Set(['--include-intercity', '--replay', '--instrumented', '--help'])
 
@@ -36,6 +36,9 @@ export async function parseCli(argv, {
     index += 1
   }
 
+  if (values.has('--matcher-sha') && values.has('--expected-matcher-sha256')) {
+    throw new Error('Use only one of --matcher-sha or --expected-matcher-sha256')
+  }
   const citiesExplicit = values.has('--cities')
   const includeIntercityExplicit = booleans.has('--include-intercity')
   const cities = (values.get('--cities') ?? DEFAULT_CITIES.join(','))
@@ -50,6 +53,7 @@ export async function parseCli(argv, {
   const generatedRoot = resolve(cwd, values.get('--generated-dir') ?? DEFAULT_GENERATED_DIR)
   await validatePathBoundaries({ rawDir, reportDir, generatedRoot, repositoryRoot: resolve(repositoryRoot) })
 
+  const matcherSha = values.get('--matcher-sha') ?? values.get('--expected-matcher-sha256') ?? null
   const options = {
     help: booleans.has('--help'),
     cities: [...cities],
@@ -65,13 +69,13 @@ export async function parseCli(argv, {
     iterations: parseCount(values.get('--iterations') ?? '1', '--iterations', false),
     topOutliers: parseCount(values.get('--top-outliers') ?? String(DEFAULT_TOP_OUTLIERS), '--top-outliers', false),
     fetchConcurrency: parseCount(values.get('--fetch-concurrency') ?? String(DEFAULT_FETCH_CONCURRENCY), '--fetch-concurrency', false),
-    expectedMatcherSha256: values.get('--expected-matcher-sha256')?.toLowerCase() ?? null,
+    expectedMatcherSha256: matcherSha?.toLowerCase() ?? null,
   }
   if (options.expectedMatcherSha256 && !/^[a-f0-9]{64}$/.test(options.expectedMatcherSha256)) {
-    throw new Error('--expected-matcher-sha256 must be a 64-character hexadecimal SHA-256')
+    throw new Error('--matcher-sha must be a 64-character hexadecimal file SHA-256')
   }
   if (options.instrumented && !options.expectedMatcherSha256) {
-    throw new Error('--instrumented requires --expected-matcher-sha256 so source revision verification fails closed')
+    throw new Error('--instrumented requires --matcher-sha so source revision verification fails closed')
   }
   if (options.replay && requireReplayPath) await access(rawDir)
   return options
@@ -166,5 +170,6 @@ function parseCount(raw, name, allowZero) {
 
 export const helpText = `Usage: npm run measure:shape-pattern -- [options]\n\n` +
   `  --cities Taipei,NewTaipei\n  --include-intercity\n  --raw-dir PATH\n  --report-dir PATH\n` +
-  `  --generated-dir ROOT\n  --replay\n  --instrumented --expected-matcher-sha256 HEX\n` +
+  `  --generated-dir ROOT\n  --replay\n  --instrumented --matcher-sha HEX\n` +
+  `  --expected-matcher-sha256 HEX (legacy alias)\n` +
   `  --warmup N\n  --iterations N\n  --top-outliers N\n  --fetch-concurrency N\n`
