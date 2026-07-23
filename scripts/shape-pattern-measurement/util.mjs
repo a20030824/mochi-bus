@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
 
 export const sha256Hex = (value) => createHash('sha256').update(value).digest('hex')
@@ -33,7 +33,7 @@ export async function atomicWrite(file, content) {
   try {
     await rename(temporary, file)
   } catch (error) {
-    await rm(temporary, { force: true }).catch(() => undefined)
+    try { await rm(temporary, { force: true }) } catch {}
     throw error
   }
 }
@@ -113,7 +113,7 @@ export function assertFiniteTree(value, path = '$') {
 }
 
 const NONDETERMINISTIC_KEYS = new Set([
-  'runId', 'deterministicContentHash', 'startedAt', 'completedAt', 'publishedAt', 'timestamp', 'fetchedAt',
+  'runId', 'deterministicContentHash', 'startedAt', 'completedAt', 'publishedAt', 'timestamp',
   'elapsedMs', 'matcherLatencyMs', 'matcherIterationSamplesMs', 'iterationLatencyMs', 'pairTimeMs', 'forwardTimeMs', 'reverseTimeMs',
   'costObjectiveSolveTimeMs', 'spanObjectiveSolveTimeMs', 'bestAssignmentTimeMs',
   'ambiguityProofTimeMs', 'sourceVerificationTimeMs', 'transpileTimeMs', 'importTimeMs',
