@@ -12,8 +12,8 @@ export const ALL_CITIES = new Set([
 
 export const MATCHER_SOURCE = 'src/domain/map/shape-pattern-matcher.ts'
 export const SUPPORTED_MATCHER_GIT_BLOB_SHA1 = 'fc67cdecd785e89b9b08937edab156ade430198b'
-export const HARNESS_VERSION = 2
-export const REPORT_SCHEMA_VERSION = 2
+export const HARNESS_VERSION = 3
+export const REPORT_SCHEMA_VERSION = 3
 export const RAW_SCHEMA_VERSION = 2
 export const DEFAULT_RAW_DIR = '.tdx-measurement/raw'
 export const DEFAULT_REPORT_DIR = '.tdx-measurement/reports'
