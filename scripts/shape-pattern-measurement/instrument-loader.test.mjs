@@ -79,7 +79,10 @@ describe('temporary matcher observer instrumentation', () => {
       const projectionEnds = events.filter((entry) => entry.event === 'projection-end')
       expect(projectionStarts).toHaveLength(2)
       expect(projectionEnds).toHaveLength(2)
-      expect(projectionEnds.map((entry) => entry.payload.status)).toEqual(['success', 'success'])
+      expect(projectionEnds.map((entry) => [entry.payload.orientation, entry.payload.status])).toEqual([
+        ['forward', 'success'],
+        ['reverse', 'frontier-empty'],
+      ])
       for (const entry of projectionEnds) {
         expect(entry.payload).toMatchObject({ patternId: 'p1', shapeId: 's1', objective: 'cost' })
         expect(['forward', 'reverse']).toContain(entry.payload.orientation)
