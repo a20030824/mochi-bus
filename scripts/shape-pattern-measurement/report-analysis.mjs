@@ -36,6 +36,7 @@ const DETERMINISTIC_OUTLIER_FIELDS = new Set([
 ])
 
 export function deterministicContentHash(report) {
+  assertSourceScopedCandidateIdentities(report.partitions)
   const deterministicOutliers = Object.fromEntries(Object.entries(report.outliers)
     .filter(([key]) => DETERMINISTIC_OUTLIER_FIELDS.has(key)))
   return contentHash(omitNondeterministic({
@@ -163,6 +164,19 @@ export function countBy(records, selector) {
     result[key] = (result[key] ?? 0) + 1
   }
   return Object.fromEntries(Object.entries(result).sort())
+}
+
+function assertSourceScopedCandidateIdentities(partitions) {
+  for (const partition of partitions) {
+    const prefix = partition.sourceScope === 'intercity'
+      ? 'intercity:'
+      : `city-${partition.city}:`
+    for (const id of [...partition.patternIds, ...partition.shapeIds]) {
+      if (!id.startsWith(prefix)) {
+        throw new TypeError(`candidate identity is not scoped to partition source: ${partition.partitionId}`)
+      }
+    }
+  }
 }
 
 function top(records, field, count, identity) {
