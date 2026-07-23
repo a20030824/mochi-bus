@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { access, mkdir, mkdtemp, readFile, rename, rm } from 'node:fs/promises'
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm } from 'node:fs/promises'
 import { cpus, platform, release, totalmem } from 'node:os'
-import { join } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
   COMPLETION_FILE, HARNESS_VERSION, MATCHER_SOURCE, REPORT_FILES,
   REPORT_SCHEMA_VERSION,
 } from './constants.mjs'
 import { collectorFailure, loadMatcherModule as defaultLoadMatcherModule } from './instrument-loader.mjs'
+import { attachCleanupFailure, cleanupOnlyFailure } from './measurement-errors.mjs'
 import {
   accumulateDirection2, accumulateOutcomes, buildOutliers, buildSummary,
   countBy, createDirection2Counts, createOutcomeCounts, deterministicContentHash,
@@ -32,13 +33,16 @@ export async function createMeasurementReport({
   const loadMatcherModule = dependencies.loadMatcherModule ?? defaultLoadMatcherModule
   const startedAt = new Date().toISOString()
   let activeCollector = null
-  const plain = await loadMatcherModule({
-    instrumented: false,
-    matcherSourcePath,
-    generatedRunDir: options.generatedRunDir,
-  })
+  let plain = null
   let instrumented = null
+  let primaryError = null
+  let completedReport = null
   try {
+    plain = await loadMatcherModule({
+      instrumented: false,
+      matcherSourcePath,
+      generatedRunDir: options.generatedRunDir,
+    })
     if (options.instrumented) {
       instrumented = await loadMatcherModule({
         instrumented: true,
@@ -82,6 +86,7 @@ export async function createMeasurementReport({
       matcherSourceSha256,
       matcherSourceGitBlobSha1: plain.sourceGitBlobSha1,
       harnessVersion: HARNESS_VERSION,
+      topOutlierCount: options.topOutliers,
       nodeVersion: process.version,
       os: { platform: platform(), release: release() },
       cpuModel: cpus()[0]?.model ?? 'unknown',
@@ -129,16 +134,23 @@ export async function createMeasurementReport({
     }
     report.metadata.deterministicContentHash = deterministicContentHash(report)
     validateReport(report)
-    return report
-  } finally {
-    activeCollector = null
-    const errors = []
-    if (instrumented) {
-      try { await instrumented.dispose() } catch (error) { errors.push(error) }
-    }
-    try { await plain.dispose() } catch (error) { errors.push(error) }
-    if (errors.length) throw errors.length === 1 ? errors[0] : new AggregateError(errors, 'Matcher module cleanup failed')
+    completedReport = report
+  } catch (error) {
+    primaryError = error
   }
+
+  activeCollector = null
+  for (const [module, stage] of [[instrumented, 'instrumented-module-dispose'], [plain, 'plain-module-dispose']]) {
+    if (!module) continue
+    try {
+      await module.dispose()
+    } catch {
+      if (primaryError) primaryError = attachCleanupFailure(primaryError, { stage, temporaryPath: module.outputPath })
+      else primaryError = cleanupOnlyFailure({ stage, temporaryPath: module.outputPath })
+    }
+  }
+  if (primaryError) throw primaryError
+  return completedReport
 }
 
 async function measurePartition({ partition, options, plain, instrumented, setActiveCollector }) {
@@ -188,7 +200,7 @@ async function measurePartition({ partition, options, plain, instrumented, setAc
   setActiveCollector(null)
 
   const collectorError = instrumented?.takeCollectorError?.() ?? null
-  if (collectorError) throw collectorFailure(collectorError)
+  if (collectorError) throw collectorFailure(collectorError, { event: collectorError.event })
 
   assertCollectorsDeterministic(collectorSnapshots, partition.partitionId)
   const collectorSnapshot = collectorSnapshots[0] ?? { shapes: [], pairs: [], assignment: emptyAssignmentSnapshot() }
@@ -198,7 +210,7 @@ async function measurePartition({ partition, options, plain, instrumented, setAc
   const compatibleEdgeCount = options.instrumented
     ? pairRecords.filter((record) => record.compatible === true).length
     : null
-  const assignment = aggregateAssignment(collectorSnapshots)
+  const assignment = aggregateAssignmentIterations(collectorSnapshots)
   const rssBeforeBytes = median(beforeSamples.map((sample) => sample.rss))
   const rssAfterBytes = median(afterSamples.map((sample) => sample.rss))
   const heapBeforeBytes = median(beforeSamples.map((sample) => sample.heapUsed))
@@ -210,6 +222,8 @@ async function measurePartition({ partition, options, plain, instrumented, setAc
     city: partition.city,
     routeUid: partition.routeUid,
     direction: partition.direction,
+    patternIds: partition.patterns.map((pattern) => pattern.patternId).sort(),
+    shapeIds: partition.shapes.map((shape) => shape.shapeId).sort(),
     patternCount: partition.stats.patternCount,
     shapeCount: partition.stats.shapeCount,
     minSideCount: partition.stats.minSideCount,
@@ -254,21 +268,45 @@ async function measurePartition({ partition, options, plain, instrumented, setAc
   return { result: canonicalResult, partitionRecord, pairRecords, collectorSnapshot }
 }
 
-function aggregateAssignment(snapshots) {
+export function aggregateAssignmentIterations(snapshots) {
   if (!snapshots.length) return {
-    bestCount: 0, forcedMatchCount: 0, forcedUnmatchedCount: 0,
-    bestTimeMs: 0, ambiguityProofTimeMs: 0, activeMaskPeak: null,
+    bestCount: 0,
+    forcedMatchCount: 0,
+    forcedUnmatchedCount: 0,
+    bestTimeMs: null,
+    ambiguityProofTimeMs: null,
+    activeMaskPeak: null,
   }
   const first = snapshots[0].assignment
-  const best = snapshots.flatMap((snapshot) => snapshot.assignment.bestTimeSamplesMs)
-  const forcedMatch = snapshots.flatMap((snapshot) => snapshot.assignment.forcedMatchTimeSamplesMs)
-  const forcedUnmatched = snapshots.flatMap((snapshot) => snapshot.assignment.forcedUnmatchedTimeSamplesMs)
+  const expectedCounts = [first.bestCount, first.forcedMatchCount, first.forcedUnmatchedCount]
+  for (const snapshot of snapshots) {
+    const assignment = snapshot.assignment
+    const counts = [assignment.bestCount, assignment.forcedMatchCount, assignment.forcedUnmatchedCount]
+    if (counts.some((count, index) => count !== expectedCounts[index])) {
+      throw new Error('Assignment solve counts differ across formal iterations')
+    }
+    if (assignment.bestTimeSamplesMs.length !== assignment.bestCount
+      || assignment.forcedMatchTimeSamplesMs.length !== assignment.forcedMatchCount
+      || assignment.forcedUnmatchedTimeSamplesMs.length !== assignment.forcedUnmatchedCount) {
+      throw new Error('Assignment timing samples disagree with solve counts')
+    }
+    for (const value of [
+      ...assignment.bestTimeSamplesMs,
+      ...assignment.forcedMatchTimeSamplesMs,
+      ...assignment.forcedUnmatchedTimeSamplesMs,
+    ]) {
+      if (!Number.isFinite(value) || value < 0) throw new Error('Assignment timing sample is invalid')
+    }
+  }
+  const bestTotals = snapshots.map((snapshot) => sum(snapshot.assignment.bestTimeSamplesMs))
+  const proofTotals = snapshots.map((snapshot) =>
+    sum(snapshot.assignment.forcedMatchTimeSamplesMs) + sum(snapshot.assignment.forcedUnmatchedTimeSamplesMs))
   return {
     bestCount: first.bestCount,
     forcedMatchCount: first.forcedMatchCount,
     forcedUnmatchedCount: first.forcedUnmatchedCount,
-    bestTimeMs: medianOrZero(best),
-    ambiguityProofTimeMs: medianOrZero(forcedMatch) + medianOrZero(forcedUnmatched),
+    bestTimeMs: first.bestCount > 0 ? median(bestTotals) : null,
+    ambiguityProofTimeMs: first.forcedMatchCount + first.forcedUnmatchedCount > 0 ? median(proofTotals) : null,
     activeMaskPeak: first.activeMaskPeak,
   }
 }
@@ -280,7 +318,7 @@ function emptyAssignmentSnapshot() {
     activeMaskPeak: null,
   }
 }
-function medianOrZero(values) { return values.length ? median(values) : 0 }
+function sum(values) { return values.reduce((total, value) => total + value, 0) }
 function timedInvoke(run) { const startedAt = performance.now(); const value = run(); return { value, elapsedMs: performance.now() - startedAt } }
 function assertSameResult(expected, actual, partitionId) { if (stableStringify(expected) !== stableStringify(actual)) throw new Error(`Matcher result is not deterministic for partition ${partitionId}`) }
 function comparePartitionRecord(a, b) { return a.partitionId.localeCompare(b.partitionId) }
@@ -290,36 +328,76 @@ function makeRunId(mode, repositoryMainSha, matcherSha) {
   return `${mode}-${repositoryMainSha.slice(0, 12)}-${matcherSha.slice(0, 12)}-${timestamp}-${randomUUID().replaceAll('-', '').slice(0, 8)}`
 }
 
+export function validateRunId(value) {
+  if (typeof value !== 'string' || value !== value.trim() || value.length > 128
+    || value === '.' || value === '..' || isAbsolute(value)
+    || basename(value) !== value || /[\\/\0]/.test(value)
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+    throw new TypeError('Report runId must be a bounded canonical path fragment')
+  }
+  let decoded
+  try { decoded = decodeURIComponent(value) } catch { throw new TypeError('Report runId encoding is invalid') }
+  if (decoded !== value) throw new TypeError('Report runId must not change after percent decoding')
+  return value
+}
+
+export async function prepareReportPublicationPaths(reportRoot, runId) {
+  const canonicalRunId = validateRunId(runId)
+  const requestedRoot = resolve(reportRoot)
+  await mkdir(requestedRoot, { recursive: true })
+  const stat = await lstat(requestedRoot)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Report root must be a real directory, not a symlink')
+  const resolvedRoot = await realpath(requestedRoot)
+  if (resolvedRoot !== requestedRoot) throw new Error('Report root path must not contain symlink aliases')
+  const finalDirectory = resolve(resolvedRoot, canonicalRunId)
+  const temporaryPrefix = resolve(resolvedRoot, `.${canonicalRunId}-`)
+  assertStrictChild(resolvedRoot, finalDirectory, 'Final report directory')
+  assertStrictChild(resolvedRoot, temporaryPrefix, 'Temporary report prefix')
+  return { resolvedRoot, finalDirectory, temporaryPrefix }
+}
+
 export async function publishMeasurementReport(report, reportRoot, dependencies = {}) {
   validateReport(report)
   const atomicWriter = dependencies.atomicWriter ?? atomicWrite
   const validateDirectory = dependencies.validateDirectory ?? validateTemporaryReportDirectory
-  await mkdir(reportRoot, { recursive: true })
-  const finalDirectory = join(reportRoot, report.metadata.runId)
-  if (await exists(finalDirectory)) throw new Error(`Report run already exists: ${report.metadata.runId}`)
-  const temporaryDirectory = await mkdtemp(join(reportRoot, `.${report.metadata.runId}-`))
+  const makeTemporary = dependencies.mkdtemp ?? mkdtemp
+  const renameDirectory = dependencies.rename ?? rename
+  const removeDirectory = dependencies.rm ?? rm
+  const paths = await prepareReportPublicationPaths(reportRoot, report.metadata.runId)
+  if (await exists(paths.finalDirectory)) throw new Error(`Report run already exists: ${report.metadata.runId}`)
+  const temporaryDirectory = await makeTemporary(paths.temporaryPrefix)
+  const resolvedTemporary = await realpath(temporaryDirectory)
+  assertStrictChild(paths.resolvedRoot, resolvedTemporary, 'Temporary report directory')
   try {
     const contents = reportFileContents(report)
-    for (const file of REPORT_FILES) await atomicWriter(join(temporaryDirectory, file), contents[file])
-    await validateDirectory(temporaryDirectory)
+    for (const file of REPORT_FILES) await atomicWriter(join(resolvedTemporary, file), contents[file])
+    await validateDirectory(resolvedTemporary)
     const reportFiles = Object.fromEntries(REPORT_FILES.map((file) => [file, sha256Hex(contents[file])]))
     const completion = {
       schemaVersion: REPORT_SCHEMA_VERSION,
       runId: report.metadata.runId,
       mode: report.metadata.mode,
       matcherSourceSha256: report.metadata.matcherSourceSha256,
+      matcherSourceGitBlobSha1: report.metadata.matcherSourceGitBlobSha1,
       bundleContentHash: report.metadata.provenance.bundleContentHash,
+      selectedCities: report.metadata.provenance.selectedCities,
+      includeIntercity: report.metadata.provenance.includeIntercity,
+      harnessVersion: report.metadata.harnessVersion,
       reportFiles,
       publishedAt: new Date().toISOString(),
     }
     validateCompletionManifest(completion)
-    await atomicWriter(join(temporaryDirectory, COMPLETION_FILE), `${stableStringify(completion, 2)}\n`)
-    await validatePublishedDirectory(temporaryDirectory)
-    if (await exists(finalDirectory)) throw new Error(`Report run already exists: ${report.metadata.runId}`)
-    await rename(temporaryDirectory, finalDirectory)
-    return finalDirectory
+    await atomicWriter(join(resolvedTemporary, COMPLETION_FILE), `${stableStringify(completion, 2)}\n`)
+    await validatePublishedDirectory(resolvedTemporary)
+    if (await exists(paths.finalDirectory)) throw new Error(`Report run already exists: ${report.metadata.runId}`)
+    await renameDirectory(resolvedTemporary, paths.finalDirectory)
+    return paths.finalDirectory
   } catch (error) {
-    await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
+    try {
+      await removeDirectory(resolvedTemporary, { recursive: true, force: true })
+    } catch {
+      throw attachCleanupFailure(error, { stage: 'report-temporary-cleanup', temporaryPath: resolvedTemporary })
+    }
     throw error
   }
 }
@@ -337,7 +415,11 @@ export async function validatePublishedDirectory(runDirectory) {
   if (report.metadata.runId !== completion.runId
     || report.metadata.mode !== completion.mode
     || report.metadata.matcherSourceSha256 !== completion.matcherSourceSha256
-    || report.metadata.provenance.bundleContentHash !== completion.bundleContentHash) {
+    || report.metadata.matcherSourceGitBlobSha1 !== completion.matcherSourceGitBlobSha1
+    || report.metadata.provenance.bundleContentHash !== completion.bundleContentHash
+    || stableStringify(report.metadata.provenance.selectedCities) !== stableStringify(completion.selectedCities)
+    || report.metadata.provenance.includeIntercity !== completion.includeIntercity
+    || report.metadata.harnessVersion !== completion.harnessVersion) {
     throw new Error('Completion marker disagrees with report metadata')
   }
   return report
@@ -371,6 +453,12 @@ function parseReportContents(contents) {
     outcomes: JSON.parse(contents['outcomes.json']),
     outliers: JSON.parse(contents['outliers.json']),
     summary: JSON.parse(contents['summary.json']),
+  }
+}
+function assertStrictChild(root, candidate, label) {
+  const path = relative(root, candidate)
+  if (path === '' || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
+    throw new Error(`${label} must be a strict child of the report root`)
   }
 }
 async function exists(path) { try { await access(path); return true } catch { return false } }
