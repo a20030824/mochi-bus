@@ -22,9 +22,10 @@ describe('measurement README operability', () => {
     expect(readme).toContain('fc67cdecd785e89b9b08937edab156ade430198b')
   })
 
-  it('keeps the production gate closed after harness verification', () => {
+  it('keeps the production and review gates closed after harness verification', () => {
     expect(readme).toContain('C. Temporarily not ready for production integration.')
     expect(readme).toMatch(/Production PR 2 remains blocked/i)
     expect(readme).toMatch(/sanitized fixture.*must not/i)
+    expect(readme).toMatch(/remain Draft.*third narrow review/i)
   })
 })
