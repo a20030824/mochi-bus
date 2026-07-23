@@ -48,10 +48,31 @@ function reportFixture() {
     outcomes: { exactIdentity: 1, geometry: 0, invalidPattern: 0, noCompatibleShape: 0, compatibleShapeAssigned: 0, assignmentAmbiguous: 0, toleranceEquivalentAlternatives: 0, contradictoryCompleteIdentity: 0, nearClosedGeometryDisabled: 0, rejectedOrInvalidShapes: 0, rejectedShapeReasons: {}, sourceRejections: {}, unusedShapes: 0, direction2: { pairMetricsAvailable: true, trulyClosed: 0, nearClosed: 0, openOrInvalid: 0, identitySuccess: 0, geometrySuccess: 0, failClosedUnresolved: 0, rejectedCount: 0 } },
     outliers: {}, summary: {},
   }
+  refreshDerived(report)
+  return report
+}
+
+function refreshDerived(report) {
   report.summary = buildSummary(report.partitions, report.pairs)
   report.outliers = buildOutliers(report.partitions, report.pairs, report.metadata.topOutlierCount)
   report.metadata.deterministicContentHash = deterministicContentHash(report)
-  return report
+}
+
+function addSecondPartition(report) {
+  const partition = structuredClone(report.partitions[0])
+  partition.partitionId = 'b'.repeat(24)
+  partition.routeUid = 'R2'
+  partition.patternIds = ['city-Taipei:pattern:p2']
+  partition.shapeIds = ['city-Taipei:shape:s2']
+  const pair = structuredClone(report.pairs[0])
+  pair.partitionId = partition.partitionId
+  pair.patternId = partition.patternIds[0]
+  pair.shapeId = partition.shapeIds[0]
+  pair.stopCount = 3
+  report.partitions.push(partition)
+  report.pairs.push(pair)
+  report.outcomes.exactIdentity = 2
+  refreshDerived(report)
 }
 
 function clonedReport() { return structuredClone(reportFixture()) }
@@ -61,6 +82,18 @@ describe('report integrity reconciliation', () => {
     expect(() => validateReport(reportFixture())).not.toThrow()
   })
 
+  it('checks nearest-rank distributions against an independent hand-calculated oracle', () => {
+    const partitions = [1, 3, 2].map((patternCount, index) => ({
+      patternCount, shapeCount: 0, minSideCount: 0, compatibleEdgeCount: null,
+      compatibleEdgeDensity: null, matcherLatencyMs: index, bestAssignmentTimeMs: null,
+      ambiguityProofTimeMs: null,
+      memoryObservation: { rssDeltaBytes: index, heapDeltaBytes: -index },
+    }))
+    expect(buildSummary(partitions, []).patternCount).toEqual({
+      count: 3, min: 1, median: 2, p75: 3, p90: 3, p95: 3, p99: 3, max: 3,
+    })
+  })
+
   it.each([
     ['empty summary', (r) => { r.summary = {} }],
     ['missing summary field', (r) => { delete r.summary.patternCount }],
@@ -68,14 +101,40 @@ describe('report integrity reconciliation', () => {
     ['row-inconsistent summary', (r) => { r.summary.patternCount.median = 999 }],
     ['edge count over capacity', (r) => { r.partitions[0].compatibleEdgeCount = 2 }],
     ['edge density mismatch', (r) => { r.partitions[0].compatibleEdgeDensity = 0.5 }],
+    ['best count zero with finite timing', (r) => { r.partitions[0].bestAssignmentTimeMs = 0 }],
+    ['best count positive with null timing', (r) => { r.partitions[0].assignmentBestSolveCount = 1 }],
+    ['forced count zero with finite timing', (r) => { r.partitions[0].ambiguityProofTimeMs = 0 }],
+    ['forced count positive with null timing', (r) => { r.partitions[0].forcedMatchSolveCount = 1 }],
     ['pair pattern missing', (r) => { r.pairs[0].patternId = 'missing-pattern' }],
-    ['pair shape missing', (r) => { r.pairs[0].shapeId = 'missing-shape' }],
+    ['pair Shape missing', (r) => { r.pairs[0].shapeId = 'missing-shape' }],
+    ['City pair uses InterCity candidate identity', (r) => { r.partitions[0].shapeIds = ['intercity:shape:s1']; r.pairs[0].shapeId = r.partitions[0].shapeIds[0] }],
     ['arbitrary outlier', (r) => { r.outliers.mostStopsPairs = [{ partitionId: r.partitions[0].partitionId, patternId: 'fake', shapeId: 'fake', stopCount: 999 }] }],
+    ['outlier value mismatch', (r) => { r.outliers.mostStopsPairs[0].stopCount = 999 }],
     ['stale deterministic hash', (r) => { r.partitions[0].routeUid = 'R2' }],
   ])('rejects %s', (_name, mutate) => {
     const report = clonedReport()
     mutate(report)
     expect(() => validateReport(report)).toThrow()
+  })
+
+  it('rejects an illegal nonzero density for zero candidate capacity', () => {
+    const report = clonedReport()
+    const partition = report.partitions[0]
+    Object.assign(partition, {
+      patternIds: [], shapeIds: [], patternCount: 0, shapeCount: 0, minSideCount: 0,
+      candidateMultiplicity: 0, compatibleEdgeCount: 0, compatibleEdgeDensity: 1,
+      matchedCount: 0, unresolvedCount: 0, unusedShapeCount: 0,
+    })
+    report.pairs = []
+    report.outcomes.exactIdentity = 0
+    expect(() => validateReport(report)).toThrow(/density|capacity/i)
+  })
+
+  it('rejects incorrect deterministic outlier ranking even when all references exist', () => {
+    const report = clonedReport()
+    addSecondPartition(report)
+    report.outliers.mostStopsPairs.reverse()
+    expect(() => validateReport(report)).toThrow(/outliers/i)
   })
 
   it('rejects duplicate candidate identities across source-scoped partitions', () => {
@@ -85,9 +144,7 @@ describe('report integrity reconciliation', () => {
     duplicate.sourceScope = 'intercity'
     duplicate.city = null
     report.partitions.push(duplicate)
-    report.summary = buildSummary(report.partitions, report.pairs)
-    report.outliers = buildOutliers(report.partitions, report.pairs, report.metadata.topOutlierCount)
-    report.metadata.deterministicContentHash = deterministicContentHash(report)
+    refreshDerived(report)
     expect(() => validateReport(report)).toThrow(/candidate identity/i)
   })
 })
