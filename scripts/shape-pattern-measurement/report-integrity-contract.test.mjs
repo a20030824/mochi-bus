@@ -3,6 +3,10 @@ import { buildOutliers, buildSummary, deterministicContentHash } from './report-
 import { validateReport } from './report-schema.mjs'
 
 const zeroDistribution = () => ({ count: 0, min: null, median: null, p75: null, p90: null, p95: null, p99: null, max: null })
+const taipeiEndpoints = () => [
+  { endpointId: 'city-Taipei-shape', scope: 'city', city: 'Taipei', category: 'shape', fileName: 'city-Taipei-shape.json', contentHash: '5'.repeat(64), itemCount: 1, maxUpdateTime: null },
+  { endpointId: 'city-Taipei-stop-of-route', scope: 'city', city: 'Taipei', category: 'stop-of-route', fileName: 'city-Taipei-stop-of-route.json', contentHash: '6'.repeat(64), itemCount: 1, maxUpdateTime: null },
+]
 
 function reportFixture() {
   const partition = {
@@ -39,7 +43,7 @@ function reportFixture() {
       matcherSourceGitBlobSha1: '3'.repeat(40), harnessVersion: 3, topOutlierCount: 2,
       nodeVersion: 'v22.0.0', os: { platform: 'linux', release: 'test' }, cpuModel: 'test', logicalCpuCount: 1,
       totalMemoryBytes: 1, startedAt: '2026-07-23T00:00:00.000Z', completedAt: '2026-07-23T00:00:01.000Z',
-      provenance: { fetchedAt: '2026-07-22T00:00:00.000Z', selectedCities: ['Taipei'], includeIntercity: false, endpoints: [], bundleContentHash: '4'.repeat(64), tdxPayloadMaxUpdateTime: null },
+      provenance: { fetchedAt: '2026-07-22T00:00:00.000Z', selectedCities: ['Taipei'], includeIntercity: false, endpoints: taipeiEndpoints(), bundleContentHash: '4'.repeat(64), tdxPayloadMaxUpdateTime: null },
       mode: 'instrumented', pairMetricsAvailable: true, warmupCount: 0, iterationCount: 1,
       loaderTimings: { plain: { sourceVerificationTimeMs: 0, transpileTimeMs: 0, importTimeMs: 0 }, instrumented: { sourceVerificationTimeMs: 0, transpileTimeMs: 0, importTimeMs: 0 } },
       memoryPolicy: 'before-after-process-memory-no-forced-gc-no-peak-claim', deterministicContentHash: '0'.repeat(64),
@@ -78,7 +82,7 @@ function addSecondPartition(report) {
 function clonedReport() { return structuredClone(reportFixture()) }
 
 describe('report integrity reconciliation', () => {
-  it('accepts a report whose summary, outliers, memberships and hash derive from rows', () => {
+  it('accepts a report whose summary, outliers, memberships, provenance and hash derive from rows', () => {
     expect(() => validateReport(reportFixture())).not.toThrow()
   })
 
@@ -111,6 +115,9 @@ describe('report integrity reconciliation', () => {
     ['arbitrary outlier', (r) => { r.outliers.mostStopsPairs = [{ partitionId: r.partitions[0].partitionId, patternId: 'fake', shapeId: 'fake', stopCount: 999 }] }],
     ['outlier value mismatch', (r) => { r.outliers.mostStopsPairs[0].stopCount = 999 }],
     ['stale deterministic hash', (r) => { r.partitions[0].routeUid = 'R2' }],
+    ['missing endpoint for selected city', (r) => { r.metadata.provenance.endpoints.pop() }],
+    ['extra InterCity endpoint outside selected scope', (r) => { r.metadata.provenance.endpoints.push({ endpointId: 'intercity-shape', scope: 'intercity', city: null, category: 'shape', fileName: 'intercity-shape.json', contentHash: '7'.repeat(64), itemCount: 1, maxUpdateTime: null }) }],
+    ['endpoint filename mismatch', (r) => { r.metadata.provenance.endpoints[0].fileName = 'wrong.json' }],
   ])('rejects %s', (_name, mutate) => {
     const report = clonedReport()
     mutate(report)
@@ -144,7 +151,6 @@ describe('report integrity reconciliation', () => {
     duplicate.sourceScope = 'intercity'
     duplicate.city = null
     report.partitions.push(duplicate)
-    refreshDerived(report)
-    expect(() => validateReport(report)).toThrow(/candidate identity/i)
+    expect(() => refreshDerived(report)).toThrow(/candidate identity|scoped/i)
   })
 })
