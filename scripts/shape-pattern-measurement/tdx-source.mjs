@@ -23,6 +23,7 @@ export class TDXMeasurementError extends Error {
   constructor(message, details = {}, options = {}) {
     super(message, options)
     this.name = 'TDXMeasurementError'
+    this.code = 'TDX_MEASUREMENT_ERROR'
     this.details = {
       endpointCategory: details.endpointCategory ?? 'unknown',
       city: details.city ?? null,
@@ -384,8 +385,8 @@ export async function parseJsonWithDeadline(text, {
     }
     const onError = () => settle({ failureClass: 'parse_worker_error' })
     const onMessageError = () => settle({ failureClass: 'parse_worker_message_error' })
-    const onExit = (code) => {
-      if (!settled && code !== 0) settle({ failureClass: 'parse_worker_error' })
+    const onExit = () => {
+      if (!settled) settle({ failureClass: 'parse_worker_error' })
     }
 
     worker.once('message', onMessage)
@@ -427,12 +428,17 @@ function defaultWorkerFactory({ source, text }) {
 }
 
 async function terminateWorkerBounded(worker, timeoutMs) {
+  let timer = null
   try {
     const termination = Promise.resolve(worker.terminate()).then(() => true, () => false)
-    const timeout = new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(false), timeoutMs))
+    const timeout = new Promise((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout(false), timeoutMs)
+    })
     return await Promise.race([termination, timeout])
   } catch {
     return false
+  } finally {
+    if (timer !== null) clearTimeout(timer)
   }
 }
 
@@ -548,14 +554,20 @@ function safeError(endpointCategory, city, httpStatus, failureClass, retryCount)
 }
 export function safeErrorRecord(error) {
   if (error instanceof TDXMeasurementError) return { ...error.details }
+  if (error?.code === 'TDX_MEASUREMENT_ERROR' && error?.details) {
+    return {
+      ...error.details,
+      ...(Array.isArray(error.cleanupFailures) ? { cleanupFailures: error.cleanupFailures } : {}),
+    }
+  }
   if (error?.code === 'UNSUPPORTED_MATCHER_REVISION') {
     return { endpointCategory: 'matcher', city: null, httpStatus: null, failureClass: 'unsupported_matcher_revision', retryCount: 0, timestamp: new Date().toISOString() }
   }
   if (error?.code === 'MEASUREMENT_COLLECTOR_ERROR') {
-    return { endpointCategory: 'measurement', city: null, httpStatus: null, failureClass: 'collector_failure', retryCount: 0, timestamp: new Date().toISOString() }
+    return { endpointCategory: 'measurement', city: null, httpStatus: null, failureClass: 'collector_failure', retryCount: 0, timestamp: new Date().toISOString(), ...(Array.isArray(error.cleanupFailures) ? { cleanupFailures: error.cleanupFailures } : {}) }
   }
   if (error?.code === 'MEASUREMENT_CLEANUP_ERROR' || Array.isArray(error?.cleanupFailures)) {
-    return { endpointCategory: 'measurement', city: null, httpStatus: null, failureClass: 'cleanup_failure', retryCount: 0, timestamp: new Date().toISOString() }
+    return { endpointCategory: 'measurement', city: null, httpStatus: null, failureClass: 'cleanup_failure', retryCount: 0, timestamp: new Date().toISOString(), ...(Array.isArray(error.cleanupFailures) ? { cleanupFailures: error.cleanupFailures } : {}) }
   }
   return { endpointCategory: 'unknown', city: null, httpStatus: null, failureClass: 'unexpected', retryCount: 0, timestamp: new Date().toISOString() }
 }
@@ -577,6 +589,8 @@ async function mapConcurrent(items, concurrency, worker) {
       results[index] = await worker(items[index], index)
     }
   })
-  await Promise.all(runners)
+  const settlements = await Promise.allSettled(runners)
+  const failure = settlements.find((entry) => entry.status === 'rejected')
+  if (failure) throw failure.reason
   return results
 }
