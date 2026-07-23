@@ -124,7 +124,9 @@ async function resolveRepositoryMainSha() {
       const { stdout } = await execFileAsync('git', ['rev-parse', '--verify', ref], { encoding: 'utf8' })
       const sha = stdout.trim()
       if (/^[a-f0-9]{40}$/.test(sha)) return sha
-    } catch {}
+    } catch {
+      // Missing refs are expected probes; continue to the next local revision source.
+    }
   }
   throw new Error('Unable to determine repository revision')
 }
