@@ -114,6 +114,7 @@ export function assertFiniteTree(value, path = '$') {
 
 const NONDETERMINISTIC_KEYS = new Set([
   'runId', 'deterministicContentHash', 'startedAt', 'completedAt', 'publishedAt', 'timestamp',
+  'nodeVersion', 'os', 'cpuModel', 'logicalCpuCount', 'totalMemoryBytes', 'loaderTimings',
   'elapsedMs', 'matcherLatencyMs', 'matcherIterationSamplesMs', 'iterationLatencyMs',
   'pairTimeMs', 'pairLatencyMs', 'forwardTimeMs', 'reverseTimeMs',
   'costObjectiveSolveTimeMs', 'spanObjectiveSolveTimeMs', 'bestAssignmentTimeMs',
