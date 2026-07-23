@@ -120,7 +120,13 @@ describe('sanitized verified raw replay', () => {
     expect(instrumented.metadata.pairMetricsAvailable).toBe(true)
     expect(instrumented.pairs.length).toBeGreaterThan(0)
     expect(instrumented.pairs.some((pair) => pair.projectionOutcomes.length > 0)).toBe(true)
-    expect(instrumented.partitions.some((partition) => partition.assignmentBestSolveCount > 0)).toBe(true)
+
+    // The sanitized fixture has one exact Shape for each pattern. It exercises
+    // projection scoring and both Direction 0/2 paths, but not assignment ambiguity.
+    expect(instrumented.partitions.every((partition) => partition.assignmentBestSolveCount === 0)).toBe(true)
+    expect(instrumented.partitions.every((partition) => partition.forcedMatchSolveCount === 0)).toBe(true)
+    expect(instrumented.partitions.every((partition) => partition.forcedUnmatchedSolveCount === 0)).toBe(true)
+
     expect(instrumented.outcomes.exactIdentity + instrumented.outcomes.geometry).toBeGreaterThan(0)
     expect(instrumented.metadata.matcherSourceSha256).toBe(plain.metadata.matcherSourceSha256)
     expect(instrumented.metadata.matcherSourceGitBlobSha1).toBe(plain.metadata.matcherSourceGitBlobSha1)
