@@ -78,18 +78,16 @@ export async function parseCli(argv, {
 }
 
 export async function validatePathBoundaries({ rawDir, reportDir, generatedRoot, repositoryRoot }) {
+  const repository = resolve(repositoryRoot)
+  const measurementRoot = resolve(repository, '.tdx-measurement')
   const entries = [
-    ['raw', rawDir], ['report', reportDir], ['generated', generatedRoot],
+    ['raw', resolve(rawDir)], ['report', resolve(reportDir)], ['generated', resolve(generatedRoot)],
   ]
-  const protectedEntries = [
-    ['repository root', repositoryRoot],
-    ['source tree', resolve(repositoryRoot, 'src')],
-    ['git metadata', resolve(repositoryRoot, '.git')],
-  ]
+  const canonicalRepository = await canonicalizeFuturePath(repository)
+  const canonicalMeasurementRoot = await canonicalizeFuturePath(measurementRoot)
   const canonical = new Map()
-  for (const [name, value] of [...entries, ...protectedEntries]) {
-    canonical.set(name, await canonicalizeFuturePath(value))
-  }
+  for (const [name, value] of entries) canonical.set(name, await canonicalizeFuturePath(value))
+
   for (let left = 0; left < entries.length; left += 1) {
     for (let right = left + 1; right < entries.length; right += 1) {
       const [leftName] = entries[left]
@@ -99,22 +97,36 @@ export async function validatePathBoundaries({ rawDir, reportDir, generatedRoot,
       }
     }
   }
-  for (const [name] of entries) {
+
+  for (const [name, requested] of entries) {
     const candidate = canonical.get(name)
-    const repository = canonical.get('repository root')
-    if (candidate === repository || containsPath(candidate, repository)) {
-      throw new Error(`${name} directory must not overlap repository root`)
+    const requestedInsideRepository = containsPath(repository, requested)
+    const canonicalInsideRepository = containsPath(canonicalRepository, candidate)
+    if (requestedInsideRepository !== canonicalInsideRepository) {
+      throw new Error(`${name} directory must not cross the repository boundary through a symlink alias`)
     }
-    for (const protectedName of ['source tree', 'git metadata']) {
-      if (pathsOverlap(candidate, canonical.get(protectedName))) {
-        throw new Error(`${name} directory must not overlap ${protectedName}`)
+
+    if (requestedInsideRepository) {
+      if (!strictChild(measurementRoot, requested)
+        || !strictChild(canonicalMeasurementRoot, candidate)) {
+        throw new Error(`${name} directory inside the repository must be a strict child of .tdx-measurement`)
       }
+      continue
+    }
+
+    if (dirname(candidate) === candidate) throw new Error(`${name} directory must not be a filesystem root`)
+    if (pathsOverlap(candidate, canonicalRepository)) {
+      throw new Error(`${name} external directory must not contain or overlap the repository`)
     }
   }
 }
 
 export function pathsOverlap(left, right) {
   return containsPath(left, right) || containsPath(right, left)
+}
+
+function strictChild(parent, child) {
+  return parent !== child && containsPath(parent, child)
 }
 
 function containsPath(ancestor, candidate) {
@@ -129,11 +141,7 @@ async function canonicalizeFuturePath(target) {
   while (true) {
     try {
       const stat = await lstat(current)
-      if (stat.isSymbolicLink()) {
-        current = await realpath(current)
-      } else {
-        current = await realpath(current)
-      }
+      current = stat.isSymbolicLink() ? await realpath(current) : await realpath(current)
       return resolve(current, ...suffix.reverse())
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error
