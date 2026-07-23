@@ -54,7 +54,7 @@ describe('temporary matcher observer instrumentation', () => {
     expect(await readdir(root)).toEqual(['sentinel.txt'])
   })
 
-  it('emits pair, projection, orientation, shape, and assignment events from formal control flow without changing results', async () => {
+  it('emits reconciled pair, projection, orientation, shape, and assignment events without changing results', async () => {
     const root = await generatedRoot()
     const events = []
     const plain = await loadMatcherModule({ instrumented: false, generatedRunDir: root })
@@ -71,12 +71,19 @@ describe('temporary matcher observer instrumentation', () => {
       expect(events.map((entry) => entry.event)).toContain('shape-classified')
       expect(events.map((entry) => entry.event)).toContain('pair-start')
       expect(events.map((entry) => entry.event)).toContain('pair-end')
-      expect(events.filter((entry) => entry.event === 'projection-start')).toHaveLength(2)
-      expect(events.filter((entry) => entry.event === 'projection-end')).toHaveLength(2)
-      for (const entry of events.filter((candidate) => candidate.event === 'projection-end')) {
-        expect(entry.payload).toMatchObject({ patternId: 'p1', shapeId: 's1' })
-        expect(['cost', 'span']).toContain(entry.payload.objective)
+      const orientationStarts = events.filter((entry) => entry.event === 'orientation-start')
+      const orientationEnds = events.filter((entry) => entry.event === 'orientation-end')
+      expect(orientationStarts.map((entry) => entry.payload.orientation).sort()).toEqual(['forward', 'reverse'])
+      expect(orientationEnds.map((entry) => entry.payload.orientation).sort()).toEqual(['forward', 'reverse'])
+      const projectionStarts = events.filter((entry) => entry.event === 'projection-start')
+      const projectionEnds = events.filter((entry) => entry.event === 'projection-end')
+      expect(projectionStarts).toHaveLength(2)
+      expect(projectionEnds).toHaveLength(2)
+      expect(projectionEnds.map((entry) => entry.payload.status)).toEqual(['success', 'success'])
+      for (const entry of projectionEnds) {
+        expect(entry.payload).toMatchObject({ patternId: 'p1', shapeId: 's1', objective: 'cost' })
         expect(['forward', 'reverse']).toContain(entry.payload.orientation)
+        expect(Number.isFinite(entry.payload.elapsedMs)).toBe(true)
         expect(entry.payload.elapsedMs).toBeGreaterThanOrEqual(0)
       }
     } finally {
@@ -86,7 +93,7 @@ describe('temporary matcher observer instrumentation', () => {
     expect(await readdir(root)).toEqual(['sentinel.txt'])
   })
 
-  it('emits an end event for failed projection solves', async () => {
+  it('emits exact threshold-rejected outcomes for final distance rejection', async () => {
     const root = await generatedRoot()
     const events = []
     const loaded = await loadMatcherModule({
@@ -102,25 +109,35 @@ describe('temporary matcher observer instrumentation', () => {
       loaded.invoke(farPatterns, shapes)
       const endings = events.filter((entry) => entry.event === 'projection-end')
       expect(endings).toHaveLength(2)
-      expect(endings.every((entry) => ['no-path', 'frontier-empty', 'threshold-rejected'].includes(entry.payload.status))).toBe(true)
-      expect(endings.every((entry) => entry.payload.elapsedMs >= 0)).toBe(true)
+      expect(endings.map((entry) => entry.payload.status)).toEqual(['threshold-rejected', 'threshold-rejected'])
+      expect(endings.every((entry) => Number.isFinite(entry.payload.elapsedMs) && entry.payload.elapsedMs >= 0)).toBe(true)
     } finally {
       await loaded.dispose()
     }
   })
 
-  it('contains callback failure, completes matcher semantics, then rejects measurement and cleans output', async () => {
+  it('contains callback failure, redacts raw callback data, completes semantics, and cleans output', async () => {
     const root = await generatedRoot()
-    const callback = vi.fn(() => { throw new Error('callback payload must not leak') })
-    await expect(executeMatcher({
+    const callback = vi.fn(() => {
+      const error = new Error('callback fake secret token p1 s1')
+      error.stack = 'raw callback stack route-R1'
+      throw error
+    })
+    const error = await executeMatcher({
       instrumented: true,
       expectedMatcherSha256: await sourceSha256(),
       generatedRunDir: root,
       patterns,
       shapes,
       onMeasurement: callback,
-    })).rejects.toMatchObject({ code: 'MEASUREMENT_COLLECTOR_ERROR' })
+    }).catch((caught) => caught)
+    expect(error).toMatchObject({ code: 'MEASUREMENT_COLLECTOR_ERROR', stage: 'observer-callback' })
     expect(callback).toHaveBeenCalled()
+    expect(error.cause).toBeUndefined()
+    const publicText = JSON.stringify(error)
+    for (const forbidden of ['fake secret', 'route-R1', 'callback fake', ' p1 ', ' s1 ']) {
+      expect(publicText).not.toContain(forbidden)
+    }
     expect(await readdir(root)).toEqual(['sentinel.txt'])
   })
 
