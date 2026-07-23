@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { performance } from 'node:perf_hooks'
 import ts from 'typescript'
 import { MATCHER_SOURCE, SUPPORTED_MATCHER_GIT_BLOB_SHA1 } from './constants.mjs'
+import { attachCleanupFailure, boundedFailure, cleanupOnlyFailure } from './measurement-errors.mjs'
 import { gitBlobSha1, sha256Hex } from './util.mjs'
 
 const HOOK_NAME = '__MOCHI_SHAPE_PATTERN_MEASUREMENT__'
@@ -59,7 +60,7 @@ export async function loadMatcherModule({
   try {
     module = await import(`${pathToFileURL(outputPath).href}?run=${randomUUID()}`)
   } catch (error) {
-    await rm(outputPath, { force: true }).catch(() => undefined)
+    try { await rm(outputPath, { force: true }) } catch {}
     throw error
   }
   const importTimeMs = performance.now() - importStartedAt
@@ -68,14 +69,16 @@ export async function loadMatcherModule({
     throw new TypeError('Compiled matcher does not export matchShapesToPatterns')
   }
 
-  let firstCollectorError = null
+  let firstCollectorFailure = null
   let disposed = false
   const invoke = (patterns, shapes, options = {}) => {
     if (disposed) throw new Error('Matcher module has been disposed')
     const previousHook = globalThis[HOOK_NAME]
     if (instrumented) {
       globalThis[HOOK_NAME] = (event, payload) => {
-        try { onMeasurement(event, payload) } catch (error) { firstCollectorError ??= error }
+        try { onMeasurement(event, payload) } catch {
+          firstCollectorFailure ??= { event: boundedEventType(event) }
+        }
       }
     }
     try {
@@ -95,7 +98,7 @@ export async function loadMatcherModule({
   return {
     invoke,
     dispose,
-    takeCollectorError: () => firstCollectorError,
+    takeCollectorError: () => firstCollectorFailure,
     sourceSha256,
     sourceGitBlobSha1,
     loaderTimings: { sourceVerificationTimeMs, transpileTimeMs, importTimeMs },
@@ -111,14 +114,22 @@ export async function executeMatcher(options) {
     generatedRunDir: options.generatedRunDir ?? options.generatedDir,
     onMeasurement: options.onMeasurement,
   })
+  let primaryError = null
   let result
   try {
     result = loaded.invoke(options.patterns, options.shapes, options.options)
-  } finally {
-    await loaded.dispose()
+    const collectorError = loaded.takeCollectorError()
+    if (collectorError) throw collectorFailure(collectorError)
+  } catch (error) {
+    primaryError = error
   }
-  const collectorError = loaded.takeCollectorError()
-  if (collectorError) throw collectorFailure(collectorError)
+  try {
+    await loaded.dispose()
+  } catch {
+    if (primaryError) throw attachCleanupFailure(primaryError, { stage: 'matcher-module-dispose', temporaryPath: loaded.outputPath })
+    throw cleanupOnlyFailure({ stage: 'matcher-module-dispose', temporaryPath: loaded.outputPath })
+  }
+  if (primaryError) throw primaryError
   return {
     result,
     sourceSha256: loaded.sourceSha256,
@@ -176,9 +187,19 @@ export function instrumentSource(source) {
     'linear projection call')
 
   next = replaceExactlyOnce(next,
+    `  if (!stops.length || !segments.length) return null`,
+    `  if (!stops.length || !segments.length) { __measurementProjectionStatus = 'no-path'; return null }`,
+    'initial projection no-path status')
+
+  next = replaceExactlyOnce(next,
     `    if (current.every((frontier) => frontier.length === 0)) return null\n    previous = current`,
-    `    __measure('projection-layer', { ...(__measurementPair ?? {}), orientation: __measurementOrientation, objective: options.objective, layer: stopIndex, frontierWidth: current.reduce((maximum, frontier) => Math.max(maximum, frontier.length), 0), retainedNodes: current.reduce((sum, frontier) => sum + frontier.length, 0), parentNodeCount: current.flat().filter((node) => node.parent !== null).length, pathKeyChars: current.flat().reduce((sum, node) => sum + node.pathKey.length, 0) })\n    if (current.every((frontier) => frontier.length === 0)) return null\n    previous = current`,
+    `    __measure('projection-layer', { ...(__measurementPair ?? {}), orientation: __measurementOrientation, objective: options.objective, layer: stopIndex, frontierWidth: current.reduce((maximum, frontier) => Math.max(maximum, frontier.length), 0), retainedNodes: current.reduce((sum, frontier) => sum + frontier.length, 0), parentNodeCount: current.flat().filter((node) => node.parent !== null).length, pathKeyChars: current.flat().reduce((sum, node) => sum + node.pathKey.length, 0) })\n    if (current.every((frontier) => frontier.length === 0)) { __measurementProjectionStatus = 'frontier-empty'; return null }\n    previous = current`,
     'projection layer observer')
+
+  next = replaceExactlyOnce(next,
+    `  if (!finalNodes.length) return null`,
+    `  if (!finalNodes.length) { __measurementProjectionStatus = 'threshold-rejected'; return null }`,
+    'projection threshold status')
 
   next = replaceExactlyOnce(next,
     `  const best = solveAssignment(matrix)`,
@@ -202,6 +223,7 @@ export function instrumentSource(source) {
 function observerPrelude() {
   return `let __measurementPair: Record<string, unknown> | null = null
 let __measurementOrientation: 'forward' | 'reverse' | null = null
+let __measurementProjectionStatus: 'no-path' | 'frontier-empty' | 'threshold-rejected' | 'success' | 'throw' = 'no-path'
 let __measurementAssignmentKind: string | null = null
 const __measure = (event: string, payload: Record<string, unknown> = {}): void => {
   try { const hook = globalThis.${HOOK_NAME}; if (typeof hook === 'function') hook(event, payload) } catch {}
@@ -210,6 +232,7 @@ const __measureOrientation = <T>(orientation: 'forward' | 'reverse', run: () => 
   const startedAt = performance.now()
   const previous = __measurementOrientation
   __measurementOrientation = orientation
+  __measure('orientation-start', { ...(__measurementPair ?? {}), orientation })
   let status = 'throw'
   try { const value = run(); status = value === null ? 'no-path' : 'success'; return value }
   finally { __measure('orientation-end', { ...(__measurementPair ?? {}), orientation, status, elapsedMs: performance.now() - startedAt }); __measurementOrientation = previous }
@@ -217,10 +240,18 @@ const __measureOrientation = <T>(orientation: 'forward' | 'reverse', run: () => 
 const __measureProjection = <T>(stops: ShapePatternStop[], coordinates: ShapePosition[], options: { objective: ProjectionObjective; maxSpanMeters: number | null; maxMeanStopDistanceMeters: number; maxStopDistanceMeters: number }): T => {
   const startedAt = performance.now()
   const segmentCount = buildSegments(coordinates).length
+  __measurementProjectionStatus = 'no-path'
   __measure('projection-start', { ...(__measurementPair ?? {}), orientation: __measurementOrientation, objective: options.objective, stopCount: stops.length, segmentCount, candidateCount: stops.length * segmentCount })
-  let status = 'throw'
-  try { const value = matchOrderedStopsToPolyline(stops, coordinates, options) as T; status = value === null ? 'no-path' : 'success'; return value }
-  finally { __measure('projection-end', { ...(__measurementPair ?? {}), orientation: __measurementOrientation, objective: options.objective, status, elapsedMs: performance.now() - startedAt }) }
+  try {
+    const value = matchOrderedStopsToPolyline(stops, coordinates, options) as T
+    if (value !== null) __measurementProjectionStatus = 'success'
+    return value
+  } catch (error) {
+    __measurementProjectionStatus = 'throw'
+    throw error
+  } finally {
+    __measure('projection-end', { ...(__measurementPair ?? {}), orientation: __measurementOrientation, objective: options.objective, status: __measurementProjectionStatus, elapsedMs: performance.now() - startedAt })
+  }
 }
 const __measureAssignment = <T>(kind: string, run: () => T): T => {
   const startedAt = performance.now()
@@ -238,11 +269,30 @@ function replaceExactlyOnce(source, anchor, replacement, label) {
   if (count !== 1) throw unsupportedRevision(`${label} anchor mismatch: expected 1, found ${count}`)
   return source.replace(anchor, replacement)
 }
+
 function replaceEveryRequired(source, anchor, replacement, expectedCount, label) {
   const count = source.split(anchor).length - 1
   if (count !== expectedCount) throw unsupportedRevision(`${label} anchor mismatch: expected ${expectedCount}, found ${count}`)
   return source.split(anchor).join(replacement)
 }
-function unsupportedRevision(message) { const error = new Error(`Unsupported matcher revision: ${message}`); error.code = 'UNSUPPORTED_MATCHER_REVISION'; return error }
-export function collectorFailure(error) { const wrapped = new Error('Measurement collector failed', { cause: error }); wrapped.code = 'MEASUREMENT_COLLECTOR_ERROR'; return wrapped }
+
+function unsupportedRevision(message) {
+  const error = new Error(`Unsupported matcher revision: ${message}`)
+  error.code = 'UNSUPPORTED_MATCHER_REVISION'
+  return error
+}
+
+export function collectorFailure(_error, context = {}) {
+  return boundedFailure('Measurement collector failed.', {
+    code: 'MEASUREMENT_COLLECTOR_ERROR',
+    stage: 'observer-callback',
+    details: context?.event ? { failureClass: boundedEventType(context.event) } : null,
+  })
+}
+
+function boundedEventType(value) {
+  if (typeof value !== 'string') return 'unknown-event'
+  return value.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80) || 'unknown-event'
+}
+
 function formatDiagnostic(diagnostic) { return ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n') }
