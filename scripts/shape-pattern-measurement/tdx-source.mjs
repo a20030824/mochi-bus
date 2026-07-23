@@ -98,8 +98,15 @@ export async function fetchRawBundle({
 }) {
   const target = resolve(rawDir)
   await assertMissing(target)
+  const onParseCleanupFailure = (failure) => progress({
+    phase: 'parse-cleanup-failure',
+    ...failure,
+    timestamp: now().toISOString(),
+  })
   const resolvedCredentials = credentials ?? await loadCredentials()
-  const token = await fetchToken(resolvedCredentials, { fetcher, random, now, timeoutMs, maxAttempts })
+  const token = await fetchToken(resolvedCredentials, {
+    fetcher, random, now, timeoutMs, maxAttempts, onParseCleanupFailure,
+  })
   const specs = expectedEndpointSpecs(cities, includeIntercity)
   await mkdir(dirname(target), { recursive: true })
   const temporary = `${target}.tmp-${randomUUID()}`
@@ -108,13 +115,15 @@ export async function fetchRawBundle({
     const fetchedAt = now().toISOString()
     const responses = await mapConcurrent(specs, concurrency, async (spec) => {
       progress({ phase: 'fetch-start', endpointCategory: spec.category, city: spec.city, timestamp: now().toISOString() })
-      const payload = await fetchEndpointPayload(spec, token, { fetcher, random, now, timeoutMs, maxAttempts })
-      const entry = manifestEntry(spec, payload)
+      const payload = await fetchEndpointPayload(spec, token, {
+        fetcher, random, now, timeoutMs, maxAttempts, onParseCleanupFailure,
+      })
+      const entry = createRawCacheEntry(spec, payload)
       await atomicWrite(join(temporary, entry.fileName), `${stableStringify(payload, 2)}\n`)
       progress({ phase: 'fetch-complete', endpointCategory: spec.category, city: spec.city, timestamp: now().toISOString() })
       return { ...entry, payload }
     })
-    const manifest = createManifest({ cities, includeIntercity, fetchedAt, responses })
+    const manifest = createRawCacheManifest({ cities, includeIntercity, fetchedAt, responses })
     const bundle = bundleFromResponses(responses, manifest)
     await writeJson(join(temporary, 'manifest.json'), manifest)
     await syncDirectory(temporary)
@@ -203,7 +212,7 @@ export function validateManifest(manifest) {
   return specs
 }
 
-function createManifest({ cities, includeIntercity, fetchedAt, responses }) {
+export function createRawCacheManifest({ cities, includeIntercity, fetchedAt, responses }) {
   const endpoints = responses.map(({ payload: _payload, ...entry }) => entry)
     .sort((a, b) => a.endpointId.localeCompare(b.endpointId))
   const manifest = {
@@ -301,9 +310,12 @@ export async function requestJsonWithRetry({
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   workerFactory,
+  monotonicNow = () => performance.now(),
+  parseJson = parseJsonWithDeadline,
+  onParseCleanupFailure,
 }) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const deadline = performance.now() + timeoutMs
+    const deadlineAt = monotonicNow() + timeoutMs
     const controller = new AbortController()
     let timer = setTimeout(() => controller.abort(), timeoutMs)
     let response
@@ -322,14 +334,15 @@ export async function requestJsonWithRetry({
       const text = await response.text()
       clearTimeout(timer)
       timer = null
-      const remainingMs = Math.max(0, deadline - performance.now())
-      const data = await parseJsonWithDeadline(text, {
-        timeoutMs: remainingMs,
+      const data = await parseJson(text, {
+        deadlineAt,
+        monotonicNow,
         endpointCategory,
         city,
         httpStatus: response.status,
         retryCount: attempt,
         workerFactory,
+        onCleanupFailure: onParseCleanupFailure,
       })
       if ((expectArray && !Array.isArray(data)) || (!expectArray && !plainObject(data))) {
         throw safeError(endpointCategory, city, response.status, 'invalid_schema', attempt)
@@ -355,63 +368,95 @@ export async function requestJsonWithRetry({
 
 export async function parseJsonWithDeadline(text, {
   timeoutMs,
+  deadlineAt = null,
+  monotonicNow = () => performance.now(),
   endpointCategory = 'unknown',
   city = null,
   httpStatus = null,
   retryCount = 0,
   workerFactory = defaultWorkerFactory,
   terminationTimeoutMs = 1_000,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  onCleanupFailure = () => undefined,
+  operationId = randomUUID(),
 } = {}) {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+  const startedAt = monotonicNow()
+  const absoluteDeadline = Number.isFinite(deadlineAt)
+    ? deadlineAt
+    : Number.isFinite(timeoutMs) ? startedAt + timeoutMs : Number.NaN
+  if (!Number.isFinite(absoluteDeadline) || absoluteDeadline - startedAt <= 0) {
     throw safeError(endpointCategory, city, httpStatus, 'timeout', retryCount)
   }
+
   let worker
   try {
     worker = workerFactory({ source: PARSE_WORKER_SOURCE, text })
   } catch {
     throw safeError(endpointCategory, city, httpStatus, 'parse_worker_error', retryCount)
   }
+
+  const remainingAfterConstruction = absoluteDeadline - monotonicNow()
+  if (remainingAfterConstruction <= 0) {
+    requestWorkerTermination(worker, {
+      terminationTimeoutMs,
+      setTimer,
+      clearTimer,
+      onCleanupFailure,
+      operationId,
+    })
+    throw safeError(endpointCategory, city, httpStatus, 'timeout', retryCount)
+  }
+
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false
-    const timer = setTimeout(() => settle({ failureClass: 'timeout' }), timeoutMs)
+    let timer = null
 
+    const settle = ({ value, failureClass = null }) => {
+      if (settled) return
+      settled = true
+      if (timer !== null) clearTimer(timer)
+      worker.off('message', onMessage)
+      worker.off('error', onError)
+      worker.off('messageerror', onMessageError)
+      worker.off('exit', onExit)
+      if (failureClass !== null) {
+        rejectPromise(safeError(endpointCategory, city, httpStatus, failureClass, retryCount))
+      } else {
+        resolvePromise(value)
+      }
+      requestWorkerTermination(worker, {
+        terminationTimeoutMs,
+        setTimer,
+        clearTimer,
+        onCleanupFailure,
+        operationId,
+      })
+    }
+
+    const settleFromWorker = (result) => {
+      if (monotonicNow() >= absoluteDeadline) settle({ failureClass: 'timeout' })
+      else settle(result)
+    }
     const onMessage = (message) => {
       if (!plainObject(message) || typeof message.ok !== 'boolean') {
-        settle({ failureClass: 'parse_worker_message_error' })
+        settleFromWorker({ failureClass: 'parse_worker_message_error' })
         return
       }
-      if (message.ok) settle({ value: message.value })
-      else settle({ failureClass: message.failureClass === 'invalid_json' ? 'invalid_json' : 'parse_worker_error' })
+      if (message.ok) settleFromWorker({ value: message.value })
+      else settleFromWorker({ failureClass: message.failureClass === 'invalid_json' ? 'invalid_json' : 'parse_worker_error' })
     }
-    const onError = () => settle({ failureClass: 'parse_worker_error' })
-    const onMessageError = () => settle({ failureClass: 'parse_worker_message_error' })
+    const onError = () => settleFromWorker({ failureClass: 'parse_worker_error' })
+    const onMessageError = () => settleFromWorker({ failureClass: 'parse_worker_message_error' })
     const onExit = () => {
-      if (!settled) settle({ failureClass: 'parse_worker_error' })
+      if (!settled) settleFromWorker({ failureClass: 'parse_worker_error' })
     }
 
     worker.once('message', onMessage)
     worker.once('error', onError)
     worker.once('messageerror', onMessageError)
     worker.once('exit', onExit)
-
-    async function settle({ value, failureClass = null }) {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      worker.off('message', onMessage)
-      worker.off('error', onError)
-      worker.off('messageerror', onMessageError)
-      worker.off('exit', onExit)
-      const terminated = await terminateWorkerBounded(worker, terminationTimeoutMs)
-      if (!terminated && failureClass === null) failureClass = 'parse_worker_termination_error'
-      if (failureClass !== null) {
-        const error = safeError(endpointCategory, city, httpStatus, failureClass, retryCount)
-        if (!terminated) error.details.cleanupFailureClass = 'parse_worker_termination_error'
-        rejectPromise(error)
-      } else {
-        resolvePromise(value)
-      }
-    }
+    timer = setTimer(() => settle({ failureClass: 'timeout' }), remainingAfterConstruction)
   })
 }
 
@@ -427,19 +472,47 @@ function defaultWorkerFactory({ source, text }) {
   })
 }
 
-async function terminateWorkerBounded(worker, timeoutMs) {
+function requestWorkerTermination(worker, {
+  terminationTimeoutMs,
+  setTimer,
+  clearTimer,
+  onCleanupFailure,
+  operationId,
+}) {
+  const boundedOperationId = boundedToken(operationId, 'parse-worker-operation')
+  const boundedTimeout = Number.isFinite(terminationTimeoutMs) && terminationTimeoutMs >= 0
+    ? terminationTimeoutMs
+    : 1_000
+  let finished = false
   let timer = null
-  try {
-    const termination = Promise.resolve(worker.terminate()).then(() => true, () => false)
-    const timeout = new Promise((resolveTimeout) => {
-      timer = setTimeout(() => resolveTimeout(false), timeoutMs)
-    })
-    return await Promise.race([termination, timeout])
-  } catch {
-    return false
-  } finally {
-    if (timer !== null) clearTimeout(timer)
+  const finish = (failureClass = null) => {
+    if (finished) return
+    finished = true
+    if (timer !== null) clearTimer(timer)
+    if (failureClass === null) return
+    try {
+      onCleanupFailure({
+        stage: 'parse-worker-termination',
+        failureClass,
+        operationId: boundedOperationId,
+      })
+    } catch {
+      // The bounded cleanup observer is isolated from public request settlement.
+    }
   }
+
+  let termination
+  try {
+    termination = Promise.resolve(worker.terminate())
+  } catch {
+    finish('termination-error')
+    return
+  }
+  timer = setTimer(() => finish('termination-timeout'), boundedTimeout)
+  termination.then(
+    () => finish(),
+    () => finish('termination-error'),
+  )
 }
 
 export function parseRetryAfter(value, now = new Date()) {
@@ -464,7 +537,7 @@ function endpointSpec(scope, city, category, path) {
 function endpointId(scope, city, category) {
   return scope === 'intercity' ? `intercity-${category}` : `city-${city}-${category}`
 }
-function manifestEntry(spec, payload) {
+export function createRawCacheEntry(spec, payload) {
   return {
     endpointId: spec.endpointId,
     scope: spec.scope,
@@ -576,6 +649,11 @@ export function assertRedacted(value, secrets) {
   for (const secret of ['Authorization', ...secrets.filter(Boolean)]) {
     if (serialized.includes(secret)) throw new Error('Sensitive value leaked into measurement output')
   }
+}
+function boundedToken(value, fallback) {
+  if (typeof value !== 'string') return fallback
+  const token = value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80)
+  return token || fallback
 }
 function plainObject(value) { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) }
 async function mapConcurrent(items, concurrency, worker) {
