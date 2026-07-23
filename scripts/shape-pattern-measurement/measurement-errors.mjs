@@ -28,8 +28,8 @@ export function boundedFailure(message, { code, stage, details = null } = {}) {
 
 export function attachCleanupFailure(primary, cleanup) {
   const failure = normalizeCleanupFailure(cleanup)
-  const code = typeof primary?.code === 'string' ? primary.code : 'MEASUREMENT_ERROR'
-  const stage = typeof primary?.stage === 'string' ? primary.stage : 'measurement'
+  const code = boundedPrimaryCode(primary)
+  const stage = typeof primary?.stage === 'string' ? primary.stage : primaryStage(code)
   const message = safePrimaryMessage(primary, code)
   const existing = Array.isArray(primary?.cleanupFailures)
     ? primary.cleanupFailures.map(normalizeCleanupFailure)
@@ -92,9 +92,22 @@ function boundedDetails(value) {
   return Object.keys(allowed).length ? allowed : null
 }
 
+function boundedPrimaryCode(primary) {
+  if (typeof primary?.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(primary.code)) return primary.code
+  if (primary?.name === 'TDXMeasurementError') return 'TDX_MEASUREMENT_ERROR'
+  return 'MEASUREMENT_ERROR'
+}
+
+function primaryStage(code) {
+  if (code === 'TDX_MEASUREMENT_ERROR') return 'tdx-source'
+  if (code === 'MEASUREMENT_COLLECTOR_ERROR') return 'observer-callback'
+  return 'measurement'
+}
+
 function safePrimaryMessage(primary, code) {
   if (code === 'MEASUREMENT_COLLECTOR_ERROR') return 'Measurement collector failed.'
   if (code === 'MEASUREMENT_CLEANUP_ERROR') return 'Measurement cleanup failed.'
+  if (code === 'TDX_MEASUREMENT_ERROR') return 'TDX measurement failed.'
   if (primary instanceof BoundedMeasurementError) return primary.message
   return 'Measurement failed.'
 }
