@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
+import { attachCleanupFailure } from './measurement-errors.mjs'
 
 export const sha256Hex = (value) => createHash('sha256').update(value).digest('hex')
 
@@ -20,22 +21,56 @@ export function stableValue(value) {
 export const stableStringify = (value, space = 0) => JSON.stringify(stableValue(value), null, space)
 export const contentHash = (value) => sha256Hex(stableStringify(value))
 
-export async function atomicWrite(file, content) {
-  await mkdir(dirname(file), { recursive: true })
-  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
-  const handle = await open(temporary, 'wx', 0o600)
+export async function atomicWrite(file, content, {
+  mkdirDirectory = mkdir,
+  openFile = open,
+  renameFile = rename,
+  removeFile = rm,
+  processId = process.pid,
+  createId = randomUUID,
+} = {}) {
+  await mkdirDirectory(dirname(file), { recursive: true })
+  const temporary = `${file}.${processId}.${createId()}.tmp`
+  let handle = null
+  let primaryError = null
+
   try {
-    await handle.writeFile(content)
-    await handle.sync()
-  } finally {
-    await handle.close()
-  }
-  try {
-    await rename(temporary, file)
+    handle = await openFile(temporary, 'wx', 0o600)
+    try {
+      await handle.writeFile(content)
+      await handle.sync()
+    } catch (error) {
+      primaryError = error
+    }
+    try {
+      await handle.close()
+    } catch (error) {
+      primaryError = primaryError
+        ? attachCleanupFailure(primaryError, { stage: 'atomic-write-handle-close', temporaryPath: temporary })
+        : error
+    }
+    handle = null
+    if (!primaryError) {
+      try {
+        await renameFile(temporary, file)
+      } catch (error) {
+        primaryError = error
+      }
+    }
   } catch (error) {
-    try { await rm(temporary, { force: true }) } catch {}
-    throw error
+    primaryError = error
   }
+
+  if (!primaryError) return
+  try {
+    await removeFile(temporary, { force: true })
+  } catch {
+    primaryError = attachCleanupFailure(primaryError, {
+      stage: 'atomic-write-temp-cleanup',
+      temporaryPath: temporary,
+    })
+  }
+  throw primaryError
 }
 
 export async function readJson(file) {
