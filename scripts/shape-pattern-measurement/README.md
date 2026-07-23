@@ -310,3 +310,5 @@ git status --short
 ```
 
 CI does not call live TDX, receive production TDX credentials, or upload raw payloads or real route-level reports.
+
+This PR must remain Draft until the third narrow review is complete.
