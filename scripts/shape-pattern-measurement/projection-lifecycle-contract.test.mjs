@@ -25,7 +25,7 @@ async function eventsFor(patterns, shapes = [shape]) {
 function projectionStatuses(events) { return events.filter((entry) => entry.event === 'projection-end').map((entry) => entry.payload.status) }
 
 describe('projection and orientation lifecycle', () => {
-  it('emits exact no-path for an initial unsolveable projection', async () => {
+  it('does not fabricate projection events for a pattern rejected before pair scoring', async () => {
     const events = await eventsFor([pattern([])])
     expect(projectionStatuses(events)).toEqual([])
   })
@@ -35,16 +35,19 @@ describe('projection and orientation lifecycle', () => {
     expect(projectionStatuses(events)).toEqual(['threshold-rejected', 'threshold-rejected'])
   })
 
-  it('emits success and reconciled start/end events for forward and reverse cost solves', async () => {
+  it('emits directional success/frontier outcomes with reconciled orientation events', async () => {
     const events = await eventsFor([pattern([{ coordinate: [121, 25] }, { coordinate: [121.01, 25.01] }])])
-    expect(projectionStatuses(events)).toEqual(['success', 'success'])
+    const projectionEnds = events.filter((entry) => entry.event === 'projection-end')
+    expect(projectionEnds.map((entry) => [entry.payload.orientation, entry.payload.status])).toEqual([
+      ['forward', 'success'],
+      ['reverse', 'frontier-empty'],
+    ])
     const orientationStarts = events.filter((entry) => entry.event === 'orientation-start')
     const orientationEnds = events.filter((entry) => entry.event === 'orientation-end')
     expect(orientationStarts.map((entry) => entry.payload.orientation).sort()).toEqual(['forward', 'reverse'])
     expect(orientationEnds.map((entry) => entry.payload.orientation).sort()).toEqual(['forward', 'reverse'])
     expect(orientationEnds.every((entry) => Number.isFinite(entry.payload.elapsedMs) && entry.payload.elapsedMs >= 0)).toBe(true)
     const projectionStarts = events.filter((entry) => entry.event === 'projection-start')
-    const projectionEnds = events.filter((entry) => entry.event === 'projection-end')
     expect(projectionStarts).toHaveLength(projectionEnds.length)
   })
 
