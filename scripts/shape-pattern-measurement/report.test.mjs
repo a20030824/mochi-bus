@@ -49,7 +49,7 @@ async function tempRoot() {
   return root
 }
 
-function fakeLoader({ delayMs = 0, collectorError = null } = {}) {
+function fakeLoader({ delayMs = 0, collectorError = null, disposeFailure = false } = {}) {
   return async ({ instrumented, onMeasurement }) => {
     if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs))
     return {
@@ -60,8 +60,10 @@ function fakeLoader({ delayMs = 0, collectorError = null } = {}) {
         return structuredClone(result)
       },
       takeCollectorError: () => instrumented ? collectorError : null,
-      dispose: vi.fn(async () => undefined),
-      outputPath: join(process.cwd(), 'generated-test-module.mjs'),
+      dispose: vi.fn(async () => {
+        if (disposeFailure) throw new Error('raw cleanup fake secret')
+      }),
+      outputPath: join(process.cwd(), `generated-${instrumented ? 'instrumented' : 'plain'}.mjs`),
     }
   }
 }
@@ -135,6 +137,21 @@ describe('load once, measure matcher only', () => {
       loader: fakeLoader({ collectorError: { event: 'pair-end' } }),
     })).rejects.toMatchObject({ code: 'MEASUREMENT_COLLECTOR_ERROR' })
   })
+
+  it('preserves collector failure when both matcher module cleanups fail', async () => {
+    const error = await makeReport({
+      instrumented: true,
+      loader: fakeLoader({ collectorError: { event: 'pair-end' }, disposeFailure: true }),
+    }).catch((caught) => caught)
+    expect(error.code).toBe('MEASUREMENT_COLLECTOR_ERROR')
+    expect(error.cleanupFailures).toEqual([
+      { stage: 'instrumented-module-dispose', temporaryPath: 'generated-instrumented.mjs' },
+      { stage: 'plain-module-dispose', temporaryPath: 'generated-plain.mjs' },
+    ])
+    const publicText = JSON.stringify(error)
+    expect(publicText).not.toContain('fake secret')
+    expect(error.cause).toBeUndefined()
+  })
 })
 
 describe('transactional report publication', () => {
@@ -175,6 +192,37 @@ describe('transactional report publication', () => {
       validateDirectory: async () => { throw new Error('validation failure') },
     })).rejects.toThrow(/validation failure/)
     expect(await readdir(secondRoot)).toEqual([])
+  })
+
+  it('preserves the primary failure and exposes bounded orphan cleanup data', async () => {
+    const report = await makeReport()
+    const root = await tempRoot()
+    let writes = 0
+    const error = await publishMeasurementReport(report, root, {
+      atomicWriter: async (file, content) => {
+        writes += 1
+        if (writes === 2) throw Object.assign(new Error('primary report failure'), { code: 'REPORT_WRITE_FAILED' })
+        await atomicWrite(file, content)
+      },
+      rm: async () => { throw Object.assign(new Error('EACCES raw path'), { code: 'EACCES' }) },
+    }).catch((caught) => caught)
+    expect(error.code).toBe('REPORT_WRITE_FAILED')
+    expect(error.cleanupFailures).toHaveLength(1)
+    expect(error.cleanupFailures[0]).toMatchObject({ stage: 'report-temporary-cleanup' })
+    expect(error.cleanupFailures[0].temporaryPath).toMatch(/^\./)
+    expect(JSON.stringify(error)).not.toContain('EACCES raw path')
+    expect((await readdir(root)).some((name) => name.startsWith('.'))).toBe(true)
+    expect((await readdir(root)).some((name) => name === report.metadata.runId)).toBe(false)
+  })
+
+  it('fails closed on EXDEV rather than copying a report', async () => {
+    const report = await makeReport()
+    const root = await tempRoot()
+    const error = await publishMeasurementReport(report, root, {
+      rename: async () => { throw Object.assign(new Error('cross-device'), { code: 'EXDEV' }) },
+    }).catch((caught) => caught)
+    expect(error.code).toBe('EXDEV')
+    expect(await readdir(root)).toEqual([])
   })
 
   it('rejects stale or corrupted runs instead of mixing them with new output', async () => {
