@@ -12,13 +12,39 @@ const UNRESOLVED_REASON_FIELDS = Object.freeze({
 })
 const REJECTED_SHAPE_REASONS = new Set(['duplicate-shape-id', 'invalid-coordinates', 'direction-2-not-closed'])
 
+export const SUMMARY_METRIC_FIELDS = Object.freeze([
+  'patternCount', 'shapeCount', 'minSideCount', 'compatibleEdgeCount',
+  'compatibleEdgeDensity', 'stopCount', 'rawCoordinateCount',
+  'normalizedCoordinateCount', 'segmentCount', 'peakFrontierWidth',
+  'retainedNodeCount', 'pairLatencyMs', 'matcherLatencyMs',
+  'assignmentLatencyMs', 'ambiguityProofLatencyMs', 'rssDeltaBytes',
+  'heapDeltaBytes',
+])
+
+export const OUTLIER_FIELDS = Object.freeze([
+  'largestPatternPartitions', 'largestShapePartitions', 'largestMinSidePartitions',
+  'densestCompatibleMatrices', 'mostStopsPairs', 'mostSegmentsPairs',
+  'widestFrontierPairs', 'mostRetainedNodesPairs', 'slowestPairScoring',
+  'slowestAssignmentProofs', 'slowestPartitions', 'highestRssDeltaPartitions',
+  'highestHeapDeltaPartitions', 'direction2MostSiblings',
+])
+
+const DETERMINISTIC_OUTLIER_FIELDS = new Set([
+  'largestPatternPartitions', 'largestShapePartitions', 'largestMinSidePartitions',
+  'densestCompatibleMatrices', 'mostStopsPairs', 'mostSegmentsPairs',
+  'widestFrontierPairs', 'mostRetainedNodesPairs', 'direction2MostSiblings',
+])
+
 export function deterministicContentHash(report) {
+  const deterministicOutliers = Object.fromEntries(Object.entries(report.outliers)
+    .filter(([key]) => DETERMINISTIC_OUTLIER_FIELDS.has(key)))
   return contentHash(omitNondeterministic({
     metadata: report.metadata,
     partitions: report.partitions,
     pairs: report.pairs,
     outcomes: report.outcomes,
     summary: report.summary,
+    outliers: deterministicOutliers,
   }))
 }
 
@@ -42,7 +68,7 @@ export function buildSummary(partitions, pairs) {
     rssDeltaBytes: partitions.map((item) => item.memoryObservation?.rssDeltaBytes),
     heapDeltaBytes: partitions.map((item) => item.memoryObservation?.heapDeltaBytes),
   }
-  return Object.fromEntries(Object.entries(fields).map(([key, values]) => [key, distribution(values)]))
+  return Object.fromEntries(SUMMARY_METRIC_FIELDS.map((key) => [key, distribution(fields[key])]))
 }
 
 export function buildOutliers(partitions, pairs, topN) {
@@ -154,4 +180,5 @@ function top(records, field, count, identity) {
   return [...unique.values()].sort((a, b) => valueAt(b) - valueAt(a)
     || identity(a).localeCompare(identity(b))).slice(0, count)
 }
+
 function pairIdentity(item) { return `${item.partitionId}\0${item.patternId}\0${item.shapeId}` }
