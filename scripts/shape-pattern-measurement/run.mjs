@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { buildCandidatePartitions } from './build-candidates.mjs'
 import { helpText, parseCli } from './cli.mjs'
+import { attachCleanupFailure, cleanupOnlyFailure } from './measurement-errors.mjs'
 import { createMeasurementReport, publishMeasurementReport } from './report.mjs'
 import {
   assertRedacted, assertReplayScope, fetchRawBundle, replayRawBundle, safeErrorRecord,
@@ -19,6 +20,7 @@ const OWNERSHIP_MARKER = '.measurement-run-owner'
 export async function runMeasurement(options, dependencies = {}) {
   const generatedOwnership = await createOwnedGeneratedChild(options.generatedRoot)
   let primaryError = null
+  let result = null
   try {
     const source = options.replay
       ? await (dependencies.replayRawBundle ?? replayRawBundle)({ rawDir: options.rawDir })
@@ -46,21 +48,31 @@ export async function runMeasurement(options, dependencies = {}) {
       repositoryMainSha,
     })
     const runDir = await (dependencies.publishMeasurementReport ?? publishMeasurementReport)(report, options.reportDir)
-    return { report, runDir, candidateBundle, manifest: source.manifest }
+    result = { report, runDir, candidateBundle, manifest: source.manifest }
   } catch (error) {
     primaryError = error
-    throw error
-  } finally {
-    try {
-      await cleanupOwnedGeneratedChild(generatedOwnership, {
-        rawDir: options.rawDir,
-        reportDir: options.reportDir,
+  }
+
+  try {
+    await cleanupOwnedGeneratedChild(generatedOwnership, {
+      rawDir: options.rawDir,
+      reportDir: options.reportDir,
+    })
+  } catch {
+    if (primaryError) {
+      primaryError = attachCleanupFailure(primaryError, {
+        stage: 'generated-run-cleanup',
+        temporaryPath: generatedOwnership.child,
       })
-    } catch (cleanupError) {
-      if (primaryError) throw new AggregateError([primaryError, cleanupError], 'Measurement failed and generated cleanup also failed')
-      throw cleanupError
+    } else {
+      primaryError = cleanupOnlyFailure({
+        stage: 'generated-run-cleanup',
+        temporaryPath: generatedOwnership.child,
+      })
     }
   }
+  if (primaryError) throw primaryError
+  return result
 }
 
 export async function createOwnedGeneratedChild(generatedRoot) {
