@@ -28,30 +28,33 @@ describe('measurement CLI path boundaries', () => {
     ['parent repository', ['--generated-dir', '..']],
     ['source tree', ['--generated-dir', 'src']],
     ['git metadata', ['--generated-dir', '.git/cache']],
+    ['web tree', ['--report-dir', 'web']],
+    ['scripts tree', ['--report-dir', 'scripts']],
   ])('rejects %s', async (_name, argv) => {
     const root = await workspace()
-    await expect(parseCli(argv, { cwd: root, repositoryRoot: root, requireReplayPath: false })).rejects.toThrow(/overlap|disjoint/)
+    await expect(parseCli(argv, { cwd: root, repositoryRoot: root, requireReplayPath: false }))
+      .rejects.toThrow(/overlap|disjoint|repository|\.tdx-measurement/)
   })
 
-  it('resolves symlinks before containment checks', async () => {
+  it('resolves symlinks before repository-boundary checks', async () => {
     const root = await workspace()
     const outside = await mkdtemp(join(tmpdir(), 'shape-measure-outside-'))
     roots.push(outside)
     await symlink(outside, join(root, 'linked-root'), 'dir')
     await expect(validatePathBoundaries({
       rawDir: join(root, 'linked-root', 'raw'),
-      reportDir: join(outside, 'raw', 'reports'),
-      generatedRoot: join(root, 'generated'),
+      reportDir: join(outside, 'reports'),
+      generatedRoot: join(outside, 'generated'),
       repositoryRoot: root,
-    })).rejects.toThrow(/disjoint/)
+    })).rejects.toThrow(/repository boundary|symlink/i)
   })
 
-  it('does not mistake sibling prefixes for containment', async () => {
+  it('does not mistake sibling prefixes for containment under the owned measurement root', async () => {
     const root = await workspace()
     await expect(validatePathBoundaries({
-      rawDir: join(root, 'foo', 'bar'),
-      reportDir: join(root, 'foo', 'bar-other'),
-      generatedRoot: join(root, 'foo', 'generated'),
+      rawDir: join(root, '.tdx-measurement', 'foo', 'bar'),
+      reportDir: join(root, '.tdx-measurement', 'foo', 'bar-other'),
+      generatedRoot: join(root, '.tdx-measurement', 'foo', 'generated'),
       repositoryRoot: root,
     })).resolves.toBeUndefined()
     expect(pathsOverlap('/foo/bar', '/foo/bar-other')).toBe(false)
@@ -67,6 +70,18 @@ describe('measurement CLI path boundaries', () => {
     })
     expect(explicit.citiesExplicit).toBe(true)
     expect(explicit.includeIntercityExplicit).toBe(true)
+  })
+
+  it('accepts --matcher-sha and rejects ambiguous SHA aliases', async () => {
+    const root = await workspace()
+    const sha = 'a'.repeat(64)
+    const options = await parseCli(['--instrumented', '--matcher-sha', sha], {
+      cwd: root, repositoryRoot: root, requireReplayPath: false,
+    })
+    expect(options.expectedMatcherSha256).toBe(sha)
+    await expect(parseCli([
+      '--instrumented', '--matcher-sha', sha, '--expected-matcher-sha256', sha,
+    ], { cwd: root, repositoryRoot: root, requireReplayPath: false })).rejects.toThrow(/only one/i)
   })
 
   it.each([
