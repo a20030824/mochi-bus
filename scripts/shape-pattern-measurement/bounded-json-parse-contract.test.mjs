@@ -67,7 +67,8 @@ describe('bounded worker JSON parse', () => {
     }).catch((caught) => caught)
 
     expect(error).toMatchObject({ details: { failureClass: 'timeout' } })
-    expect(setTimer).not.toHaveBeenCalled()
+    expect(setTimer).toHaveBeenCalledTimes(1)
+    expect(setTimer.mock.calls[0][1]).toBe(1_000)
   })
 
   it('lets timeout win over an immediate success queued after an overlong constructor', async () => {
