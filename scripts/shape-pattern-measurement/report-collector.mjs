@@ -6,6 +6,7 @@ export function createInstrumentationCollector(partition) {
   const pairMap = new Map()
   const shapeEvents = []
   const openProjections = new Map()
+  const openOrientations = new Set()
   let currentPairKey = null
   const assignment = {
     bestCount: 0,
@@ -21,6 +22,7 @@ export function createInstrumentationCollector(partition) {
     if (event === 'shape-classified') return shapeClassified(payload)
     if (event === 'pair-start') return pairStart(payload)
     if (event === 'pair-end') return pairEnd(payload)
+    if (event === 'orientation-start') return orientationStart(payload)
     if (event === 'orientation-end') return orientationEnd(payload)
     if (event === 'projection-start') return projectionStart(payload)
     if (event === 'projection-layer') return projectionLayer(payload)
@@ -84,6 +86,9 @@ export function createInstrumentationCollector(partition) {
     if ([...openProjections.keys()].some((projectionKey) => projectionKey.startsWith(`${key}\0`))) {
       throw new Error(`pair-end with open projection for ${key}`)
     }
+    if ([...openOrientations].some((orientationKey) => orientationKey.startsWith(`${key}\0`))) {
+      throw new Error(`pair-end with open orientation for ${key}`)
+    }
     const record = pairMap.get(key)
     if (record.status !== null) throw new Error(`Duplicate pair-end for ${key}`)
     record.pairTimeMs = finiteNonNegative(payload.elapsedMs, 'pair elapsedMs')
@@ -94,15 +99,31 @@ export function createInstrumentationCollector(partition) {
     currentPairKey = null
   }
 
+  function orientationStart(payload) {
+    currentRecord(payload)
+    const key = orientationKey(payload)
+    if (openOrientations.has(key)) throw new Error(`Duplicate orientation-start for ${key}`)
+    openOrientations.add(key)
+  }
+
   function orientationEnd(payload) {
     const record = currentRecord(payload)
+    const key = orientationKey(payload)
+    if (!openOrientations.has(key)) throw new Error(`orientation-end without matching start for ${key}`)
+    if ([...openProjections.keys()].some((projectionKey) => projectionKey.startsWith(`${key}\0`))) {
+      throw new Error(`orientation-end with open projection for ${key}`)
+    }
+    openOrientations.delete(key)
     const orientation = enumValue(payload.orientation, ['forward', 'reverse'], 'orientation')
+    enumValue(payload.status, ['success', 'no-path', 'throw'], 'orientation status')
     const field = orientation === 'forward' ? 'forwardTimeMs' : 'reverseTimeMs'
     record[field] = addNullable(record[field], finiteNonNegative(payload.elapsedMs, `${orientation} elapsedMs`))
   }
 
   function projectionStart(payload) {
     const record = currentRecord(payload)
+    const orientation = enumValue(payload.orientation, ['forward', 'reverse'], 'orientation')
+    if (!openOrientations.has(`${pairKey(payload)}\0${orientation}`)) throw new Error('projection-start without open orientation')
     const key = projectionKey(payload)
     if (openProjections.has(key)) throw new Error(`Duplicate projection-start for ${key}`)
     const segmentCount = nonNegativeInteger(payload.segmentCount, 'projection segmentCount')
@@ -177,6 +198,7 @@ export function createInstrumentationCollector(partition) {
     observe,
     finish: () => {
       if (currentPairKey !== null) throw new Error(`Unclosed instrumentation pair in ${partition.partitionId}`)
+      if (openOrientations.size) throw new Error(`Unclosed orientation in ${partition.partitionId}`)
       if (openProjections.size) throw new Error(`Unclosed projection solve in ${partition.partitionId}`)
       for (const record of pairMap.values()) {
         if (record.status === null) throw new Error(`Pair record has no end event: ${record.patternId}/${record.shapeId}`)
@@ -259,8 +281,9 @@ export function aggregatePairIterations(collectors, partitionId) {
 }
 
 function pairKey(payload) { return `${requiredId(payload.patternId, 'patternId')}\0${requiredId(payload.shapeId, 'shapeId')}` }
+function orientationKey(payload) { return `${pairKey(payload)}\0${enumValue(payload.orientation, ['forward', 'reverse'], 'orientation')}` }
 function projectionKey(payload) {
-  return `${pairKey(payload)}\0${enumValue(payload.orientation, ['forward', 'reverse'], 'orientation')}\0${enumValue(payload.objective, ['cost', 'span'], 'objective')}`
+  return `${orientationKey(payload)}\0${enumValue(payload.objective, ['cost', 'span'], 'objective')}`
 }
 function requiredId(value, name) {
   if (typeof value !== 'string' || !value) throw new TypeError(`${name} must be a non-empty string`)
