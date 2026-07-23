@@ -14,6 +14,8 @@ Snapshot output is not valid matcher evidence because the snapshot producer has 
 
 Sanitized fixtures verify capability and safety only. A sanitized fixture must not select a production guard, and merging this harness does not mean the matcher passed the production gate.
 
+The committed sanitized two-mode integration test materializes a canonical raw cache, verifies it through the formal raw-cache reader, builds candidates from that verified reader output, creates plain and instrumented reports, and runs formal report validation for both modes. It does **not** execute the complete CLI argument flow, final report atomic publication, or the completion-marker reader. Those capabilities remain covered by their separate focused tests and do not turn sanitized data into production evidence.
+
 ## Filesystem policy
 
 Repository-local measurement data is allowed only below:
@@ -97,7 +99,9 @@ InterCity endpoints, fetched once per run:
 - `StopOfRoute/InterCity`
 - `Shape/InterCity`
 
-Fetches use bounded concurrency, bounded retry, exponential backoff with jitter, `Retry-After`, an `AbortController` for request and body consumption, and a dedicated `worker_threads` JSON parser. The worker receives only the response text, an empty environment, and no credential, header, filesystem, or network input. Parsing uses the remaining monotonic request deadline; deadline expiry terminates the worker and reports a bounded timeout.
+Fetches use bounded concurrency, bounded retry, exponential backoff with jitter, `Retry-After`, an `AbortController` for request and body consumption, and a dedicated `worker_threads` JSON parser. The worker receives only the response text, an empty environment, and no credential, header, filesystem, or network input.
+
+Each request creates one absolute monotonic deadline. The same deadline covers response-body consumption, Worker construction after the constructor returns, Worker startup, JSON parsing, and message delivery. A synchronous Worker constructor cannot itself be interrupted; immediately after it returns, the harness recalculates remaining time and rejects as timeout rather than accepting success when the deadline has expired. Public timeout settlement removes result listeners and rejects immediately. Worker termination proceeds separately and cannot delay or replace the timeout result; a termination error or termination timeout is observable only as a bounded cleanup record containing stage, classification, and operation ID.
 
 The cache is assembled in a temporary sibling directory. Endpoint payloads and the manifest are written and verified before same-filesystem rename publishes `.tdx-measurement/raw`. Existing targets fail closed.
 
@@ -235,16 +239,33 @@ A successful run must leave:
 - immutable run directories under `.tdx-measurement/reports/` intact; and
 - no per-run `run-*` child under `.tdx-measurement/generated/`.
 
-Inspect without deleting anything:
+The temporary naming contracts are:
+
+- raw-cache staging: `.tdx-measurement/raw.tmp-<random>`;
+- report staging: `.tdx-measurement/reports/.<run-id>-<random>`;
+- generated child: `.tdx-measurement/generated/run-<random>`.
+
+Inspect without deleting anything on POSIX systems:
 
 ```sh
-find .tdx-measurement/generated -mindepth 1 -maxdepth 1 -name 'run-*' -print
-find .tdx-measurement/reports -mindepth 1 -maxdepth 1 -type d -name '.*-' -print
+find .tdx-measurement/generated -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print
+find .tdx-measurement/reports -mindepth 1 -maxdepth 1 -type d -name '.*-*' -print
 find .tdx-measurement -mindepth 1 -maxdepth 1 -type d -name 'raw.tmp-*' -print
 git status --short
 ```
 
-A write or validation failure attempts to remove its temporary directory. If cleanup also fails, the primary error code is preserved and a bounded cleanup failure identifies the orphan by a root-relative leaf name. The harness does not claim that no partial artifact remains in that case.
+Windows PowerShell equivalents:
+
+```powershell
+Get-ChildItem .tdx-measurement/generated -Directory -Filter 'run-*'
+Get-ChildItem .tdx-measurement/reports -Directory -Hidden | Where-Object Name -Like '.*-*'
+Get-ChildItem .tdx-measurement -Directory -Filter 'raw.tmp-*'
+git status --short
+```
+
+The report command cannot match a published run because published run IDs are not dot-prefixed. The generated command matches only owned `run-*` children within the generated root, and the raw command matches only `raw.tmp-*` siblings within `.tdx-measurement`.
+
+A write or validation failure attempts to remove its temporary file or directory. If cleanup also fails, the primary error code is preserved and a bounded cleanup failure identifies the orphan by a root-relative leaf name. Raw cleanup messages, stacks, file contents, credentials, and arbitrary absolute paths are not attached. The harness does not claim that no partial artifact remains in that case.
 
 Before manually deleting an orphan:
 
@@ -309,6 +330,8 @@ git diff --check
 git status --short
 ```
 
+The focused measurement tests include absolute Worker deadline races, bounded termination cleanup observation, canonical verified-raw sanitized replay, atomic-write cleanup composition, and executable orphan-pattern guidance.
+
 CI does not call live TDX, receive production TDX credentials, or upload raw payloads or real route-level reports.
 
-This PR must remain Draft until the third narrow review is complete.
+This PR must remain Draft until the fourth narrow review is complete.
