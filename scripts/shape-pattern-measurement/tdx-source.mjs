@@ -1,12 +1,23 @@
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { performance } from 'node:perf_hooks'
+import { Worker } from 'node:worker_threads'
 import { DEFAULT_MAX_ATTEMPTS, DEFAULT_TIMEOUT_MS, RAW_SCHEMA_VERSION } from './constants.mjs'
+import { attachCleanupFailure } from './measurement-errors.mjs'
 import { atomicWrite, contentHash, readJson, sleep, stableStringify, writeJson } from './util.mjs'
 
 const TOKEN_ENDPOINT = 'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token'
 const API_BASE = 'https://tdx.transportdata.tw/api/basic/v2/Bus'
 const SAFE_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}\.json$/
+const PARSE_WORKER_SOURCE = `
+const { parentPort, workerData } = require('node:worker_threads')
+try {
+  parentPort.postMessage({ ok: true, value: JSON.parse(workerData) })
+} catch {
+  parentPort.postMessage({ ok: false, failureClass: 'invalid_json' })
+}
+`
 
 export class TDXMeasurementError extends Error {
   constructor(message, details = {}, options = {}) {
@@ -19,6 +30,9 @@ export class TDXMeasurementError extends Error {
       failureClass: details.failureClass ?? 'unknown',
       retryCount: Number.isInteger(details.retryCount) ? details.retryCount : 0,
       timestamp: details.timestamp ?? new Date().toISOString(),
+      ...(typeof details.cleanupFailureClass === 'string'
+        ? { cleanupFailureClass: details.cleanupFailureClass.slice(0, 80) }
+        : {}),
     }
   }
 }
@@ -79,6 +93,7 @@ export async function fetchRawBundle({
   credentials,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  removeDirectory = rm,
 }) {
   const target = resolve(rawDir)
   await assertMissing(target)
@@ -105,7 +120,11 @@ export async function fetchRawBundle({
     await rename(temporary, target)
     return { bundle, manifest }
   } catch (error) {
-    await rm(temporary, { recursive: true, force: true }).catch(() => undefined)
+    try {
+      await removeDirectory(temporary, { recursive: true, force: true })
+    } catch {
+      throw attachCleanupFailure(error, { stage: 'raw-cache-temporary-cleanup', temporaryPath: temporary })
+    }
     throw error
   }
 }
@@ -280,10 +299,12 @@ export async function requestJsonWithRetry({
   expectArray,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  workerFactory,
 }) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const deadline = performance.now() + timeoutMs
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let timer = setTimeout(() => controller.abort(), timeoutMs)
     let response
     try {
       response = await fetcher(url, { ...init, signal: controller.signal })
@@ -293,28 +314,126 @@ export async function requestJsonWithRetry({
           throw safeError(endpointCategory, city, response.status, classifyHttp(response.status), attempt)
         }
         clearTimeout(timer)
+        timer = null
         await sleep(backoffDelay(attempt, response.headers?.get?.('Retry-After') ?? null, random, now))
         continue
       }
       const text = await response.text()
-      let data
-      try { data = JSON.parse(text) } catch {
-        throw safeError(endpointCategory, city, response.status, 'invalid_json', attempt)
-      }
+      clearTimeout(timer)
+      timer = null
+      const remainingMs = Math.max(0, deadline - performance.now())
+      const data = await parseJsonWithDeadline(text, {
+        timeoutMs: remainingMs,
+        endpointCategory,
+        city,
+        httpStatus: response.status,
+        retryCount: attempt,
+        workerFactory,
+      })
       if ((expectArray && !Array.isArray(data)) || (!expectArray && !plainObject(data))) {
         throw safeError(endpointCategory, city, response.status, 'invalid_schema', attempt)
       }
       return data
     } catch (error) {
-      if (error instanceof TDXMeasurementError) throw error
       const final = attempt === maxAttempts - 1
+      if (error instanceof TDXMeasurementError) {
+        if (!final && retryableMeasurementFailure(error.details.failureClass)) {
+          await sleep(backoffDelay(attempt, null, random, now))
+          continue
+        }
+        throw error
+      }
       if (final) throw safeError(endpointCategory, city, response?.status ?? null, classifyTransport(error), attempt)
       await sleep(backoffDelay(attempt, null, random, now))
     } finally {
-      clearTimeout(timer)
+      if (timer !== null) clearTimeout(timer)
     }
   }
   throw safeError(endpointCategory, city, null, 'retry_exhausted', maxAttempts - 1)
+}
+
+export async function parseJsonWithDeadline(text, {
+  timeoutMs,
+  endpointCategory = 'unknown',
+  city = null,
+  httpStatus = null,
+  retryCount = 0,
+  workerFactory = defaultWorkerFactory,
+  terminationTimeoutMs = 1_000,
+} = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw safeError(endpointCategory, city, httpStatus, 'timeout', retryCount)
+  }
+  let worker
+  try {
+    worker = workerFactory({ source: PARSE_WORKER_SOURCE, text })
+  } catch {
+    throw safeError(endpointCategory, city, httpStatus, 'parse_worker_error', retryCount)
+  }
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
+    const timer = setTimeout(() => settle({ failureClass: 'timeout' }), timeoutMs)
+
+    const onMessage = (message) => {
+      if (!plainObject(message) || typeof message.ok !== 'boolean') {
+        settle({ failureClass: 'parse_worker_message_error' })
+        return
+      }
+      if (message.ok) settle({ value: message.value })
+      else settle({ failureClass: message.failureClass === 'invalid_json' ? 'invalid_json' : 'parse_worker_error' })
+    }
+    const onError = () => settle({ failureClass: 'parse_worker_error' })
+    const onMessageError = () => settle({ failureClass: 'parse_worker_message_error' })
+    const onExit = (code) => {
+      if (!settled && code !== 0) settle({ failureClass: 'parse_worker_error' })
+    }
+
+    worker.once('message', onMessage)
+    worker.once('error', onError)
+    worker.once('messageerror', onMessageError)
+    worker.once('exit', onExit)
+
+    async function settle({ value, failureClass = null }) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      worker.off('message', onMessage)
+      worker.off('error', onError)
+      worker.off('messageerror', onMessageError)
+      worker.off('exit', onExit)
+      const terminated = await terminateWorkerBounded(worker, terminationTimeoutMs)
+      if (!terminated && failureClass === null) failureClass = 'parse_worker_termination_error'
+      if (failureClass !== null) {
+        const error = safeError(endpointCategory, city, httpStatus, failureClass, retryCount)
+        if (!terminated) error.details.cleanupFailureClass = 'parse_worker_termination_error'
+        rejectPromise(error)
+      } else {
+        resolvePromise(value)
+      }
+    }
+  })
+}
+
+function defaultWorkerFactory({ source, text }) {
+  return new Worker(source, {
+    eval: true,
+    workerData: text,
+    env: {},
+    execArgv: [],
+    stdin: false,
+    stdout: false,
+    stderr: false,
+  })
+}
+
+async function terminateWorkerBounded(worker, timeoutMs) {
+  try {
+    const termination = Promise.resolve(worker.terminate()).then(() => true, () => false)
+    const timeout = new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(false), timeoutMs))
+    return await Promise.race([termination, timeout])
+  } catch {
+    return false
+  }
 }
 
 export function parseRetryAfter(value, now = new Date()) {
@@ -417,6 +536,9 @@ function corruptCache(entry, message) {
     failureClass: 'corrupt_cache',
   })
 }
+function retryableMeasurementFailure(failureClass) {
+  return ['timeout', 'parse_worker_error', 'parse_worker_message_error', 'parse_worker_termination_error'].includes(failureClass)
+}
 function classifyTransport(error) { return error?.name === 'AbortError' ? 'timeout' : 'transport' }
 function classifyHttp(status) { return status === 429 ? 'rate_limited' : status >= 500 ? 'upstream_5xx' : 'upstream_4xx' }
 function safeError(endpointCategory, city, httpStatus, failureClass, retryCount) {
@@ -431,6 +553,9 @@ export function safeErrorRecord(error) {
   }
   if (error?.code === 'MEASUREMENT_COLLECTOR_ERROR') {
     return { endpointCategory: 'measurement', city: null, httpStatus: null, failureClass: 'collector_failure', retryCount: 0, timestamp: new Date().toISOString() }
+  }
+  if (error?.code === 'MEASUREMENT_CLEANUP_ERROR' || Array.isArray(error?.cleanupFailures)) {
+    return { endpointCategory: 'measurement', city: null, httpStatus: null, failureClass: 'cleanup_failure', retryCount: 0, timestamp: new Date().toISOString() }
   }
   return { endpointCategory: 'unknown', city: null, httpStatus: null, failureClass: 'unexpected', retryCount: 0, timestamp: new Date().toISOString() }
 }
