@@ -1,4 +1,4 @@
-import { contentHash, distribution, omitNondeterministic } from './util.mjs'
+import { contentHash, distribution, omitNondeterministic, stableStringify } from './util.mjs'
 
 const UNRESOLVED_REASON_FIELDS = Object.freeze({
   'invalid-pattern': 'invalidPattern',
@@ -36,6 +36,7 @@ const DETERMINISTIC_OUTLIER_FIELDS = new Set([
 ])
 
 export function deterministicContentHash(report) {
+  assertProvenanceScope(report.metadata.provenance)
   assertSourceScopedCandidateIdentities(report.partitions)
   const deterministicOutliers = Object.fromEntries(Object.entries(report.outliers)
     .filter(([key]) => DETERMINISTIC_OUTLIER_FIELDS.has(key)))
@@ -164,6 +165,48 @@ export function countBy(records, selector) {
     result[key] = (result[key] ?? 0) + 1
   }
   return Object.fromEntries(Object.entries(result).sort())
+}
+
+function assertProvenanceScope(provenance) {
+  if (!Array.isArray(provenance?.selectedCities) || provenance.selectedCities.length === 0
+    || new Set(provenance.selectedCities).size !== provenance.selectedCities.length
+    || typeof provenance.includeIntercity !== 'boolean' || !Array.isArray(provenance.endpoints)) {
+    throw new TypeError('report provenance scope is invalid')
+  }
+  const expected = []
+  for (const city of provenance.selectedCities) {
+    if (typeof city !== 'string' || !city) throw new TypeError('report provenance city is invalid')
+    expected.push(endpointIdentity('city', city, 'shape'))
+    expected.push(endpointIdentity('city', city, 'stop-of-route'))
+  }
+  if (provenance.includeIntercity) {
+    expected.push(endpointIdentity('intercity', null, 'shape'))
+    expected.push(endpointIdentity('intercity', null, 'stop-of-route'))
+  }
+  const actual = provenance.endpoints.map((entry) => ({
+    endpointId: entry.endpointId,
+    scope: entry.scope,
+    city: entry.city,
+    category: entry.category,
+    fileName: entry.fileName,
+  })).sort((a, b) => a.endpointId.localeCompare(b.endpointId))
+  expected.sort((a, b) => a.endpointId.localeCompare(b.endpointId))
+  if (stableStringify(actual) !== stableStringify(expected)) {
+    throw new TypeError('report provenance endpoints do not match selected scope')
+  }
+}
+
+function endpointIdentity(scope, city, category) {
+  const endpointId = scope === 'intercity'
+    ? `intercity-${category}`
+    : `city-${city}-${category}`
+  return {
+    endpointId,
+    scope,
+    city,
+    category,
+    fileName: `${endpointId}.json`,
+  }
 }
 
 function assertSourceScopedCandidateIdentities(partitions) {
