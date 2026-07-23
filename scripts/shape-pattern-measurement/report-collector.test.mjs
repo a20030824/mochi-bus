@@ -20,6 +20,9 @@ function drivePair(collector, {
     rawCoordinateCount: 2, normalizedCoordinateCount: 2, segmentCount: 1,
     closureClassification: 'not-direction-2', closureGapDistanceMeters: null,
   })
+  collector.observe('orientation-start', {
+    patternId: 'p1', shapeId: 's1', orientation: 'forward',
+  })
   collector.observe('projection-start', {
     patternId: 'p1', shapeId: 's1', orientation: 'forward', objective: 'cost',
     stopCount: 2, segmentCount: 1, candidateCount: 2,
@@ -54,12 +57,15 @@ describe('formal matcher event collector', () => {
     },
   )
 
-  it('fails when a started pair or projection has no matching end event', () => {
+  it('fails when a started pair, orientation or projection has no matching end event', () => {
     const collector = createInstrumentationCollector(partition)
     collector.observe('pair-start', {
       patternId: 'p1', shapeId: 's1', stopCount: 1,
       rawCoordinateCount: 2, normalizedCoordinateCount: 2, segmentCount: 1,
       closureClassification: 'not-direction-2', closureGapDistanceMeters: null,
+    })
+    collector.observe('orientation-start', {
+      patternId: 'p1', shapeId: 's1', orientation: 'forward',
     })
     collector.observe('projection-start', {
       patternId: 'p1', shapeId: 's1', orientation: 'forward', objective: 'cost',
