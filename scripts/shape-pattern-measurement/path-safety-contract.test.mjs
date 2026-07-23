@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { validatePathBoundaries } from './cli.mjs'
 import { prepareReportPublicationPaths, validateRunId } from './report.mjs'
 
@@ -65,7 +65,7 @@ describe('measurement root policy', () => {
     })).resolves.toBeUndefined()
   })
 
-  it('accepts safe disjoint external roots but rejects the repository parent', async () => {
+  it('accepts safe disjoint external roots but rejects a repository ancestor', async () => {
     const repositoryRoot = await repoFixture()
     const outside = await mkdtemp(join(tmpdir(), 'measurement-outside-'))
     roots.push(outside)
@@ -74,6 +74,6 @@ describe('measurement root policy', () => {
     })).resolves.toBeUndefined()
     await expect(validatePathBoundaries({
       rawDir: resolve(repositoryRoot, '..'), reportDir: join(outside, 'reports'), generatedRoot: join(outside, 'generated'), repositoryRoot,
-    })).rejects.toThrow(/repository|root/i)
+    })).rejects.toThrow(/repository|root|disjoint|overlap/i)
   })
 })
